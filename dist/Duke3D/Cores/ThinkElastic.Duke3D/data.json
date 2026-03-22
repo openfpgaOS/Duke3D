@@ -3,6 +3,14 @@
         "magic": "APF_VER_1",
         "data_slots": [
             {
+                "id": 0,
+                "name": "OS Data",
+                "required": false,
+                "parameters": "0x01",
+                "address": "0x30280000",
+                "size_maximum": "0x10000"
+            },
+            {
                 "id": 1,
                 "name": "OS Binary",
                 "required": false,
@@ -48,14 +56,6 @@
             {
                 "id": 6,
                 "name": "Data 4",
-                "required": false,
-                "parameters": 0,
-                "extensions": ["dat"],
-                "deferload": true
-            },
-            {
-                "id": 7,
-                "name": "Data 5",
                 "required": false,
                 "parameters": 0,
                 "extensions": ["dat"],
