@@ -45,7 +45,7 @@ static inline void write_le16(void *p, int16_t v) {
 #include "fixedPoint_math.h"
 #include "../../Game/src/global.h"
 
-#ifdef POCKET
+#ifdef OPENFPGA
 #include "of_lzw.h"
 #endif
 
@@ -162,8 +162,8 @@ int32_t initgroupfile(const char  *filename)
 	//i = 1000000;
 	//groupfil_memory[numgroupfiles] = malloc(i);
     
-#ifdef POCKET
-    /* Skip CRC32 computation on Pocket — reading 11MB through DMA is slow
+#ifdef OPENFPGA
+    /* Skip CRC32 computation on openfpgaOS — reading 11MB through DMA is slow
        and we don't need CRC validation for single-player. */
     archive->crc32 = 0;
 #else
@@ -494,11 +494,11 @@ void kclose(int32_t handle)
 /* Internal LZW variables */
 #define LZWSIZE 16384           /* Watch out for shorts! */
 
-/* On Pocket, both compress and uncompress use software LZW.
+/* On openfpgaOS, both compress and uncompress use software LZW.
  * The of_lzw_compress syscall hangs, and of_lzw_uncompress uses
  * a different format than the BUILD engine software compress. */
 
-/* Software LZW buffers and compress — used by both Pocket and non-Pocket */
+/* Software LZW buffers and compress — used by both openfpgaOS and non-openfpgaOS */
 
 
 static uint8_t  *lzwbuf1, *lzwbuf4, *lzwbuf5;
@@ -618,7 +618,7 @@ int32_t uncompress(uint8_t  *lzwinbuf, int32_t compleng, uint8_t  *lzwoutbuf)
 }
 
 
-#ifdef POCKET
+#ifdef OPENFPGA
 
 void kdfread(void *buffer, size_t dasizeof, size_t count, int32_t fil)
 {
@@ -659,7 +659,7 @@ void kdfread(void *buffer, size_t dasizeof, size_t count, int32_t fil)
 	free(lbuf5);
 }
 
-#else /* !POCKET */
+#else /* !OPENFPGA */
 
 void kdfread(void *buffer, size_t dasizeof, size_t count, int32_t fil)
 {
@@ -702,9 +702,9 @@ void kdfread(void *buffer, size_t dasizeof, size_t count, int32_t fil)
 	lzwbuflock[0] = lzwbuflock[1] = lzwbuflock[2] = lzwbuflock[3] = lzwbuflock[4] = 1;
 }
 
-#endif /* !POCKET */
+#endif /* !OPENFPGA */
 
-#ifdef POCKET
+#ifdef OPENFPGA
 
 void dfread(void *buffer, size_t dasizeof, size_t count, FILE *fil)
 {
@@ -749,7 +749,7 @@ void dfread(void *buffer, size_t dasizeof, size_t count, FILE *fil)
 	free(lbuf5);
 }
 
-#else /* !POCKET */
+#else /* !OPENFPGA */
 
 void dfread(void *buffer, size_t dasizeof, size_t count, FILE *fil)
 {
@@ -795,9 +795,9 @@ void dfread(void *buffer, size_t dasizeof, size_t count, FILE *fil)
 	lzwbuflock[0] = lzwbuflock[1] = lzwbuflock[2] = lzwbuflock[3] = lzwbuflock[4] = 1;
 }
 
-#endif /* !POCKET */
+#endif /* !OPENFPGA */
 
-#ifdef POCKET
+#ifdef OPENFPGA
 
 void dfwrite(void *buffer, size_t dasizeof, size_t count, FILE *fil)
 {
@@ -842,7 +842,7 @@ void dfwrite(void *buffer, size_t dasizeof, size_t count, FILE *fil)
 	free(lbuf5);
 }
 
-#else /* !POCKET */
+#else /* !OPENFPGA */
 
 void dfwrite(void *buffer, size_t dasizeof, size_t count, FILE *fil)
 {
@@ -888,7 +888,7 @@ void dfwrite(void *buffer, size_t dasizeof, size_t count, FILE *fil)
 	lzwbuflock[0] = lzwbuflock[1] = lzwbuflock[2] = lzwbuflock[3] = lzwbuflock[4] = 1;
 }
 
-#endif /* !POCKET */
+#endif /* !OPENFPGA */
 
 
 

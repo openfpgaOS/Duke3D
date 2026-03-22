@@ -44,7 +44,7 @@ void Shutdown(void);
 #endif
 #endif
 
-#if defined(POCKET) && !defined(BYTE_ORDER)
+#if defined(OPENFPGA) && !defined(BYTE_ORDER)
 #define BYTE_ORDER LITTLE_ENDIAN
 #endif
 

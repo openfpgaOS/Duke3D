@@ -776,7 +776,7 @@ uint8_t parsecommand(int readfromGRP)
 
 				j = kfilelength(fp);
 
-#ifndef POCKET
+#ifndef OPENFPGA
 				printf("Including: '%s'.\n", includedconfile);
 #endif
 
@@ -1606,7 +1606,7 @@ void loadefs(char  *filenam, char  *mptr, int readfromGRP)
         kread(fp,(uint8_t  *)textptr,fs);
 
         kclose(fp);
-#ifdef POCKET
+#ifdef OPENFPGA
         /* Skip CON CRC — same as GRP CRC skip */
         ud.conCRC[0] = 0;
 #else
@@ -1640,7 +1640,7 @@ void loadefs(char  *filenam, char  *mptr, int readfromGRP)
     else
     {
         total_lines += line_number;
-#ifndef POCKET
+#ifndef OPENFPGA
         printf("Code Size:%d bytes(%d labels).\n",(int32_t)((scriptptr-script)<<2)-4,labelcnt);
 #endif
 		ud.conSize[0] = (int32_t)(scriptptr-script)-1;
@@ -1648,7 +1648,7 @@ void loadefs(char  *filenam, char  *mptr, int readfromGRP)
 		// FIX_00062: Better support and identification for GRP and CON files for 1.3/1.3d/1.4/1.5
 		if( ud.conSize[0] == 16208 && labelcnt == 1794 && conVersion == 15)
 			conVersion = 14;
-#ifndef POCKET
+#ifndef OPENFPGA
 		printf("Con version: Looks like v%d\n", conVersion);
 #endif
 

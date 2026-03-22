@@ -1,13 +1,13 @@
 /*
- * pocket_save.c -- Save file I/O for Analogue Pocket
+ * d3d_save.c -- Save file I/O for openfpgaOS
  *
  * Each game save has its own nonvolatile data slot.
- * Game save N uses data slot id (POCKET_SAVE_SLOT_BASE + N).
+ * Game save N uses data slot id (D3D_SAVE_SLOT_BASE + N).
  * Uses of_save_read/write syscalls with offset within the slot.
  * LZW compress/uncompress use the BUILD engine software implementation.
  */
 
-#include "pocket_save.h"
+#include "d3d_save.h"
 #include "of_save.h"
 #include <stdint.h>
 
@@ -24,34 +24,34 @@ extern void  free(void *ptr);
 #define SAVE_MAGIC 0x444B5356  /* "DKSV" — marks a valid game save */
 
 /* Static pool of save file handles */
-static PocketSaveFile save_pool[POCKET_MAXSAVES];
-static int      save_pool_used[POCKET_MAXSAVES];
+static OfSaveFile save_pool[D3D_MAXSAVES];
+static int      save_pool_used[D3D_MAXSAVES];
 
 /* ======================================================================
  * Public API
  * ====================================================================== */
 
-PocketSaveFile *save_fopen(int slot, const char *mode) {
-    if (slot < 0 || slot >= POCKET_MAXSAVES)
-        return (PocketSaveFile *)0;
+OfSaveFile *save_fopen(int slot, const char *mode) {
+    if (slot < 0 || slot >= D3D_MAXSAVES)
+        return (OfSaveFile *)0;
 
     int idx = -1;
-    for (int i = 0; i < POCKET_MAXSAVES; i++) {
+    for (int i = 0; i < D3D_MAXSAVES; i++) {
         if (!save_pool_used[i]) { idx = i; break; }
     }
-    if (idx < 0) return (PocketSaveFile *)0;
+    if (idx < 0) return (OfSaveFile *)0;
 
-    PocketSaveFile *sf = &save_pool[idx];
+    OfSaveFile *sf = &save_pool[idx];
     sf->game_slot = slot;
-    sf->offset    = POCKET_SAVE_HEADER;
-    sf->size      = POCKET_SAVE_SIZE;
+    sf->offset    = D3D_SAVE_HEADER;
+    sf->size      = D3D_SAVE_SIZE;
     sf->writing   = (mode[0] == 'w') ? 1 : 0;
 
     if (!sf->writing) {
         /* Read actual data size stored at offset 0 */
         uint32_t data_size = 0;
         of_save_read(slot, &data_size, 0, 4);
-        if (data_size > POCKET_SAVE_HEADER && data_size <= POCKET_SAVE_SIZE)
+        if (data_size > D3D_SAVE_HEADER && data_size <= D3D_SAVE_SIZE)
             sf->size = data_size;
     }
 
@@ -60,7 +60,7 @@ PocketSaveFile *save_fopen(int slot, const char *mode) {
 }
 
 unsigned int save_fread(void *buf, unsigned int size, unsigned int count,
-                        PocketSaveFile *sf) {
+                        OfSaveFile *sf) {
     uint32_t total = size * count;
     if (sf->offset >= sf->size) return 0;
     uint32_t avail = sf->size - sf->offset;
@@ -73,7 +73,7 @@ unsigned int save_fread(void *buf, unsigned int size, unsigned int count,
 }
 
 unsigned int save_fwrite(const void *buf, unsigned int size, unsigned int count,
-                         PocketSaveFile *sf) {
+                         OfSaveFile *sf) {
     uint32_t total = size * count;
     if (sf->offset >= sf->size) return 0;
     uint32_t avail = sf->size - sf->offset;
@@ -85,7 +85,7 @@ unsigned int save_fwrite(const void *buf, unsigned int size, unsigned int count,
     return count;
 }
 
-int save_fseek(PocketSaveFile *sf, long offset, int whence) {
+int save_fseek(OfSaveFile *sf, long offset, int whence) {
     long new_off;
     switch (whence) {
     case 0: new_off = offset; break;
@@ -99,7 +99,7 @@ int save_fseek(PocketSaveFile *sf, long offset, int whence) {
     return 0;
 }
 
-void save_fclose(PocketSaveFile *sf) {
+void save_fclose(OfSaveFile *sf) {
     if (!sf) return;
 
     if (sf->writing) {
@@ -116,12 +116,12 @@ void save_fclose(PocketSaveFile *sf) {
     }
 
     int idx = (int)(sf - save_pool);
-    if (idx >= 0 && idx < POCKET_MAXSAVES)
+    if (idx >= 0 && idx < D3D_MAXSAVES)
         save_pool_used[idx] = 0;
 }
 
 int save_slot_valid(int slot) {
-    if (slot < 0 || slot >= POCKET_MAXSAVES)
+    if (slot < 0 || slot >= D3D_MAXSAVES)
         return 0;
 
     uint32_t magic = 0;
@@ -135,7 +135,7 @@ int save_slot_valid(int slot) {
  * ====================================================================== */
 
 void save_dfread(void *buffer, unsigned int dasizeof, unsigned int count,
-                 PocketSaveFile *sf) {
+                 OfSaveFile *sf) {
     unsigned int i, j;
     int32_t k, kgoal;
     short leng;
@@ -182,7 +182,7 @@ out:
 }
 
 void save_dfwrite(void *buffer, unsigned int dasizeof, unsigned int count,
-                  PocketSaveFile *sf) {
+                  OfSaveFile *sf) {
     unsigned int i, j, k;
     short leng;
     uint8_t *ptr;

@@ -9,7 +9,7 @@
 #include "of_file.h"
 
 /* Register Duke3D's data files with the OS file slot registry. */
-void pocket_register_file_slots(void) {
+void of_register_file_slots(void) {
     of_file_slot_register(3, "duke3d.grp");
 }
 

@@ -232,7 +232,7 @@ int32_t *curipos[MAXINTERPOLATIONS];
 
 void FixFilePath(char  *filename)
 {
-#if defined(POCKET)
+#if defined(OPENFPGA)
     (void)filename;
     return;
 #elif UNIX
@@ -497,14 +497,14 @@ int FindDistance3D(int ix, int iy, int iz)
 
    return (ix - (ix>>4) + (t>>2) + (t>>3));
 }
-#ifndef POCKET
+#ifndef OPENFPGA
 #include "SDL2/SDL.h"
 #endif
 void Error (int errorType, const char *error, ...)
 {
    va_list argptr;
 
-#ifndef POCKET
+#ifndef OPENFPGA
    SDL_Quit();
 #endif
 

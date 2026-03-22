@@ -136,7 +136,7 @@ void RTS_Init (char  *filename)
    numlumps = 0;
    lumpinfo = SafeMalloc(5);   // will be realloced as lumps are added
 
-#ifndef POCKET
+#ifndef OPENFPGA
    printf("RTS Manager Started.\n");
 #endif
    if (SafeFileExists(filename))

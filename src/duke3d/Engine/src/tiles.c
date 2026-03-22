@@ -260,11 +260,11 @@ int loadpics(char  *filename, char * gamedir)
 
             numtilefiles++;
 
-#ifdef POCKET
+#ifdef OPENFPGA
             /* Update progress bar: art loading spans 35%→75% */
             {
-                extern void pocket_progress(int);
-                pocket_progress(35 + (numtilefiles * 40) / 20);
+                extern void of_progress(int);
+                of_progress(35 + (numtilefiles * 40) / 20);
             }
 #endif
 
@@ -272,7 +272,7 @@ int loadpics(char  *filename, char * gamedir)
     }
     while (k != numtilefiles);
     
-#ifndef POCKET
+#ifndef OPENFPGA
     printf("Art files loaded\n");
 #endif
     
@@ -280,8 +280,8 @@ int loadpics(char  *filename, char * gamedir)
     
     /* try dpmi_DETERMINEMAXREALALLOC! */
 
-#ifdef POCKET
-    /* Pocket has 64MB SDRAM — use generous cache to avoid eviction */
+#ifdef OPENFPGA
+    /* openfpgaOS has 64MB SDRAM — use generous cache to avoid eviction */
     cachesize = max(artsize, 1048576);
     if (cachesize > 16 * 1024 * 1024)
         cachesize = 16 * 1024 * 1024;

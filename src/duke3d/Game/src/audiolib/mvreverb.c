@@ -1,7 +1,7 @@
 #include "multivoc.h"
 #include "_multivc.h"
 
-#ifdef POCKET
+#ifdef OPENFPGA
 extern float *MV_FooBuffer;
 #else
 extern double *MV_FooBuffer;
@@ -269,7 +269,7 @@ void MV_16BitDownmix(uint8_t *dest, int count)
 
 	for (i = 0; i < count; i++)
 	{
-#ifdef POCKET
+#ifdef OPENFPGA
 		int out = (int)(MV_FooBuffer[i] * 0x8000f);
 #else
 		int out = (int)((MV_FooBuffer[i] * (double)0x8000));
@@ -286,7 +286,7 @@ void MV_8BitDownmix(uint8_t*dest, int count)
 
 	for (i = 0; i < count; i++)
 	{
-#ifdef POCKET
+#ifdef OPENFPGA
 		int out = (int)(MV_FooBuffer[i] * 0x80f);
 #else
 		int out = ((int)((MV_FooBuffer[i] * (double)0x80)));

@@ -3,7 +3,7 @@
 # openfpgaOS SDK — Standalone Game Core Builder
 #
 # Creates the complete SD card directory structure for deploying a game
-# as an independent core on the Analogue Pocket.
+# as an independent core on openfpgaOS.
 #
 # Usage:
 #   ./buildcore.sh                 Interactive mode (prompts for each parameter)

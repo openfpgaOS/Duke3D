@@ -49,7 +49,7 @@ LIBGCC = $(shell $(CC) -march=$(ARCH) -mabi=$(ABI) -print-libgcc-file-name)
 CRT_START = $(CRT_DIR)/start.o
 OBJS      = $(CRT_START) $(SRCS:.c=.o)
 
-# ── Pocket build ─────────────────────────────────────────────────
+# ── openfpgaOS build ─────────────────────────────────────────────────
 app.elf: $(OBJS) $(APP_LD)
 	$(LD) $(ALL_LDFLAGS) -o $@ $(OBJS) $(LIBGCC)
 

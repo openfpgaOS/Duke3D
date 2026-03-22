@@ -1,14 +1,14 @@
 /*
- * display_pocket.c -- openfpgaOS display/input/timer shim for Duke Nukem 3D
+ * display_of.c -- openfpgaOS display/input/timer shim for Duke Nukem 3D
  *
  * Replaces the SDL2 display.c with calls to the openfpgaOS API (of_*).
- * Targets the Analogue Pocket: 320x240 indexed framebuffer, gamepad input.
+ * Targets openfpgaOS: 320x240 indexed framebuffer, gamepad input.
  *
  * BUILD engine renders into a 320x200 uint8_t buffer. We blit that into the
  * 320x240 hardware surface centered vertically (20-pixel black bars top/bottom).
  */
 
-#ifdef POCKET
+#ifdef OPENFPGA
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,8 +28,8 @@
  * Internal state
  * ====================================================================== */
 
-#define POCKET_W  320
-#define POCKET_H  200
+#define OF_DISPLAY_W  320
+#define OF_DISPLAY_H  200
 /* Variables required by the engine (declared extern in display.h / build.h) */
 int32_t xres, yres, bytesperline, imageSize, maxpages;
 uint8_t *frameplace;
@@ -39,7 +39,7 @@ int32_t buffermode, origbuffermode, linearmode;
 uint8_t permanentupdate = 0, vgacompatible;
 
 /* The internal 320x200 framebuffer that BUILD draws into */
-static uint8_t pocket_framebuffer[POCKET_W * POCKET_H];
+static uint8_t of_framebuffer[OF_DISPLAY_W * OF_DISPLAY_H];
 
 /* Input state */
 static int32_t mouse_relative_x = 0;
@@ -59,7 +59,7 @@ int32_t total_render_time = 1;
 int32_t total_rendered_frames = 0;
 
 /* Cached palette in 0x00RRGGBB format for of_video_palette_bulk */
-static uint32_t pocket_palette[256];
+static uint32_t of_palette[256];
 
 /* Analog stick dead zone (out of +/-32767) */
 #define STICK_DEADZONE  8000
@@ -157,18 +157,18 @@ static void init_new_res_vars(void)
 
     setupmouse();
 
-    xdim = xres = POCKET_W;
-    ydim = yres = POCKET_H;
+    xdim = xres = OF_DISPLAY_W;
+    ydim = yres = OF_DISPLAY_H;
 
     numpages = 1;
-    bytesperline = POCKET_W;
+    bytesperline = OF_DISPLAY_W;
     vesachecked = 1;
     vgacompatible = 1;
     linearmode = 1;
-    qsetmode = POCKET_H;
+    qsetmode = OF_DISPLAY_H;
     activepage = visualpage = 0;
 
-    frameoffset = frameplace = pocket_framebuffer;
+    frameoffset = frameplace = of_framebuffer;
 
     if (screen != NULL) {
         if (screenalloctype == 0) free((void *)screen);
@@ -207,7 +207,7 @@ static void init_new_res_vars(void)
 
 void *get_framebuffer(void)
 {
-    return pocket_framebuffer;
+    return of_framebuffer;
 }
 
 static int video_initialized = 0;
@@ -217,7 +217,7 @@ static void ensure_video_init(void) {
         video_initialized = 1;
         of_video_init();
         of_video_clear(0);
-        of_video_palette_bulk(pocket_palette, 256);
+        of_video_palette_bulk(of_palette, 256);
         of_video_flip();
         of_video_clear(0);
     }
@@ -238,7 +238,7 @@ void _platform_init(int argc, char **argv, const char *title, const char *iconNa
     srand((unsigned int)of_time_ms());
 
     /* Zero out the internal framebuffer */
-    memset(pocket_framebuffer, 0, sizeof(pocket_framebuffer));
+    memset(of_framebuffer, 0, sizeof(of_framebuffer));
 }
 
 void _nextpage(void)
@@ -249,10 +249,10 @@ void _nextpage(void)
 
     _handle_events();
 
-    /* Pocket audio mixer */
+    /* openfpgaOS audio mixer */
     {
-        extern void pocket_audio_pump(void);
-        pocket_audio_pump();
+        extern void d3d_audio_pump(void);
+        d3d_audio_pump();
     }
 
     /* Wait for previous flip to finish before writing to surface */
@@ -262,9 +262,9 @@ void _nextpage(void)
        centered vertically with a 20-pixel Y offset. */
     {
         uint8_t *dst = of_video_surface();
-        memset(dst, 0, POCKET_W * 20);
-        memcpy(dst + POCKET_W * 20, pocket_framebuffer, POCKET_W * POCKET_H);
-        memset(dst + POCKET_W * (20 + POCKET_H), 0, POCKET_W * 20);
+        memset(dst, 0, OF_DISPLAY_W * 20);
+        memcpy(dst + OF_DISPLAY_W * 20, of_framebuffer, OF_DISPLAY_W * OF_DISPLAY_H);
+        memset(dst + OF_DISPLAY_W * (20 + OF_DISPLAY_H), 0, OF_DISPLAY_W * 20);
     }
 
     of_video_flip();
@@ -305,7 +305,7 @@ void VBE_setPalette(uint8_t *palettebuffer)
         uint8_t r8 = (uint8_t)((rgb_triplets[i * 3 + 0] * 255 + 31) / 63);
         uint8_t g8 = (uint8_t)((rgb_triplets[i * 3 + 1] * 255 + 31) / 63);
         uint8_t b8 = (uint8_t)((rgb_triplets[i * 3 + 2] * 255 + 31) / 63);
-        pocket_palette[i] = ((uint32_t)r8 << 16) | ((uint32_t)g8 << 8) | (uint32_t)b8;
+        of_palette[i] = ((uint32_t)r8 << 16) | ((uint32_t)g8 << 8) | (uint32_t)b8;
     }
 
     if (video_initialized)
@@ -319,7 +319,7 @@ void VBE_getPalette(int32_t start, int32_t num, uint8_t *palettebuffer)
     int i;
 
     for (i = start; i < start + num; i++) {
-        uint32_t rgb = pocket_palette[i];
+        uint32_t rgb = of_palette[i];
         uint8_t r8 = (rgb >> 16) & 0xFF;
         uint8_t g8 = (rgb >>  8) & 0xFF;
         uint8_t b8 = (rgb >>  0) & 0xFF;
@@ -336,9 +336,9 @@ void VBE_presentPalette(void)
     if (!video_initialized) return;
     {
         uint8_t *dst = of_video_surface();
-        memset(dst, 0, POCKET_W * 20);
-        memcpy(dst + POCKET_W * 20, pocket_framebuffer, POCKET_W * POCKET_H);
-        memset(dst + POCKET_W * (20 + POCKET_H), 0, POCKET_W * 20);
+        memset(dst, 0, OF_DISPLAY_W * 20);
+        memcpy(dst + OF_DISPLAY_W * 20, of_framebuffer, OF_DISPLAY_W * OF_DISPLAY_H);
+        memset(dst + OF_DISPLAY_W * (20 + OF_DISPLAY_H), 0, OF_DISPLAY_W * 20);
     }
     of_video_flip();
 }
@@ -356,8 +356,8 @@ void getvalidvesamodes(void)
 
     /* Only mode: 320x200 */
     validmode[0]     = 0;
-    validmodexdim[0] = POCKET_W;
-    validmodeydim[0] = POCKET_H;
+    validmodexdim[0] = OF_DISPLAY_W;
+    validmodeydim[0] = OF_DISPLAY_H;
     validmodecnt     = 1;
 }
 
@@ -369,7 +369,7 @@ int32_t _setgamemode(int32_t daxdim, int32_t daydim)
     getvalidvesamodes();
 
     /* Always use 320x200 regardless of what was requested */
-    memset(pocket_framebuffer, 0, sizeof(pocket_framebuffer));
+    memset(of_framebuffer, 0, sizeof(of_framebuffer));
     init_new_res_vars();
 
     qsetmode = 200;
@@ -381,14 +381,14 @@ int32_t _setgamemode(int32_t daxdim, int32_t daydim)
 void setvmode(int mode)
 {
     if (mode == 0x3) {
-        /* text mode -- nothing to tear down on Pocket */
+        /* text mode -- nothing to tear down on openfpgaOS */
         return;
     }
 }
 
 void *_getVideoBase(void)
 {
-    return (void *)pocket_framebuffer;
+    return (void *)of_framebuffer;
 }
 
 /* ======================================================================
@@ -594,8 +594,8 @@ void sampletimer(void)
 
     /* Keep audio FIFO fed during asset loading and wait loops */
     {
-        extern void pocket_audio_pump(void);
-        pocket_audio_pump();
+        extern void d3d_audio_pump(void);
+        d3d_audio_pump();
     }
 
     i = (int64_t)of_time_ms();
@@ -630,7 +630,7 @@ int gettimerfreq(void)
 void screencapture(char *filename)
 {
     (void)filename;
-    /* No-op on Pocket -- no filesystem to save screenshots to */
+    /* No-op on openfpgaOS -- no filesystem to save screenshots to */
 }
 
 void _joystick_init(void)   { /* no-op */ }
@@ -670,14 +670,14 @@ void setcolor16(uint8_t col)
 
 void drawpixel16(int32_t offset)
 {
-    if (offset >= 0 && offset < POCKET_W * POCKET_H)
-        pocket_framebuffer[offset] = drawpixel_color;
+    if (offset >= 0 && offset < OF_DISPLAY_W * OF_DISPLAY_H)
+        of_framebuffer[offset] = drawpixel_color;
 }
 
 void fillscreen16(int32_t offset, int32_t color, int32_t blocksize)
 {
-    uint8_t *pixels = pocket_framebuffer;
-    int32_t fb_size = POCKET_W * POCKET_H;
+    uint8_t *pixels = of_framebuffer;
+    int32_t fb_size = OF_DISPLAY_W * OF_DISPLAY_H;
 
     if (!pageoffset) {
         offset = offset << 3;
@@ -695,7 +695,7 @@ void fillscreen16(int32_t offset, int32_t color, int32_t blocksize)
 
 void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint8_t Color)
 {
-    /* Bresenham line into the pocket framebuffer.
+    /* Bresenham line into the of framebuffer.
        Simplified version -- only needed for 2D map overlay. */
     int dx = abs((int)(XEnd - XStart));
     int dy = abs((int)(YEnd - YStart));
@@ -706,8 +706,8 @@ void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint
     int y = (int)YStart;
 
     while (1) {
-        if (x >= 0 && x < POCKET_W && y >= 0 && y < POCKET_H)
-            pocket_framebuffer[y * POCKET_W + x] = Color;
+        if (x >= 0 && x < OF_DISPLAY_W && y >= 0 && y < OF_DISPLAY_H)
+            of_framebuffer[y * OF_DISPLAY_W + x] = Color;
 
         if (x == (int)XEnd && y == (int)YEnd) break;
 
@@ -719,19 +719,19 @@ void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint
 
 void clear2dscreen(void)
 {
-    memset(pocket_framebuffer, 0, sizeof(pocket_framebuffer));
+    memset(of_framebuffer, 0, sizeof(of_framebuffer));
 }
 
 void _updateScreenRect(int32_t x, int32_t y, int32_t w, int32_t h)
 {
     (void)x; (void)y; (void)w; (void)h;
-    /* Just do a full flip -- partial updates aren't meaningful on the Pocket */
+    /* Just do a full flip -- partial updates aren't meaningful on openfpgaOS */
     _nextpage();
 }
 
 void fullscreen_toggle_and_change_driver(void)
 {
-    /* No-op on Pocket -- always fullscreen */
+    /* No-op on openfpgaOS -- always fullscreen */
 }
 
-#endif /* POCKET */
+#endif /* OPENFPGA */

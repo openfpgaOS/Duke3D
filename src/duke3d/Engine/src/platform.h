@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-#if (defined POCKET)
-    #include "pocket_compat.h"
+#if (defined OPENFPGA)
+    #include "of_compat.h"
 #elif (defined WIN32)
     #include "win32_compat.h"
 #elif (defined UNIX)

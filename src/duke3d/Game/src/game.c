@@ -53,7 +53,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "util_lib.h"
 #include "function.h"
 
-#ifdef POCKET
+#ifdef OPENFPGA
 extern void of_print(const char *);
 #endif
 #include "control.h"
@@ -7631,7 +7631,7 @@ void Logo(void)
     nextpage();
 
     ps[myconnectindex].palette = palette;
-#ifndef POCKET
+#ifndef OPENFPGA
     sound(NITEVISION_ONOFF);
 #endif
 
@@ -7700,10 +7700,10 @@ void compilecons(void)
 }
 
 
-#ifdef POCKET
-static int pocket_progress_row;
+#ifdef OPENFPGA
+static int of_progress_row;
 
-static void pocket_progress_init(void)
+static void of_progress_init(void)
 {
     extern void of_print(const char *);
     /* Clear screen and show title */
@@ -7712,10 +7712,10 @@ static void pocket_progress_init(void)
     of_print("\033[93m");     /* bright yellow */
     of_print("    Hail to the King, baby!\n");
     of_print("\033[0m\n");    /* reset + blank line */
-    pocket_progress_row = 8;  /* bar on row 8 */
+    of_progress_row = 8;  /* bar on row 8 */
 }
 
-void pocket_progress(int pct)
+void of_progress(int pct)
 {
     extern void of_print(const char *);
     char bar[48];
@@ -7724,14 +7724,14 @@ void pocket_progress(int pct)
 
     /* Move to bar row, clear line, then position for centered bar */
     bar[i++] = '\033'; bar[i++] = '[';
-    bar[i++] = '0' + pocket_progress_row / 10;
-    bar[i++] = '0' + pocket_progress_row % 10;
+    bar[i++] = '0' + of_progress_row / 10;
+    bar[i++] = '0' + of_progress_row % 10;
     bar[i++] = ';'; bar[i++] = '1'; bar[i++] = 'H';
     bar[i++] = '\033'; bar[i++] = '['; bar[i++] = 'K';  /* erase line */
     /* Center: (40 - 24) / 2 = 8 → column 9 */
     bar[i++] = '\033'; bar[i++] = '[';
-    bar[i++] = '0' + pocket_progress_row / 10;
-    bar[i++] = '0' + pocket_progress_row % 10;
+    bar[i++] = '0' + of_progress_row / 10;
+    bar[i++] = '0' + of_progress_row % 10;
     bar[i++] = ';'; bar[i++] = '9'; bar[i++] = 'H';
 
     bar[i++] = '[';
@@ -7754,24 +7754,24 @@ void Startup(void)
 
    CONSOLE_Init();
    KB_Startup();
-#ifdef POCKET
-   pocket_progress_init();
-   pocket_progress(0);
+#ifdef OPENFPGA
+   of_progress_init();
+   of_progress(0);
 
    CONFIG_SetDefaults();
    CONFIG_ReadKeys();
    SoundToggle = 1;
    MusicToggle = 0;
-   FXDevice = 0;   /* SC_SoundScape — menu shows sound ON, audio via pocket_audio */
+   FXDevice = 0;   /* SC_SoundScape — menu shows sound ON, audio via of_audio */
    NumVoices = 0;
    {
-       extern void pocket_audio_init(void);
-       pocket_audio_init();
+       extern void d3d_audio_init(void);
+       d3d_audio_init();
    }
    NumChannels = 1;
    NumBits = 8;
    MixRate = 11025;
-   pocket_progress(5);
+   of_progress(5);
 #else
    CONFIG_GetSetupFilename();
    CONFIG_ReadSetup();
@@ -7785,28 +7785,28 @@ void Startup(void)
    if(CommandSoundToggleOff) SoundToggle = 0;
    if(CommandMusicToggleOff) MusicToggle = 0;
 
-#ifdef POCKET
-   pocket_progress(15);
+#ifdef OPENFPGA
+   of_progress(15);
 #endif
 
    CONTROL_Startup( ControllerType, &GetTime, TICRATE );
-#ifdef POCKET
-   pocket_progress(20);
+#ifdef OPENFPGA
+   of_progress(20);
 #endif
    initengine();
-#ifdef POCKET
-   pocket_progress(30);
+#ifdef OPENFPGA
+   of_progress(30);
 #endif
    inittimer(TICRATE);
    /* loadpics updates progress 35%→75% per art file inside tiles.c */
    loadpics("tiles000.art", "\0");
-#ifdef POCKET
-   pocket_progress(80);
+#ifdef OPENFPGA
+   of_progress(80);
 #endif
 
    readsavenames();
-#ifdef POCKET
-   pocket_progress(85);
+#ifdef OPENFPGA
+   of_progress(85);
 #endif
 
    tiles[MIRROR].dim.width = tiles[MIRROR].dim.height = 0;
@@ -7814,27 +7814,27 @@ void Startup(void)
    for(i=0;i<MAXPLAYERS;i++) playerreadyflag[i] = 0;
    initmultiplayers();
 
-#ifndef POCKET
+#ifndef OPENFPGA
    if(numplayers > 1)
     puts("Multiplayer initialized.");
 #endif
 
    ps[myconnectindex].palette = (uint8_t  *) &palette[0];
    SetupGameButtons();
-#ifdef POCKET
-   pocket_progress(90);
+#ifdef OPENFPGA
+   of_progress(90);
 #endif
 
    if(networkmode == 255)
        networkmode = 1;
 
    SoundStartup();
-#ifdef POCKET
-   pocket_progress(95);
+#ifdef OPENFPGA
+   of_progress(95);
 #endif
    MusicStartup();
-#ifdef POCKET
-   pocket_progress(100);
+#ifdef OPENFPGA
+   of_progress(100);
 #endif
 
    // AutoAim
@@ -8141,8 +8141,8 @@ static int load_duke3d_groupfile(void)
 	char  groupfilefullpath[512];
     groupfilefullpath[0] = '\0';
 
-#ifdef POCKET
-    /* No directory scanning on Pocket — the filename is registered
+#ifdef OPENFPGA
+    /* No directory scanning on openfpgaOS — the filename is registered
        in the OS file slot registry from the instance JSON. */
     strcpy(groupfilefullpath, "duke3d.grp");
 #else
@@ -8189,11 +8189,11 @@ int main(int argc,char  **argv)
 	//		"group of known dukers who know what they are doing should be using\n"
 	//		"it. Please report new bugs at xd@m-klein.com or on DX forums. Thx!\n\n");
 	
-#ifdef POCKET
-    extern void pocket_register_file_slots(void);
+#ifdef OPENFPGA
+    extern void of_register_file_slots(void);
     extern void of_print(const char *);
 
-    pocket_register_file_slots();
+    of_register_file_slots();
 #else
     for (int i = 0; i < argc; ++i)
         printf("ARG %d: %s\n", i, argv[i]);
@@ -8208,8 +8208,8 @@ int main(int argc,char  **argv)
         for(;;){__asm__ volatile("");}
     }
 
-#ifdef POCKET
-	/* Skip version detection and CRC on Pocket */
+#ifdef OPENFPGA
+	/* Skip version detection and CRC on openfpgaOS */
 	grpVersion = SHAREWARE_GRP13;
 	conVersion = 13;
 	groupefil_crc32[0] = 0;

@@ -255,8 +255,8 @@ uint8_t  getsound(uint16_t num)
     l = kfilelength( fp );
     soundsiz[num] = l;
 
-#ifdef POCKET
-    /* Always pre-load all sounds into malloc'd buffers on Pocket */
+#ifdef OPENFPGA
+    /* Always pre-load all sounds into malloc'd buffers on openfpgaOS */
     {
         Sound[num].lock = 200;
         if (Sound[num].ptr == NULL)
@@ -280,7 +280,7 @@ uint8_t  getsound(uint16_t num)
 
 void precachenecessarysounds(void)
 {
-#ifdef POCKET
+#ifdef OPENFPGA
     /* Skip precaching — sounds will load on demand via loadsound() */
     return;
 #else
@@ -1306,7 +1306,7 @@ void resettimevars(void)
     lockclock = 0L;
     ready2send = 1;
 
-#ifdef POCKET
+#ifdef OPENFPGA
     { extern void resettimer(void); resettimer(); }
 #endif
 }
@@ -1356,8 +1356,8 @@ void waitforeverybody()
 	{
 		return;
 	}
-#ifdef POCKET
-	return;  /* no multiplayer on Pocket */
+#ifdef OPENFPGA
+	return;  /* no multiplayer on openfpgaOS */
 #endif
 #ifdef _DEBUG_NETWORKING_
 	else

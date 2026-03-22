@@ -1,7 +1,7 @@
 /*
  * of.h -- openfpgaOS Application API
  *
- * One header. Everything you need to make a game on Analogue Pocket.
+ * One header. Everything you need to make a game on openfpgaOS.
  * On PC, compile with -DOF_PC and link SDL2. No of_sdl2.c needed.
  *
  *   #include "of.h"
@@ -17,7 +17,7 @@
  *       }
  *   }
  *
- * Platform: Analogue Pocket FPGA, RISC-V (VexRiscv) @ 100 MHz
+ * Platform: openfpgaOS, RISC-V (VexRiscv) @ 100 MHz
  * Video:    320x240, 8-bit indexed color, double-buffered
  * Audio:    YM2151 FM synthesis (8 channels) + 48 kHz PCM FIFO
  * Input:    2 controllers, d-pad + ABXY + L/R + sticks + triggers

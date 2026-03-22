@@ -157,7 +157,7 @@ int snprintf(char *buf, unsigned int sz, const char *fmt, ...) {
  * ====================================================================== */
 
 int getchar(void) {
-    return -1;  /* no stdin on Pocket */
+    return -1;  /* no stdin on openfpgaOS */
 }
 
 char *strerror(int errnum) {

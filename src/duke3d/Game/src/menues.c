@@ -28,7 +28,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 	#include <fcntl.h>
 #endif
 
-#ifndef POCKET
+#ifndef OPENFPGA
 #include <SDL2/SDL.h>
 #endif
 
@@ -47,8 +47,8 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "sounds.h"
 #include "soundefs.h"
 
-#ifdef POCKET
-#include "../../pocket_save.h"
+#ifdef OPENFPGA
+#include "../../d3d_save.h"
 #endif
 
 
@@ -199,11 +199,11 @@ void getangplayers(short snum)
 
 int loadpheader(uint8_t  spot,int32 *vn,int32 *ln,int32 *psk,int32 *nump)
 {
-#ifdef POCKET
-    PocketSaveFile *fil;
+#ifdef OPENFPGA
+    OfSaveFile *fil;
     int32_t bv;
 
-    if (spot >= POCKET_MAXSAVES) return(-1);
+    if (spot >= D3D_MAXSAVES) return(-1);
     if (!save_slot_valid(spot)) return(-1);
     if ((fil = save_fopen(spot, "rb")) == NULL) return(-1);
 
@@ -272,15 +272,15 @@ int loadplayer(int8_t spot)
     char  fn[] = "game0.sav";
     char  mpfn[] = "gameA_00.sav";
     char* fnptr;
-#ifdef POCKET
-    PocketSaveFile* fil;
+#ifdef OPENFPGA
+    OfSaveFile* fil;
     int32_t bv, i, x;
 #else
     int32_t fil, bv, i, x;
 #endif
     int32 nump;
-#ifdef POCKET
-    static int32 ptrbuf[MAXTILES]; /* 36KB — too large for Pocket's stack */
+#ifdef OPENFPGA
+    static int32 ptrbuf[MAXTILES]; /* 36KB — too large for openfpgaOS stack */
 #else
     int32 ptrbuf[MAXTILES];
 #endif
@@ -297,8 +297,8 @@ int loadplayer(int8_t spot)
         return -1;
     }
 
-#ifdef POCKET
-    if (spot >= POCKET_MAXSAVES)
+#ifdef OPENFPGA
+    if (spot >= D3D_MAXSAVES)
         return(-1);
 
     if ((fil = save_fopen(spot, "rb")) == NULL)
@@ -402,8 +402,8 @@ int loadplayer(int8_t spot)
     clearsoundlocks();
     MUSIC_StopSong();
 
-    /* Macro to call dfread (Pocket/PocketSaveFile*) or kdfread (PC/kopen handle) */
-#ifdef POCKET
+    /* Macro to call dfread (openfpgaOS/OfSaveFile*) or kdfread (PC/kopen handle) */
+#ifdef OPENFPGA
 #define LOAD_READ save_dfread
 #else
 #define LOAD_READ kdfread
@@ -527,7 +527,7 @@ int loadplayer(int8_t spot)
     LOAD_READ(&global_random, sizeof(global_random), 1, fil);
     LOAD_READ(&parallaxyscale, sizeof(parallaxyscale), 1, fil);
 
-#ifdef POCKET
+#ifdef OPENFPGA
     save_fclose(fil);
 #else
     kclose(fil);
@@ -553,7 +553,7 @@ int loadplayer(int8_t spot)
         music_select = (ud.volume_number * 11) + ud.level_number;
     playmusic(&music_fn[0][music_select][0]);
 
-#ifdef POCKET
+#ifdef OPENFPGA
 #endif
     ps[myconnectindex].gm = MODE_GAME;
     ud.recstat = 0;
@@ -593,12 +593,12 @@ int loadplayer(int8_t spot)
 
     k = headspritestat[3];
     {
-#ifdef POCKET
+#ifdef OPENFPGA
         int safety = 0;
 #endif
         while (k >= 0)
         {
-#ifdef POCKET
+#ifdef OPENFPGA
             if (++safety > MAXSPRITES) break;
 #endif
             switch (sprite[k].lotag)
@@ -661,15 +661,15 @@ int saveplayer(int8_t spot)
     char  fn[] = "game0.sav";
     char  mpfn[] = "gameA_00.sav";
     char* fnptr;
-#ifdef POCKET
-    PocketSaveFile* fil;
+#ifdef OPENFPGA
+    OfSaveFile* fil;
 #else
     FILE* fil;
 #endif
     int32_t bv = BYTEVERSION;
     char  fullpathsavefilename[16];
-#ifdef POCKET
-    static int ptrbuf[MAXTILES]; /* 36KB — too large for Pocket's stack */
+#ifdef OPENFPGA
+    static int ptrbuf[MAXTILES]; /* 36KB — too large for openfpgaOS stack */
 #else
     int ptrbuf[MAXTILES];
 #endif
@@ -686,8 +686,8 @@ int saveplayer(int8_t spot)
 
     waitforeverybody();
 
-#ifdef POCKET
-    if (spot >= POCKET_MAXSAVES)
+#ifdef OPENFPGA
+    if (spot >= D3D_MAXSAVES)
         return(-1);
 #else
     if (multiflag == 2 && multiwho != myconnectindex)
@@ -723,7 +723,7 @@ int saveplayer(int8_t spot)
     fnptr = fullpathsavefilename;
 #endif
 
-#ifdef POCKET
+#ifdef OPENFPGA
     if ((fil = save_fopen(spot, "wb")) == 0) return(-1);
 #else
     if ((fil = fopen(fnptr, "wb")) == 0) return(-1);
@@ -731,7 +731,7 @@ int saveplayer(int8_t spot)
 
     ready2send = 0;
 
-#ifdef POCKET
+#ifdef OPENFPGA
 #define SAVE_WRITE save_dfwrite
 #else
 #define SAVE_WRITE dfwrite
@@ -831,7 +831,7 @@ int saveplayer(int8_t spot)
     SAVE_WRITE(&global_random, sizeof(global_random), 1, fil);
     SAVE_WRITE(&parallaxyscale, sizeof(parallaxyscale), 1, fil);
 
-#ifdef POCKET
+#ifdef OPENFPGA
     save_fclose(fil);
 #else
     fclose(fil);
@@ -964,7 +964,7 @@ int probeXduke(int x,int y,int i,int n, int32_t spriteSize)
         rotatesprite((x-tiles[BIGFNTCURSOR].dim.width-4)<<16,(y+(probey*i)-4)<<16,spriteSize,0,SPINNINGNUKEICON+(((totalclock>>3))%7),sh,0,10,0,0,xdim-1,ydim-1);
 
     if( KB_KeyPressed(sc_Space) || KB_KeyPressed( sc_kpad_Enter ) || KB_KeyPressed( sc_Enter )
-#ifdef POCKET
+#ifdef OPENFPGA
         || KB_KeyPressed( 0x1D )   /* A (right) = accept */
 #endif
         || (LMB))// && !onbar) )
@@ -974,20 +974,20 @@ int probeXduke(int x,int y,int i,int n, int32_t spriteSize)
         KB_ClearKeyDown( sc_Enter );
         KB_ClearKeyDown( sc_Space );
         KB_ClearKeyDown( sc_kpad_Enter );
-#ifdef POCKET
+#ifdef OPENFPGA
         KB_ClearKeyDown( 0x1D );
 #endif
         return(probey);
     }
     else if( KB_KeyPressed( sc_Escape )
-#ifdef POCKET
+#ifdef OPENFPGA
         || KB_KeyPressed( 0x1E )   /* B (bottom) = back */
 #endif
         || (RMB) )
     {
         onbar = 0;
         KB_ClearKeyDown( sc_Escape );
-#ifdef POCKET
+#ifdef OPENFPGA
         KB_ClearKeyDown( 0x1E );
 #endif
         sound(EXITMENUSOUND);
@@ -1314,8 +1314,8 @@ void dispnames(void)
     rotatesprite(99<<16,50<<16,65536L,512,WINDOWBORDER1,24,0,10,0,0,xdim-1,ydim-1);
     rotatesprite(103<<16,144<<16,65536L,1024+512,WINDOWBORDER1,24,0,10,0,0,xdim-1,ydim-1);
 
-#ifdef POCKET
-    for (x = 0; x < POCKET_MAXSAVES; x++)
+#ifdef OPENFPGA
+    for (x = 0; x < D3D_MAXSAVES; x++)
         minitext(c, 48 + 12 * x, ud.savegame[x], 2, 10+16);
 #else
     minitext(c,48,ud.savegame[0],2,10+16);
@@ -1941,7 +1941,7 @@ void menus(void)
             if( KB_KeyPressed(sc_Space) || KB_KeyPressed(sc_Enter) || KB_KeyPressed(sc_kpad_Enter) || KB_KeyPressed(sc_Y) || KB_KeyPressed(0x1D) || LMB )
             {
                 KB_FlushKeyboardQueue();
-#ifdef POCKET
+#ifdef OPENFPGA
                 /* Auto-generate new name for overwrite */
                 sprintf(&ud.savegame[current_menu-2000][0], "E%dL%d SK%d",
                         1+ud.volume_number, 1+ud.level_number,
@@ -3376,7 +3376,7 @@ else
                 sprintf(text,"EPISODE: %-2d / LEVEL: %-2d / SKILL: %-2d",1+ud.volume_number,1+ud.level_number,ud.player_skill);
                 gametext(160,170,text,0,2+8+16);
 
-#ifdef POCKET
+#ifdef OPENFPGA
                 /* No keyboard — name already set, act as if Enter pressed */
                 x = 1;
 #else
@@ -3428,8 +3428,8 @@ else
 
            last_threehundred = probey;
 
-#ifdef POCKET
-            x = probe(c+68,54,12,POCKET_MAXSAVES);
+#ifdef OPENFPGA
+            x = probe(c+68,54,12,D3D_MAXSAVES);
 #else
             x = probe(c+68,54,12,10);
 #endif
@@ -3514,7 +3514,7 @@ else
                         {
                             KB_FlushKeyboardQueue();
                             current_menu = (360+x);
-#ifdef POCKET
+#ifdef OPENFPGA
                             /* No keyboard — auto-generate save name */
                             sprintf(&ud.savegame[x][0], "E%dL%d SK%d",
                                     1+ud.volume_number, 1+ud.level_number,

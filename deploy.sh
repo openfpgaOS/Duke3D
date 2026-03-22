@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# openfpgaOS SDK — Deploy to Pocket SD Card
+# openfpgaOS SDK — Deploy to SD Card
 #
 # Deploys the openfpgaOS core with all bundled apps + your app to the SD card.
 # Auto-detects the SD card or uses the path provided.
 #
 # Usage:
-#   ./deploy.sh                     Auto-detect Pocket SD card
+#   ./deploy.sh                     Auto-detect SD card
 #   ./deploy.sh /mnt/sdcard         Deploy to specific path
 #
 
@@ -23,7 +23,7 @@ CORE_ID="ThinkElastic.openfpgaOS"
 PLATFORM="openfpgaos"
 
 # ── Find SD card ───────────────────────────────────────────────────
-find_pocket_sd() {
+find_sd() {
     for mount in /run/media/"$USER"/*; do
         if [ -d "$mount/Cores" ] && [ -d "$mount/Assets" ]; then
             echo "$mount"
@@ -34,9 +34,9 @@ find_pocket_sd() {
 
 SDCARD="$1"
 if [ -z "$SDCARD" ]; then
-    SDCARD="$(find_pocket_sd)"
+    SDCARD="$(find_sd)"
     if [ -z "$SDCARD" ]; then
-        echo "Error: No Analogue Pocket SD card found"
+        echo "Error: No openfpgaOS SD card found"
         echo "Usage: $0 [/path/to/sdcard]"
         exit 1
     fi

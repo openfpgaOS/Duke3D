@@ -1,8 +1,8 @@
-# PocketDukeNukem — Duke Nukem 3D for Analogue Pocket (SDK fork)
+# DukeNukem3D — Duke Nukem 3D for openfpgaOS (SDK fork)
 #
 # Usage:
 #   make              Build Duke3D + bundled SDK apps → build/sdk/
-#   make deploy       Copy to Pocket SD card
+#   make deploy       Copy to SD card
 #   make clean        Remove all build artifacts
 #   make package      Package Duke3D standalone core as ZIP
 

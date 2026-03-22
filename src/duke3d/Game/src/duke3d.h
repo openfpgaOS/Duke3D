@@ -38,7 +38,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
   #endif
 #endif
 
-#if UNIX && !defined(POCKET)
+#if UNIX && !defined(OPENFPGA)
 #include "dukeunix.h"
 #endif
 

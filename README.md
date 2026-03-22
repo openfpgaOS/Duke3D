@@ -1,6 +1,6 @@
-# Duke Nukem 3D for Analogue Pocket
+# Duke Nukem 3D for openfpgaOS
 
-Play Duke Nukem 3D on the [Analogue Pocket](https://www.analogue.co/pocket) — the full BUILD engine running natively on the Pocket's FPGA via [openfpgaOS](https://github.com/ThinkElastic/openfpgaOS).
+Play Duke Nukem 3D on [openfpgaOS](https://github.com/ThinkElastic/openfpgaOS) — the full BUILD engine running natively on RISC-V via openfpgaOS.
 
 ## Features
 
@@ -9,14 +9,14 @@ Play Duke Nukem 3D on the [Analogue Pocket](https://www.analogue.co/pocket) — 
 - 10 save game slots (256KB each, LZW compressed)
 - Sound effects (VOC playback)
 - MIDI music support
-- Runs as a standalone core — own entry in the Pocket menu
+- Runs as a standalone core — own entry in the openfpgaOS menu
 
 ## Installation
 
-1. Download the [latest release](https://github.com/thinkelastic/PocketDukeNukem3D/releases)
-2. Extract the ZIP to your Analogue Pocket SD card root
+1. Download the [latest release](https://github.com/thinkelastic/DukeNukem3D/releases)
+2. Extract the ZIP to your SD card root
 3. Copy `duke3d.grp` to `Assets/duke3d/common/` on the SD card
-4. The game appears in the Pocket menu under "Duke Nukem 3D"
+4. The game appears in the menu under "Duke Nukem 3D"
 
 ### Where to get duke3d.grp
 
@@ -37,8 +37,8 @@ The `.grp` file is the game data archive — it is not included in this release.
 ### Build
 
 ```bash
-git clone https://github.com/thinkelastic/PocketDukeNukem3D.git
-cd PocketDukeNukem3D
+git clone https://github.com/thinkelastic/DukeNukem3D.git
+cd DukeNukem3D
 make
 ```
 
@@ -52,7 +52,7 @@ This builds:
 make deploy
 ```
 
-Auto-detects the Pocket SD card and copies everything. You still need to manually copy `duke3d.grp`.
+Auto-detects the SD card and copies everything. You still need to manually copy `duke3d.grp`.
 
 ### Package for distribution
 
@@ -84,7 +84,7 @@ SD Card/
 
 ## Controls
 
-| Pocket | Duke3D |
+| Button | Duke3D |
 |--------|--------|
 | D-pad | Move / Strafe |
 | A | Fire |
@@ -99,13 +99,13 @@ SD Card/
 ## Project Structure
 
 ```
-PocketDukeNukem3D/
+DukeNukem3D/
 ├── src/
 │   ├── duke3d/              ← Duke3D source code
 │   │   ├── Engine/src/      ← BUILD engine (rendering, file I/O)
 │   │   ├── Game/src/        ← Duke3D game logic, menus, AI
-│   │   ├── pocket_save.c    ← Save system (openfpgaOS save slots)
-│   │   ├── pocket_audio.c   ← Audio (VOC playback via of_mixer)
+│   │   ├── d3d_save.c       ← Save system (openfpgaOS save slots)
+│   │   ├── d3d_audio.c      ← Audio (VOC playback via of_mixer)
 │   │   └── posix_shim.c     ← POSIX I/O → openfpgaOS syscalls
 │   ├── apps/                ← Bundled openfpgaOS demo apps
 │   └── sdk/                 ← openfpgaOS SDK (headers, libc, CRT)
@@ -133,7 +133,7 @@ make clean && make
 - **Audio:** 48 kHz stereo PCM, 4-channel mixer
 - **Memory:** 64MB SDRAM, 2.5MB CRAM1 PSRAM (saves)
 - **Engine:** BUILD engine (Ken Silverman), adapted for bare-metal RISC-V
-- **OS:** [openfpgaOS](https://github.com/ThinkElastic/openfpgaOS) — kernel provides libc, file I/O, syscalls
+- **OS:** [openfpgaOS](https://github.com/ThinkElastic/openfpgaOS) — RISC-V operating system for FPGA platforms
 
 ## Acknowledgements
 
@@ -141,7 +141,7 @@ make clean && make
 - **3D Realms / Apogee** — Duke Nukem 3D
 - **Jonathon Fowler** — JFDuke3D (modern source port this is based on)
 - **dyreschlock** — Platform image
-- **[openfpgaOS](https://github.com/ThinkElastic/openfpgaOS)** — RISC-V operating system for Analogue Pocket
+- **[openfpgaOS](https://github.com/ThinkElastic/openfpgaOS)** — RISC-V operating system for FPGA platforms
 - **[openfpgaOS SDK](https://github.com/ThinkElastic/openfpgaOS-SDK)** — Build system and API
 
 ## License

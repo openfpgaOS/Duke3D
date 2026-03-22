@@ -236,7 +236,7 @@ uint8_t  loadsound(uint16_t num)
 
     Sound[num].lock = 200;
 
-#ifdef POCKET
+#ifdef OPENFPGA
     /* Use malloc for aligned, non-evictable sound buffers */
     if (Sound[num].ptr == NULL)
         Sound[num].ptr = (uint8_t *)malloc(l);
@@ -251,9 +251,9 @@ uint8_t  loadsound(uint16_t num)
 
 int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 {
-#ifdef POCKET
+#ifdef OPENFPGA
     {
-        extern int pocket_sound_play(int, int, int);
+        extern int d3d_sound_play(int, int, int);
         int32_t sndist;
 
         if (num < 0 || num >= NUM_SOUNDS || !SoundToggle)
@@ -268,9 +268,9 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
             /* Scale volume by distance */
             int vol = 255 - (sndist >> 5);
             if (vol < 32) return -1;
-            pocket_sound_play(num, soundpr[num], vol);
+            d3d_sound_play(num, soundpr[num], vol);
         } else {
-            pocket_sound_play(num, soundpr[num], 200);
+            d3d_sound_play(num, soundpr[num], 200);
         }
         return 0;
     }
@@ -417,9 +417,9 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 
 void sound(short num)
 {
-#ifdef POCKET
-    extern int pocket_sound_play(int, int, int);
-    pocket_sound_play(num, soundpr[num], 255);
+#ifdef OPENFPGA
+    extern int d3d_sound_play(int, int, int);
+    d3d_sound_play(num, soundpr[num], 255);
     return;
 #endif
     short pitch,pitche,pitchs,cx;
@@ -487,7 +487,7 @@ int spritesound(uint16_t num, short i)
 
 void stopsound(short num)
 {
-#ifdef POCKET
+#ifdef OPENFPGA
     (void)num;
     return;
 #endif

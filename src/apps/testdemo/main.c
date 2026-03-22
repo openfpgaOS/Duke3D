@@ -710,7 +710,7 @@ static void test_interact(void) {
     section_start("Interact");
 
     /* Read interact variables — should return default values or
-     * whatever the user set in the Pocket menu. Just verify
+     * whatever the user set in the openfpgaOS menu. Just verify
      * the read doesn't crash and returns a sane value. */
     uint32_t v0 = of_interact_get(0);
     uint32_t v1 = of_interact_get(1);

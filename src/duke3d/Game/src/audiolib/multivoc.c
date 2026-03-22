@@ -92,7 +92,7 @@ static int MV_FooMemory;
 static void* MV_BufferDescriptor;
 static int   MV_BufferEmpty[ NumberOfBuffers ];
 char *MV_MixBuffer[ NumberOfBuffers + 1 ];
-#ifdef POCKET
+#ifdef OPENFPGA
 float *MV_FooBuffer = NULL;
 #else
 double *MV_FooBuffer = NULL;
@@ -255,7 +255,7 @@ static void MV_Mix( VoiceNode *voice )
    length               = MixBufferSize;
    FixedPointBufferSize = voice->FixedPointBufferSize;
 
-#ifdef POCKET
+#ifdef OPENFPGA
    /* Mix directly into the output buffer — bypass FooBuffer (double/float)
       to avoid alignment and type-punning issues on RISC-V */
    MV_MixDestination    = MV_MixBuffer[ MV_MixPage ];
@@ -271,7 +271,7 @@ static void MV_Mix( VoiceNode *voice )
    if ( ( MV_Channels == 2 ) && ( IS_QUIET( MV_LeftVolume ) ) )
       {
       MV_LeftVolume      = MV_RightVolume;
-#ifdef POCKET
+#ifdef OPENFPGA
       MV_MixDestination += MV_SampleSize / MV_Channels;  /* skip one sample */
 #else
       MV_MixDestination += 8;  /* skip one double */
@@ -407,7 +407,7 @@ void MV_ServiceVoc
 	}
 	
 	{
-#ifdef POCKET
+#ifdef OPENFPGA
 		/* Clear the output buffer directly with silence */
 		ClearBuffer_DW( MV_MixBuffer[ MV_MixPage ], MV_Silence, MV_BufferSize >> 2 );
 #else
@@ -458,8 +458,8 @@ void MV_ServiceVoc
 		if (MV_ReverbTable != -1) MV_FPReverb(MV_ReverbTable);
 	}
 
-#ifdef POCKET
-	/* On Pocket we mix directly into MV_MixBuffer, no downmix needed */
+#ifdef OPENFPGA
+	/* On openfpgaOS we mix directly into MV_MixBuffer, no downmix needed */
 #else
 	{
 		char *dest;
@@ -2299,7 +2299,7 @@ int MV_Init
 
    // Set Mixer to play stereo digitized sound
    MV_SetMixMode( numchannels, samplebits );
-#ifdef POCKET
+#ifdef OPENFPGA
    MV_ReverbDelay = 0;  /* Disable reverb — uses double* which needs 8-byte alignment */
 #else
    MV_ReverbDelay = 14320; // MV_BufferSize * 3;
@@ -2320,7 +2320,7 @@ int MV_Init
    MV_SetVolume( MV_MaxTotalVolume );
 
 
-#ifdef POCKET
+#ifdef OPENFPGA
    MV_FooMemory = sizeof(float) * MixBufferSize * numchannels + 1024;
 #else
    MV_FooMemory = sizeof(double) * MixBufferSize * numchannels + 1024;

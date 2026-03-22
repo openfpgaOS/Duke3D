@@ -1,9 +1,9 @@
 /*
- * of_interact.h -- Analogue Pocket interact menu API
+ * of_interact.h -- openfpgaOS interact menu API
  *
  * The APF interact system writes option values directly to SDRAM
  * at fixed addresses. Apps read these values to get user settings
- * from the Pocket menu (opened by pressing the menu button).
+ * from the openfpgaOS menu (opened by pressing the menu button).
  *
  * Each variable occupies 4 bytes at INTERACT_BASE + (index * 4).
  * Variables are defined in dist/interact.json with addresses
@@ -25,7 +25,7 @@
 #define OF_INTERACT_MAX_VARS    64
 
 /* Read an interact variable by index (0-63).
- * Returns the 32-bit value set by the Pocket menu. */
+ * Returns the 32-bit value set by the openfpgaOS menu. */
 static inline uint32_t of_interact_get(int index) {
     if (index < 0 || index >= OF_INTERACT_MAX_VARS) return 0;
     volatile uint32_t *vars = (volatile uint32_t *)OF_INTERACT_UNCACHED;

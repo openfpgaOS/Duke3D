@@ -1,5 +1,5 @@
 /*
- * pocket_audio.c — Sound playback for Duke3D on openfpgaOS
+ * d3d_audio.c — Sound playback for Duke3D on openfpgaOS
  *
  * Uses the OS mixer (of_mixer.h) and codec (of_codec.h) APIs.
  * Game-specific GRP loading is kept here; mixing/resampling/VOC
@@ -21,13 +21,13 @@
 static int audio_initialized = 0;
 
 /* Forward declaration for idle hook registration */
-void pocket_audio_pump(void);
+void d3d_audio_pump(void);
 
 /* ================================================================
  * Public API
  * ================================================================ */
 
-void pocket_audio_init(void)
+void d3d_audio_init(void)
 {
     of_mixer_init(4, 48000);
     audio_initialized = 1;
@@ -37,7 +37,7 @@ void pocket_audio_init(void)
  * Play a sound effect. Loads from GRP on first use.
  * Returns voice handle or -1.
  */
-int pocket_sound_play(int num, int priority, int volume)
+int d3d_sound_play(int num, int priority, int volume)
 {
     if (!audio_initialized) return -1;
     if (num < 0 || num >= NUM_SOUNDS) return -1;
@@ -67,7 +67,7 @@ int pocket_sound_play(int num, int priority, int volume)
                          priority, volume);
 }
 
-void pocket_sound_stop_all(void)
+void d3d_sound_stop_all(void)
 {
     of_mixer_stop_all();
 }
@@ -77,7 +77,7 @@ void pocket_sound_stop_all(void)
  * the OS also pumps during DMA waits via of_mixer_pump()
  * in file_wait_complete().
  */
-void pocket_audio_pump(void)
+void d3d_audio_pump(void)
 {
     if (!audio_initialized) return;
     of_mixer_pump();

@@ -46,8 +46,8 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 
 #include "_functio.h"
 
-#ifdef POCKET
-#include "../../pocket_save.h"
+#ifdef OPENFPGA
+#include "../../d3d_save.h"
 #endif
 
 //
@@ -101,7 +101,7 @@ void CONFIG_GetSetupFilename( void )
    {
    int32 i;
 
-#ifdef POCKET
+#ifdef OPENFPGA
    /* Console port: no config file needed. */
    setupfilename[0] = '\0';
    return;
@@ -551,10 +551,10 @@ void readsavenames(void)
 {
     int32_t dummy;
     short i;
-#ifdef POCKET
-    PocketSaveFile *fil;
+#ifdef OPENFPGA
+    OfSaveFile *fil;
 
-    for (i = 0; i < POCKET_MAXSAVES; i++)
+    for (i = 0; i < D3D_MAXSAVES; i++)
     {
         /* Quick check: skip empty/erased save slots without calling dfread
          * (which would hang trying to decompress 0xFF garbage). */
@@ -623,9 +623,9 @@ void CONFIG_ReadSetup( void )
 
    printf("CONFIG_ReadSetup...\n");
 
-#ifdef POCKET
+#ifdef OPENFPGA
    /* Console port: no config file, just use hardcoded defaults.
-      The Pocket has no filesystem path for config files, and all
+      openfpgaOS has no filesystem path for config files, and all
       user-facing settings are fixed for the handheld. */
    CONFIG_SetDefaults();
    CONTROL_ClearAssignments();
@@ -811,7 +811,7 @@ void CONFIG_WriteSetup( void )
 
    if (!setupread) return;
 
-#ifdef POCKET
+#ifdef OPENFPGA
    /* Console port: no config file to write. */
    return;
 #endif

@@ -56,9 +56,9 @@ $(printf '=%.0s' $(seq 1 ${#GAME_NAME}))
 Version: $GAME_VERSION
 
 Installation:
-1. Extract this ZIP to your Analogue Pocket SD card root
+1. Extract this ZIP to your SD card root
 2. Merge with existing folders if prompted
-3. The game will appear in the Pocket menu
+3. The game will appear in the openfpgaOS menu
 
 Save files are created automatically on first use.
 EOF

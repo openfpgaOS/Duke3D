@@ -1,11 +1,11 @@
 /*
- * midi_pocket.c -- MIDI stub for openfpgaOS (Analogue Pocket)
+ * midi_of.c -- MIDI stub for openfpgaOS
  *
- * The Pocket hardware has no general-purpose MIDI synthesizer, so all
+ * openfpgaOS has no general-purpose MIDI synthesizer, so all
  * MUSIC_* entry points are stubbed to no-ops.  The OPM (YM2151) could
  * theoretically be driven for music, but that is out of scope here.
  *
- * This file replaces sdl_midi.c for the Pocket target.
+ * This file replaces sdl_midi.c for the openfpgaOS target.
  */
 
 #include <stdint.h>
@@ -16,7 +16,7 @@
 char *MUSIC_ErrorString(int ErrorNumber)
 {
     (void)ErrorNumber;
-    return "Pocket: no MIDI support.";
+    return "openfpgaOS: no MIDI support.";
 }
 
 /* ---- init / shutdown ----------------------------------------------- */
@@ -168,5 +168,5 @@ void MUSIC_RegisterTimbreBank(uint8_t *timbres)
 void PlayMusic(char *fileName)
 {
     (void)fileName;
-    /* no-op on Pocket */
+    /* no-op on openfpgaOS */
 }

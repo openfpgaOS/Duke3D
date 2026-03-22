@@ -1,13 +1,13 @@
 //
-//  pocket_compat.h
-//  Duke3D - openfpgaOS (Pocket) platform compatibility
+//  of_compat.h
+//  Duke3D - openfpgaOS platform compatibility
 //
-//  Replaces unix_compat.h for the POCKET target.
+//  Replaces unix_compat.h for the OPENFPGA target.
 //  Does NOT include <sys/uio.h> or <dirent.h> (unavailable on this platform).
 //
 
-#ifndef Duke3D_pocket_compat_h
-#define Duke3D_pocket_compat_h
+#ifndef Duke3D_of_compat_h
+#define Duke3D_of_compat_h
 
 #include <stdint.h>
 #include <inttypes.h>
@@ -104,10 +104,10 @@ typedef void SDL_Rect;
 #endif
 
 // ── mkdir stub (Duke3D calls mkdir with 1 arg, POSIX needs 2) ───────────
-static inline int _pocket_mkdir(const char *path, ...) {
+static inline int _of_mkdir(const char *path, ...) {
     (void)path;
     return -1;
 }
-#define mkdir(...) _pocket_mkdir(__VA_ARGS__, 0)
+#define mkdir(...) _of_mkdir(__VA_ARGS__, 0)
 
-#endif /* Duke3D_pocket_compat_h */
+#endif /* Duke3D_of_compat_h */
