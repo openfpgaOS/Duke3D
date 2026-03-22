@@ -430,13 +430,20 @@ STUBEOF
     echo "  Edit it, run 'make', then 'make deploy'"
 fi
 
+# ── Set up git remote for SDK upstream tracking ──────────────────
+if git remote get-url origin 2>/dev/null | grep -qi "openfpgaOS-SDK"; then
+    git remote rename origin sdk-upstream 2>/dev/null && \
+        ok "Renamed origin → sdk-upstream (for SDK updates)"
+    echo "  Add your game's remote: git remote add origin <your-repo-url>"
+fi
+
 # ── Summary ────────────────────────────────────────────────────────
 echo
 echo -e "${GREEN}Core configured!${RESET}"
 echo "  Core output: $OUTPUT/"
-echo "  App source:  src/apps/$(basename "$APP_SRC_DIR")/main.c"
+echo "  App source:  src/$(basename "$APP_SRC_DIR")/main.c"
 echo
 echo "Next steps:"
-echo "  1. Edit src/apps/$(basename "$APP_SRC_DIR")/main.c"
+echo "  1. Edit src/$(basename "$APP_SRC_DIR")/main.c"
 echo "  2. make"
 echo "  3. make deploy"
