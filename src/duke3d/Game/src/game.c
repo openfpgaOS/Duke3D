@@ -52,10 +52,8 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "keyboard.h"
 #include "util_lib.h"
 #include "function.h"
+#include "../../d3d_audio.h"
 
-#ifdef OPENFPGA
-extern void of_print(const char *);
-#endif
 #include "control.h"
 #include "sounds.h"
 #include "soundefs.h"
@@ -7705,19 +7703,17 @@ static int of_progress_row;
 
 static void of_progress_init(void)
 {
-    extern void of_print(const char *);
     /* Clear screen and show title */
-    of_print("\033[2J");      /* clear terminal */
-    of_print("\033[6;1H");    /* row 6 (centered-ish on 30-row display) */
-    of_print("\033[93m");     /* bright yellow */
-    of_print("    Hail to the King, baby!\n");
-    of_print("\033[0m\n");    /* reset + blank line */
+    printf("%s", "\033[2J");      /* clear terminal */
+    printf("%s", "\033[6;1H");    /* row 6 (centered-ish on 30-row display) */
+    printf("%s", "\033[93m");     /* bright yellow */
+    printf("%s", "    Hail to the King, baby!\n");
+    printf("%s", "\033[0m\n");    /* reset + blank line */
     of_progress_row = 8;  /* bar on row 8 */
 }
 
 void of_progress(int pct)
 {
-    extern void of_print(const char *);
     char bar[48];
     int filled = pct * 20 / 100;
     int i = 0;
@@ -7744,7 +7740,7 @@ void of_progress(int pct)
     else { bar[i++] = ' '; bar[i++]='0'+pct; }
     bar[i++] = '%';
     bar[i++] = '\0';
-    of_print(bar);
+    printf("%s", bar);
 }
 #endif
 
@@ -7762,12 +7758,9 @@ void Startup(void)
    CONFIG_ReadKeys();
    SoundToggle = 1;
    MusicToggle = 0;
-   FXDevice = 0;   /* SC_SoundScape — menu shows sound ON, audio via of_audio */
+   FXDevice = 0;   /* SC_SoundScape — menu shows sound ON, audio via d3d_audio */
    NumVoices = 0;
-   {
-       extern void d3d_audio_init(void);
-       d3d_audio_init();
-   }
+   d3d_audio_init();
    NumChannels = 1;
    NumBits = 8;
    MixRate = 11025;
@@ -8190,10 +8183,14 @@ int main(int argc,char  **argv)
 	//		"it. Please report new bugs at xd@m-klein.com or on DX forums. Thx!\n\n");
 	
 #ifdef OPENFPGA
-    extern void of_register_file_slots(void);
-    extern void of_print(const char *);
-
-    of_register_file_slots();
+    /* Register data slot filenames for fopen/open() lookup.
+     * The OS kernel resolves filenames to slot IDs via this table. */
+    {
+        extern void of_file_slot_register(unsigned int slot_id, const char *filename);
+        of_file_slot_register(1, "os.bin");
+        of_file_slot_register(2, "duke3d.elf");
+        of_file_slot_register(3, "duke3d.grp");
+    }
 #else
     for (int i = 0; i < argc; ++i)
         printf("ARG %d: %s\n", i, argv[i]);
