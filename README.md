@@ -1,177 +1,149 @@
-# openfpgaOS SDK
+# Duke Nukem 3D for Analogue Pocket
 
-Build games for the [Analogue Pocket](https://www.analogue.co/pocket) in C.
+Play Duke Nukem 3D on the [Analogue Pocket](https://www.analogue.co/pocket) — the full BUILD engine running natively on the Pocket's FPGA via [openfpgaOS](https://github.com/ThinkElastic/openfpgaOS).
 
-## Getting Started
+## Features
 
-### 1. Fork and clone
+- Full Duke Nukem 3D gameplay (shareware or registered)
+- 320×240 rendering at up to 60fps
+- 10 save game slots (256KB each, LZW compressed)
+- Sound effects (VOC playback)
+- MIDI music support
+- Runs as a standalone core — own entry in the Pocket menu
 
-```bash
-git clone https://github.com/YOUR_USERNAME/openfpgaOS-SDK.git
-cd openfpgaOS-SDK
-```
+## Installation
 
-### 2. Check your toolchain
+1. Download the [latest release](https://github.com/thinkelastic/PocketDukeNukem3D/releases)
+2. Extract the ZIP to your Analogue Pocket SD card root
+3. Copy `duke3d.grp` to `Assets/duke3d/common/` on the SD card
+4. The game appears in the Pocket menu under "Duke Nukem 3D"
 
-```bash
-./setup.sh
-```
+### Where to get duke3d.grp
 
-You need a RISC-V GCC:
-- **Arch:** `pacman -S riscv64-elf-gcc`
-- **macOS:** `brew install riscv64-elf-gcc`
-- **Ubuntu:** `apt install gcc-riscv64-unknown-elf`
+- **Shareware:** Download from [3D Realms](https://3drealms.com) or various abandonware sites
+- **Registered:** From your original Duke Nukem 3D purchase (Steam, GOG, etc.)
 
-### 3. Create your game
+The `.grp` file is the game data archive — it is not included in this release.
 
-```bash
-./customize.sh
-```
+## Building from Source
 
-Follow the prompts. This creates:
-- `src/<gamename>/main.c` — a hello world stub to start from
-- `dist/<gamename>/` — the core packaging config
+### Requirements
 
-### 4. Build and deploy
+- RISC-V GCC targeting `rv32imafc` / `ilp32f`
+  - **Arch:** `pacman -S riscv64-elf-gcc`
+  - **macOS:** `brew install riscv64-elf-gcc`
+  - **Ubuntu:** `apt install gcc-riscv64-unknown-elf`
 
-```bash
-make               # builds all apps → build/sdk/
-make deploy         # copies to Pocket SD card
-```
-
-## Writing Your Game
-
-Edit `src/<gamename>/main.c`:
-
-```c
-#include "of.h"
-#include <stdio.h>
-
-int main(void) {
-    of_video_init();
-
-    uint8_t *fb = of_video_surface();
-    for (int y = 0; y < 240; y++)
-        for (int x = 0; x < 320; x++)
-            fb[y * 320 + x] = x ^ y;
-
-    of_video_flip();
-    printf("Hello world!\n");
-
-    while (1) {
-        of_input_poll();
-        if (of_btn_pressed(OF_BTN_A)) {
-            // handle input
-        }
-        of_delay_ms(16);
-    }
-}
-```
-
-### Standard C library
-
-The SDK provides standard headers through the OS kernel's jump table:
-
-```c
-#include <stdio.h>    // printf, fprintf, sprintf, sscanf,
-                      // fopen, fclose, fread, fwrite, fseek, ftell
-#include <stdlib.h>   // malloc, free, calloc, realloc, atoi, atof,
-                      // strtol, strtod, qsort, bsearch, rand
-#include <string.h>   // memcpy, memset, strlen, strcmp, strdup,
-                      // strcat, strtok, memchr, ...
-#include <math.h>     // sinf, cosf, sqrtf, powf, logf, fabsf, ...
-#include <ctype.h>    // toupper, tolower, isalpha, isdigit, isspace, ...
-```
-
-No musl or newlib needed — everything runs through the OS.
-
-### API modules
-
-Include `"of.h"` for the full API:
-
-| Module | Description |
-|--------|-------------|
-| **Video** | 320×240 indexed framebuffer, 256-color palette, double buffering |
-| **Audio** | 48 kHz stereo PCM, sample streaming, YM2151 FM synthesis |
-| **Input** | D-pad, face buttons, shoulders, triggers, joystick (2 players) |
-| **Timer** | Microsecond/millisecond timing, delays |
-| **Save** | Up to 10 persistent save slots, up to 256KB each |
-| **File** | Read data files from SD card (up to 4 data slots) |
-
-### Save system
-
-```c
-of_save_write(0, data, 0, sizeof(data));
-of_save_flush_size(0, sizeof(data));
-
-of_save_read(0, data, 0, sizeof(data));
-```
-
-### PC build
-
-Test on your computer with SDL2:
+### Build
 
 ```bash
-make pc
-./app_pc
+git clone https://github.com/thinkelastic/PocketDukeNukem3D.git
+cd PocketDukeNukem3D
+make
 ```
 
-## Scripts
+This builds:
+- `build/Duke3D/` — standalone Duke3D core (copy to SD card)
+- `build/sdk/` — openfpgaOS shared core with bundled demo apps
 
-| Script | What it does |
-|--------|-------------|
-| `setup.sh` | Checks RISC-V toolchain is installed |
-| `customize.sh` | Creates a new game: stub source + core config |
-| `deploy.sh` | Copies `build/sdk/` to the Pocket SD card |
-| `package.sh` | ZIPs a game core for distribution |
-
-### Packaging a standalone game
-
-After `customize.sh`, your game can be packaged as its own Pocket menu entry:
+### Deploy to SD card
 
 ```bash
-./package.sh GameName      # creates releases/GameName.zip
+make deploy
 ```
 
-Users extract the ZIP to their SD card root.
+Auto-detects the Pocket SD card and copies everything. You still need to manually copy `duke3d.grp`.
 
-## Updating
-
-When a new SDK version is released:
+### Package for distribution
 
 ```bash
-git remote add upstream https://github.com/ThinkElastic/openfpgaOS-SDK.git
-git fetch upstream
-git rebase upstream/main
-make clean && make
+./package.sh Duke3D
+# Creates releases/Duke3D-v1.0.0.zip
 ```
 
-Your game source (`src/<gamename>/`) won't conflict — SDK files are clearly separated.
+## SD Card Layout
+
+After installation, your SD card should have:
+
+```
+SD Card/
+├── Cores/ThinkElastic.Duke3D/
+│   ├── bitstream.rbf_r
+│   ├── loader.bin
+│   ├── core.json
+│   └── data.json
+├── Assets/duke3d/common/
+│   ├── duke3d.elf          ← game binary
+│   ├── duke3d.grp          ← game data (you provide this)
+│   └── os.bin              ← openfpgaOS kernel
+├── Platforms/
+│   └── duke3d.json
+└── Saves/duke3d/common/
+    └── duke3d_0.sav ...    ← created automatically
+```
+
+## Controls
+
+| Pocket | Duke3D |
+|--------|--------|
+| D-pad | Move / Strafe |
+| A | Fire |
+| B | Open / Use |
+| X | Jump |
+| Y | Crouch |
+| L | Previous weapon |
+| R | Next weapon |
+| Start | Menu / Pause |
+| Select | Map |
 
 ## Project Structure
 
 ```
-openfpgaOS-SDK/
-├── Makefile              ← build all apps, create build/sdk/
+PocketDukeNukem3D/
 ├── src/
-│   ├── <gamename>/       ← YOUR game source (created by customize.sh)
-│   ├── apps/             ← bundled example apps
-│   └── sdk/              ← headers, libc, CRT, build rules
-│       ├── include/      ← openfpgaOS API (of.h, of_video.h, ...)
-│       ├── libc/         ← C standard library wrappers
-│       ├── crt/          ← startup code + linker script
-│       └── pc/           ← SDL2 shim for desktop builds
+│   ├── duke3d/              ← Duke3D source code
+│   │   ├── Engine/src/      ← BUILD engine (rendering, file I/O)
+│   │   ├── Game/src/        ← Duke3D game logic, menus, AI
+│   │   ├── pocket_save.c    ← Save system (openfpgaOS save slots)
+│   │   ├── pocket_audio.c   ← Audio (VOC playback via of_mixer)
+│   │   └── posix_shim.c     ← POSIX I/O → openfpgaOS syscalls
+│   ├── apps/                ← Bundled openfpgaOS demo apps
+│   └── sdk/                 ← openfpgaOS SDK (headers, libc, CRT)
 ├── dist/
-│   ├── sdk/              ← shared core configs
-│   └── <gamename>/       ← standalone game core (from customize.sh)
-├── runtime/              ← FPGA bitstream, OS binary, loader
-├── build/                ← build output (gitignored)
-├── customize.sh
-├── deploy.sh
-├── package.sh
-└── setup.sh
+│   ├── Duke3D/              ← Standalone core packaging config
+│   └── sdk/                 ← Shared openfpgaOS core config
+├── runtime/                 ← FPGA bitstream, Chip32 loader, OS binary
+└── Makefile
 ```
 
-## Reference
+## Updating from SDK
 
-This SDK builds apps for [openfpgaOS](https://github.com/ThinkElastic/openfpgaOS) — a RISC-V operating system (VexRiscv rv32imafc, 100 MHz) running on the Analogue Pocket's Cyclone V FPGA. See the openfpgaOS repo for architecture details, FPGA design, and OS internals.
+This repo tracks the [openfpgaOS SDK](https://github.com/ThinkElastic/openfpgaOS-SDK) as an upstream remote. To pull SDK updates:
+
+```bash
+git fetch sdk-upstream
+git merge sdk-upstream/main
+make clean && make
+```
+
+## Technical Details
+
+- **CPU:** VexRiscv RISC-V (rv32imafc, 100 MHz) on Cyclone V FPGA
+- **Video:** 320×240 8-bit indexed color, 256-entry palette, double-buffered
+- **Audio:** 48 kHz stereo PCM, 4-channel mixer
+- **Memory:** 64MB SDRAM, 2.5MB CRAM1 PSRAM (saves)
+- **Engine:** BUILD engine (Ken Silverman), adapted for bare-metal RISC-V
+- **OS:** [openfpgaOS](https://github.com/ThinkElastic/openfpgaOS) — kernel provides libc, file I/O, syscalls
+
+## Acknowledgements
+
+- **Ken Silverman** — BUILD engine
+- **3D Realms / Apogee** — Duke Nukem 3D
+- **Jonathon Fowler** — JFDuke3D (modern source port this is based on)
+- **dyreschlock** — Platform image
+- **[openfpgaOS](https://github.com/ThinkElastic/openfpgaOS)** — RISC-V operating system for Analogue Pocket
+- **[openfpgaOS SDK](https://github.com/ThinkElastic/openfpgaOS-SDK)** — Build system and API
+
+## License
+
+Duke Nukem 3D source code is released under the GPL. The BUILD engine is released under the Ken Silverman license. openfpgaOS components are under the openfpgaOS license. Game data (`duke3d.grp`) is not included and must be obtained separately.
