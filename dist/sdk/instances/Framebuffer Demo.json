@@ -1,0 +1,27 @@
+{
+    "instance": {
+        "magic": "APF_VER_1",
+        "variant_select": {
+            "id": 666,
+            "select": false
+        },
+        "data_slots": [
+            {
+                "id": 1,
+                "filename": "os.bin"
+            },
+            {
+                "id": 2,
+                "filename": "fbdemo.elf"
+            },
+            {
+                "id": 3,
+                "filename": "ofos.png"
+            },
+            {
+                "id": 10,
+                "filename": "Demo.sav"
+            }
+        ]
+    }
+}

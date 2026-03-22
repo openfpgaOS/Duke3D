@@ -1,0 +1,8 @@
+*.o
+*.elf
+app_pc
+save_*.bin
+build/
+releases/
+# Game data (too large to commit)
+*.grp
