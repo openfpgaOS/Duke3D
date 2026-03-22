@@ -16,7 +16,7 @@
 #include <math.h>
 #include <SDL2/SDL.h>
 
-#include "of.h"     /* of_file_slot_register */
+#include "of.h"
 #include "celeste.h"
 
 /* tilemap data (extracted from PICO-8 cartridge) */

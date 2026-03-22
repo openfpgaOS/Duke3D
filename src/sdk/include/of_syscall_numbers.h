@@ -26,8 +26,8 @@
 /* Audio */
 #define OF_SYS_AUDIO_WRITE             0x1010
 #define OF_SYS_AUDIO_GET_FREE          0x1011
-#define OF_SYS_OPM_WRITE               0x1012
-#define OF_SYS_OPM_RESET               0x1013
+#define OF_SYS_OPL_WRITE               0x1012
+#define OF_SYS_OPL_RESET               0x1013
 #define OF_SYS_AUDIO_INIT              0x1014
 
 /* Input */

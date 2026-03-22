@@ -50,7 +50,7 @@ make -C "$SDK_DIR/src/apps" 2>&1 | grep -v "^make" || true
 
 # ── Validate runtime ──────────────────────────────────────────────
 if [ ! -f "$RUNTIME/bitstream.rbf_r" ]; then
-    echo "Error: runtime/bitstream.rbf_r not found. Run ./update.sh first."
+    echo "Error: runtime/bitstream.rbf_r not found. Run ./publish.sh from openfpgaOS, or download runtime from releases."
     exit 1
 fi
 

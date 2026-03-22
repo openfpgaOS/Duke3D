@@ -11,12 +11,12 @@ APPS = $(shell find . -maxdepth 1 -mindepth 1 -type d \
 all:
 	@for app in $(APPS); do \
 		echo "Building $$app..."; \
-		$(MAKE) -C $$app -f ../app.mk APP_DIR=$$app || exit 1; \
+		$(MAKE) -C $$app -f ../app.mk || exit 1; \
 	done
 
 clean:
 	@for app in $(APPS); do \
-		$(MAKE) -C $$app -f ../app.mk APP_DIR=$$app clean; \
+		$(MAKE) -C $$app -f ../app.mk clean; \
 	done
 
 .PHONY: all clean

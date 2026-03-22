@@ -6,8 +6,8 @@
 # as an independent core on openfpgaOS.
 #
 # Usage:
-#   ./buildcore.sh                 Interactive mode (prompts for each parameter)
-#   ./buildcore.sh --batch ...     Non-interactive mode (all parameters via flags)
+#   ./customize.sh                 Interactive mode (prompts for each parameter)
+#   ./customize.sh --batch ...     Non-interactive mode (all parameters via flags)
 #
 
 set -e
@@ -191,7 +191,7 @@ fi
 
 # ── Validate required inputs ───────────────────────────────────────
 [[ -z "$NAME" ]] && { echo "Error: --name required"; exit 1; }
-[[ -z "$ELF" ]]  && { echo "Error: --elf required"; exit 1; }
+[[ -z "$ELF" ]] && ELF=""
 [[ -z "$SHORT" ]] && SHORT=$(derive_short "$NAME")
 [[ -z "$PLATFORM" ]] && PLATFORM=$(echo "$SHORT" | tr '[:upper:]' '[:lower:]')
 [[ -z "$OUTPUT" ]] && OUTPUT="dist/$SHORT"

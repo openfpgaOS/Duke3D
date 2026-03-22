@@ -14,10 +14,7 @@ static void draw_hline(int w, int sep, char left, char mid, char right) {
 }
 
 int main(void) {
-    /* Register demo slot mappings */
-    of_file_slot_register(1, "os.bin");
-    of_file_slot_register(2, "slotdemo.elf");
-    of_file_slot_register(3, "test_data.bin");
+    /* FTAB auto-populates from Chip32 loader — no manual registration needed */
 
     printf("\033[2J\033[H");  /* clear screen, cursor home */
 

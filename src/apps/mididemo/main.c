@@ -1,6 +1,6 @@
 /*
  * openfpgaOS MIDI Demo Application
- * Plays a MIDI file (loaded from data slot 3) through the OPL2 (YM3812) FM synthesizer.
+ * Plays a MIDI file (loaded from data slot 3) through the OPL3 (YMF262) FM synthesizer.
  * Terminal displays playback status with note activity.
  *
  * Controls:
@@ -20,9 +20,9 @@
 static uint8_t midi_buf[MIDI_MAX_SIZE] __attribute__((aligned(512)));
 
 /* ======================================================================
- * OPL2 (YM3812) instrument presets
+ * OPL3 (YMF262) instrument presets
  *
- * OPL2 has 9 channels, each with 2 operators (modulator + carrier).
+ * OPL3 has 9 channels, each with 2 operators (modulator + carrier).
  * Register layout per instrument:
  *   [0]  = feedback/connection (reg 0xC0+ch): FB[3:1], CNT[0]
  *   Modulator (op 0):
@@ -42,7 +42,7 @@ static uint8_t midi_buf[MIDI_MAX_SIZE] __attribute__((aligned(512)));
 
 #define INST_SIZE 11
 
-/* OPL2 operator offset table: channels 0-8 map to register offsets.
+/* OPL3 operator offset table: channels 0-8 map to register offsets.
  * Modulator offsets: 0,1,2,8,9,10,16,17,18
  * Carrier offsets:   3,4,5,11,12,13,19,20,21 */
 static const uint8_t opl_mod_off[9] = { 0, 1, 2, 8, 9, 10, 16, 17, 18 };
@@ -124,9 +124,9 @@ static const uint8_t *gm_to_opl(int program) {
 }
 
 /* ======================================================================
- * MIDI note -> OPL2 F-Number/Block conversion
+ * MIDI note -> OPL3 F-Number/Block conversion
  *
- * OPL2 frequency registers:
+ * OPL3 frequency registers:
  *   0xA0+ch: F-Number low 8 bits
  *   0xB0+ch: KEY-ON[5], Block[4:2], F-Number high 2 bits[1:0]
  *
@@ -150,7 +150,7 @@ static void midi_note_to_opl(int note, uint8_t *flo, uint8_t *fhi_blk) {
     int oct = note / 12;
     int semi = note % 12;
 
-    /* Map MIDI octave to OPL2 block (0-7) */
+    /* Map MIDI octave to OPL3 block (0-7) */
     int block = oct - 1;
     if (block < 0) block = 0;
     if (block > 7) block = 7;
@@ -162,7 +162,7 @@ static void midi_note_to_opl(int note, uint8_t *flo, uint8_t *fhi_blk) {
 }
 
 /* ======================================================================
- * OPL2 channel management
+ * OPL3 channel management
  * ====================================================================== */
 
 #define OPL_CHANNELS 9
@@ -182,21 +182,21 @@ static void load_instrument(int ch, const uint8_t *p) {
     uint8_t car = opl_car_off[ch];
 
     /* Feedback/Connection */
-    of_audio_opm_write(0xC0 + ch, p[0]);
+    of_audio_opl_write(0xC0 + ch, p[0]);
 
     /* Modulator registers */
-    of_audio_opm_write(0x20 + mod, p[1]);
-    of_audio_opm_write(0x40 + mod, p[2]);
-    of_audio_opm_write(0x60 + mod, p[3]);
-    of_audio_opm_write(0x80 + mod, p[4]);
-    of_audio_opm_write(0xE0 + mod, p[5]);
+    of_audio_opl_write(0x20 + mod, p[1]);
+    of_audio_opl_write(0x40 + mod, p[2]);
+    of_audio_opl_write(0x60 + mod, p[3]);
+    of_audio_opl_write(0x80 + mod, p[4]);
+    of_audio_opl_write(0xE0 + mod, p[5]);
 
     /* Carrier registers */
-    of_audio_opm_write(0x20 + car, p[6]);
-    of_audio_opm_write(0x40 + car, p[7]);
-    of_audio_opm_write(0x60 + car, p[8]);
-    of_audio_opm_write(0x80 + car, p[9]);
-    of_audio_opm_write(0xE0 + car, p[10]);
+    of_audio_opl_write(0x20 + car, p[6]);
+    of_audio_opl_write(0x40 + car, p[7]);
+    of_audio_opl_write(0x60 + car, p[8]);
+    of_audio_opl_write(0x80 + car, p[9]);
+    of_audio_opl_write(0xE0 + car, p[10]);
 
     opl_ch_inst[ch] = p;
 }
@@ -237,7 +237,7 @@ static int alloc_channel(int midi_ch) {
         }
     }
     /* KEY-OFF stolen channel */
-    of_audio_opm_write(0xB0 + oldest, 0x00);
+    of_audio_opl_write(0xB0 + oldest, 0x00);
     opl_ch_note[oldest] = -1;
     opl_ch_midi[oldest] = midi_ch;
     load_instrument(oldest, inst);
@@ -253,9 +253,9 @@ static void opl_note_on(int midi_ch, int note, int vel) {
     midi_note_to_opl(note, &flo, &fhi_blk);
 
     /* KEY-OFF first to reset envelope if channel was releasing */
-    of_audio_opm_write(0xB0 + ch, fhi_blk);       /* freq hi + block, KEY-ON=0 */
-    of_audio_opm_write(0xA0 + ch, flo);            /* freq low */
-    of_audio_opm_write(0xB0 + ch, 0x20 | fhi_blk); /* KEY-ON */
+    of_audio_opl_write(0xB0 + ch, fhi_blk);       /* freq hi + block, KEY-ON=0 */
+    of_audio_opl_write(0xA0 + ch, flo);            /* freq low */
+    of_audio_opl_write(0xB0 + ch, 0x20 | fhi_blk); /* KEY-ON */
 }
 
 static void opl_note_off(int midi_ch, int note) {
@@ -264,7 +264,7 @@ static void opl_note_off(int midi_ch, int note) {
             /* KEY-OFF: clear bit 5 of 0xB0+ch, keep freq/block */
             uint8_t flo, fhi_blk;
             midi_note_to_opl(note, &flo, &fhi_blk);
-            of_audio_opm_write(0xB0 + i, fhi_blk);  /* KEY-ON=0 */
+            of_audio_opl_write(0xB0 + i, fhi_blk);  /* KEY-ON=0 */
             opl_ch_note[i] = -1;
             opl_ch_age[i] = opl_age_counter++;
             return;
@@ -274,7 +274,7 @@ static void opl_note_off(int midi_ch, int note) {
 
 static void all_notes_off(void) {
     for (int i = 0; i < OPL_CHANNELS; i++) {
-        of_audio_opm_write(0xB0 + i, 0x00);  /* KEY-OFF */
+        of_audio_opl_write(0xB0 + i, 0x00);  /* KEY-OFF */
         opl_ch_note[i] = -1;
         opl_ch_midi[i] = -1;
     }
@@ -418,7 +418,7 @@ static void draw_static_ui(void) {
     printf("\033[2J\033[H");  /* clear screen, cursor home */
     printf("    openfpgaOS MIDI Player\n");
     printf("    ======================\n\n");
-    printf(" OPL2 Channels:\n");
+    printf(" OPL3 Channels:\n");
     for (int i = 0; i < OPL_CHANNELS; i++)
         printf(" %d: --- ..  \n", i);
     printf("\n [PLAYING] \n");
@@ -481,12 +481,10 @@ static int load_midi_file(void) {
  * ====================================================================== */
 
 int main(void) {
-    of_file_slot_register(3, "music.mid");
+    of_audio_opl_reset();
 
-    of_audio_opm_reset();
-
-    /* Enable waveform select (OPL2 register 0x01 bit 5) */
-    of_audio_opm_write(0x01, 0x20);
+    /* Enable waveform select (OPL3 register 0x01 bit 5) */
+    of_audio_opl_write(0x01, 0x20);
 
     printf("\033[2J\033[H");  /* clear screen, cursor home */
     printf("    openfpgaOS MIDI Player\n");
@@ -520,8 +518,8 @@ int main(void) {
         if (state.buttons_pressed & OF_BTN_START) {
             if (midi_done) {
                 all_notes_off();
-                of_audio_opm_reset();
-                of_audio_opm_write(0x01, 0x20);
+                of_audio_opl_reset();
+                of_audio_opl_write(0x01, 0x20);
                 midi_init();
                 paused = 0;
                 midi_playing = 1;
@@ -535,8 +533,8 @@ int main(void) {
         }
         if (state.buttons_pressed & OF_BTN_SELECT) {
             all_notes_off();
-            of_audio_opm_reset();
-            of_audio_opm_write(0x01, 0x20);
+            of_audio_opl_reset();
+            of_audio_opl_write(0x01, 0x20);
             midi_init();
             paused = 0;
             midi_playing = 1;

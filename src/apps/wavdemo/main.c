@@ -81,8 +81,6 @@ static int wav_parse(const uint8_t *buf, uint32_t len, wav_info_t *info) {
 static int16_t resample_buf[RESAMPLE_BUF_SIZE * 2];  /* stereo pairs */
 
 int main(void) {
-    of_file_slot_register(WAV_SLOT_ID, "audio.wav");
-
     printf("\033[2J\033[H");  /* clear screen */
     printf("  WAV Player Demo\n\n");
     printf("  Loading WAV file...\n");
