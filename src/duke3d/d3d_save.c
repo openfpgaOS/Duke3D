@@ -1,17 +1,15 @@
 /*
  * d3d_save.c -- Save file I/O for openfpgaOS
  *
- * Each game save has its own nonvolatile data slot.
- * Game save N uses data slot id (D3D_SAVE_SLOT_BASE + N).
- * Uses of_save_read/write syscalls with offset within the slot.
+ * Each game save has its own nonvolatile save slot (0-9).
+ * Uses standard fopen("save_N")/fread/fwrite/fclose — the OS kernel
+ * handles slot mapping and auto-flushes to SD on fclose().
  * LZW compress/uncompress use the BUILD engine software implementation.
  */
 
 #include "d3d_save.h"
-#include "of_save.h"
 #include <stdint.h>
-
-extern int printf(const char *, ...);
+#include <stdio.h>
 
 /* Forward declarations for BUILD engine functions */
 extern void copybufbyte(void *S, void *D, int32_t c);
@@ -26,6 +24,24 @@ extern void  free(void *ptr);
 /* Static pool of save file handles */
 static OfSaveFile save_pool[D3D_MAXSAVES];
 static int      save_pool_used[D3D_MAXSAVES];
+
+/* Save slot name buffer */
+static char save_path[16];
+
+static const char *save_slot_path(int slot) {
+    /* Build "save_N" string */
+    save_path[0] = 's'; save_path[1] = 'a'; save_path[2] = 'v';
+    save_path[3] = 'e'; save_path[4] = '_';
+    if (slot >= 10) {
+        save_path[5] = '0' + (slot / 10);
+        save_path[6] = '0' + (slot % 10);
+        save_path[7] = '\0';
+    } else {
+        save_path[5] = '0' + slot;
+        save_path[6] = '\0';
+    }
+    return save_path;
+}
 
 /* ======================================================================
  * Public API
@@ -47,13 +63,27 @@ OfSaveFile *save_fopen(int slot, const char *mode) {
     sf->size      = D3D_SAVE_SIZE;
     sf->writing   = (mode[0] == 'w') ? 1 : 0;
 
+    /* Open the underlying OS save slot via POSIX */
+    sf->fp = fopen(save_slot_path(slot), sf->writing ? "r+b" : "rb");
+    if (!sf->fp) {
+        /* If r+b fails (new save), try wb for write */
+        if (sf->writing)
+            sf->fp = fopen(save_slot_path(slot), "wb");
+        if (!sf->fp)
+            return (OfSaveFile *)0;
+    }
+
     if (!sf->writing) {
         /* Read actual data size stored at offset 0 */
         uint32_t data_size = 0;
-        of_save_read(slot, &data_size, 0, 4);
+        fseek(sf->fp, 0, 0);
+        fread(&data_size, 4, 1, sf->fp);
         if (data_size > D3D_SAVE_HEADER && data_size <= D3D_SAVE_SIZE)
             sf->size = data_size;
     }
+
+    /* Position at data start */
+    fseek(sf->fp, D3D_SAVE_HEADER, 0);
 
     save_pool_used[idx] = 1;
     return sf;
@@ -67,7 +97,7 @@ unsigned int save_fread(void *buf, unsigned int size, unsigned int count,
     if (total > avail) total = avail;
     if (total == 0) return 0;
 
-    of_save_read(sf->game_slot, buf, sf->offset, total);
+    fread(buf, 1, total, sf->fp);
     sf->offset += total;
     return count;
 }
@@ -80,7 +110,7 @@ unsigned int save_fwrite(const void *buf, unsigned int size, unsigned int count,
     if (total > avail) total = avail;
     if (total == 0) return 0;
 
-    of_save_write(sf->game_slot, buf, sf->offset, total);
+    fwrite(buf, 1, total, sf->fp);
     sf->offset += total;
     return count;
 }
@@ -96,6 +126,7 @@ int save_fseek(OfSaveFile *sf, long offset, int whence) {
     if (new_off < 0) new_off = 0;
     if (new_off > (long)sf->size) new_off = (long)sf->size;
     sf->offset = (uint32_t)new_off;
+    fseek(sf->fp, sf->offset, 0);
     return 0;
 }
 
@@ -105,15 +136,18 @@ void save_fclose(OfSaveFile *sf) {
     if (sf->writing) {
         /* Store actual data size at offset 0 */
         uint32_t data_size = sf->offset;
-        of_save_write(sf->game_slot, &data_size, 0, 4);
+        fseek(sf->fp, 0, 0);
+        fwrite(&data_size, 4, 1, sf->fp);
 
         /* Write magic to mark slot valid */
         uint32_t magic = SAVE_MAGIC;
-        of_save_write(sf->game_slot, &magic, 16, 4);
-
-        /* Flush written data to SD */
-        of_save_flush_size(sf->game_slot, sf->offset);
+        fseek(sf->fp, 16, 0);
+        fwrite(&magic, 4, 1, sf->fp);
     }
+
+    /* fclose auto-flushes to SD with actual written size */
+    fclose(sf->fp);
+    sf->fp = (void *)0;
 
     int idx = (int)(sf - save_pool);
     if (idx >= 0 && idx < D3D_MAXSAVES)
@@ -125,7 +159,11 @@ int save_slot_valid(int slot) {
         return 0;
 
     uint32_t magic = 0;
-    of_save_read(slot, &magic, 16, 4);
+    FILE *f = fopen(save_slot_path(slot), "rb");
+    if (!f) return 0;
+    fseek(f, 16, 0);
+    fread(&magic, 4, 1, f);
+    fclose(f);
 
     return magic == SAVE_MAGIC;
 }
