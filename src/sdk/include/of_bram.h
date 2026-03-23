@@ -35,6 +35,6 @@
 /* App BRAM region boundaries */
 #define OF_APP_BRAM_BASE   0x00002000
 #define OF_APP_BRAM_END    0x0000FE00
-#define OF_APP_BRAM_SIZE   (OF_APP_BRAM_END - OF_APP_BRAM_BASE)  /* ~51KB */
+#define OF_APP_BRAM_SIZE   (OF_APP_BRAM_END - OF_APP_BRAM_BASE)  /* ~55KB */
 
 #endif /* OF_BRAM_H */

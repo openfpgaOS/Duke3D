@@ -21,7 +21,7 @@ ABI  = ilp32f
 # ── Paths ─────────────────────────────────────────────────────────
 SDK_DIR ?= src/sdk
 CRT_DIR  = $(SDK_DIR)/crt
-APP_LD   = $(SDK_DIR)/crt/app.ld
+APP_LD  ?= $(SDK_DIR)/crt/app.ld
 
 # ── Compiler flags ────────────────────────────────────────────────
 SDK_CFLAGS  = -march=$(ARCH) -mabi=$(ABI) -O2 -Wall -Wextra

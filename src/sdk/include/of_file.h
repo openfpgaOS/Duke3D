@@ -2,12 +2,14 @@
  * of_file.h -- File I/O API for openfpgaOS (APF Data Slots)
  *
  * Preferred API: use standard C fopen/fread/fwrite/fclose.
- *   fopen("duke3d.grp", "rb")  -- opens data file via FTAB lookup
+ *   fopen("myfile.dat", "rb")  -- opens data file by name (requires registration)
+ *   fopen("slot:3", "rb")      -- opens data slot 3 directly (no registration)
  *   fopen("save_0", "wb")      -- opens save slot 0 for writing
  *   fclose(f)                   -- auto-flushes saves with actual size
  *
- * The Chip32 loader populates the filename→slot table (FTAB) at boot,
- * so manual of_file_slot_register() calls are no longer needed.
+ * Apps must call of_file_slot_register(slot_id, "filename") at startup
+ * to map filenames to data slot IDs. Direct slot access via "slot:N"
+ * works without registration.
  */
 
 #ifndef OF_FILE_H
@@ -49,7 +51,8 @@ static inline int of_file_slot_get(int index, of_file_slot_t *slot) {
     return (int)__of_syscall2(OF_SYS_FILE_SLOT_GET, index, (long)slot);
 }
 
-/* Deprecated: FTAB auto-populates from Chip32 loader. Use fopen("filename") instead. */
+/* Register a filename→slot mapping so fopen("filename") resolves to the correct data slot.
+ * Call at app startup for each data file your app uses. */
 static inline void of_file_slot_register(uint32_t slot_id, const char *filename) {
     __of_syscall2(OF_SYS_FILE_SLOT_REGISTER, slot_id, (long)filename);
 }

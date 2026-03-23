@@ -54,6 +54,7 @@
 #include "of_mixer.h"
 #include "of_codec.h"
 #include "of_lzw.h"
+#include "of_bram.h"
 
 /* ======================================================================
  * System

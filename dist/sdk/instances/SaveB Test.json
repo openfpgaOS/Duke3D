@@ -14,16 +14,46 @@
                 "id": 2,
                 "filename": "saveb.elf"
             },
-            { "id": 10, "filename": "SaveB_0.sav" },
-            { "id": 11, "filename": "SaveB_1.sav" },
-            { "id": 12, "filename": "SaveB_2.sav" },
-            { "id": 13, "filename": "SaveB_3.sav" },
-            { "id": 14, "filename": "SaveB_4.sav" },
-            { "id": 15, "filename": "SaveB_5.sav" },
-            { "id": 16, "filename": "SaveB_6.sav" },
-            { "id": 17, "filename": "SaveB_7.sav" },
-            { "id": 18, "filename": "SaveB_8.sav" },
-            { "id": 19, "filename": "SaveB_9.sav" }
+            {
+                "id": 10,
+                "filename": "SaveB_0.sav"
+            },
+            {
+                "id": 11,
+                "filename": "SaveB_1.sav"
+            },
+            {
+                "id": 12,
+                "filename": "SaveB_2.sav"
+            },
+            {
+                "id": 13,
+                "filename": "SaveB_3.sav"
+            },
+            {
+                "id": 14,
+                "filename": "SaveB_4.sav"
+            },
+            {
+                "id": 15,
+                "filename": "SaveB_5.sav"
+            },
+            {
+                "id": 16,
+                "filename": "SaveB_6.sav"
+            },
+            {
+                "id": 17,
+                "filename": "SaveB_7.sav"
+            },
+            {
+                "id": 18,
+                "filename": "SaveB_8.sav"
+            },
+            {
+                "id": 19,
+                "filename": "SaveB_9.sav"
+            }
         ]
     }
 }

@@ -481,6 +481,7 @@ static int load_midi_file(void) {
  * ====================================================================== */
 
 int main(void) {
+    of_file_slot_register(3, "music.mid");
     of_audio_opl_reset();
 
     /* Enable waveform select (OPL3 register 0x01 bit 5) */

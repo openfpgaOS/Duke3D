@@ -46,7 +46,9 @@ echo -e "${CYAN}Deploying to: $SDCARD${RESET}"
 
 # ── Build all apps first ──────────────────────────────────────────
 echo "Building apps..."
-make -C "$SDK_DIR/src/apps" 2>&1 | grep -v "^make" || true
+if ! make -C "$SDK_DIR/src/apps" 2>&1 | grep -v "^make\|^$"; then
+    echo -e "  ${YELLOW}!${RESET} Some apps may have failed to build"
+fi
 
 # ── Validate runtime ──────────────────────────────────────────────
 if [ ! -f "$RUNTIME/bitstream.rbf_r" ]; then
@@ -104,13 +106,27 @@ for appdir in "$SDK_DIR/src/apps"/*/; do
 done
 echo -e "  ${GREEN}✓${RESET} Bundled apps ($APP_COUNT)"
 
-# Bundled instance JSONs
-# Instance JSONs (from dist/sdk/instances/ if present)
+# Clean stale instance JSONs from SD card
+rm -f "$ASSETS_INSTANCE"/*.json 2>/dev/null
+
+# Bundled instance JSONs — only deploy if the app ELF exists
+INST_COUNT=0
 if [ -d "$SDK_DIR/dist/sdk/instances" ]; then
     for inst in "$SDK_DIR/dist/sdk/instances"/*.json; do
-        [ -f "$inst" ] && cp "$inst" "$ASSETS_INSTANCE/"
+        [ -f "$inst" ] || continue
+        # Extract ELF filename from instance JSON (slot id 2)
+        elf_name=$(python3 -c "
+import json,sys
+d=json.load(open('$inst'))
+for s in d['instance']['data_slots']:
+    if s['id']==2: print(s['filename']); break
+" 2>/dev/null)
+        if [ -n "$elf_name" ] && [ -f "$ASSETS_COMMON/$elf_name" ]; then
+            cp "$inst" "$ASSETS_INSTANCE/"
+            INST_COUNT=$((INST_COUNT + 1))
+        fi
     done
-    echo -e "  ${GREEN}✓${RESET} Instance JSONs"
+    echo -e "  ${GREEN}✓${RESET} Instance JSONs ($INST_COUNT)"
 fi
 
 

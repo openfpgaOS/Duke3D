@@ -12,7 +12,7 @@
 ENTRY(_start)
 
 MEMORY {
-    APP_BRAM (rwx) : ORIGIN = 0x00002000, LENGTH = 0xCC00
+    APP_BRAM (rwx) : ORIGIN = 0x00002000, LENGTH = 0xDC00
     SDRAM    (rwx) : ORIGIN = 0x10400000, LENGTH = 48M
 }
 

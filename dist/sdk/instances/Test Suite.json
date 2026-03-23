@@ -13,6 +13,46 @@
             {
                 "id": 2,
                 "filename": "testdemo.elf"
+            },
+            {
+                "id": 10,
+                "filename": "Test_0.sav"
+            },
+            {
+                "id": 11,
+                "filename": "Test_1.sav"
+            },
+            {
+                "id": 12,
+                "filename": "Test_2.sav"
+            },
+            {
+                "id": 13,
+                "filename": "Test_3.sav"
+            },
+            {
+                "id": 14,
+                "filename": "Test_4.sav"
+            },
+            {
+                "id": 15,
+                "filename": "Test_5.sav"
+            },
+            {
+                "id": 16,
+                "filename": "Test_6.sav"
+            },
+            {
+                "id": 17,
+                "filename": "Test_7.sav"
+            },
+            {
+                "id": 18,
+                "filename": "Test_8.sav"
+            },
+            {
+                "id": 19,
+                "filename": "Test_9.sav"
             }
         ]
     }

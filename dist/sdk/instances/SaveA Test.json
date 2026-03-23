@@ -14,16 +14,46 @@
                 "id": 2,
                 "filename": "savea.elf"
             },
-            { "id": 10, "filename": "SaveA_0.sav" },
-            { "id": 11, "filename": "SaveA_1.sav" },
-            { "id": 12, "filename": "SaveA_2.sav" },
-            { "id": 13, "filename": "SaveA_3.sav" },
-            { "id": 14, "filename": "SaveA_4.sav" },
-            { "id": 15, "filename": "SaveA_5.sav" },
-            { "id": 16, "filename": "SaveA_6.sav" },
-            { "id": 17, "filename": "SaveA_7.sav" },
-            { "id": 18, "filename": "SaveA_8.sav" },
-            { "id": 19, "filename": "SaveA_9.sav" }
+            {
+                "id": 10,
+                "filename": "SaveA_0.sav"
+            },
+            {
+                "id": 11,
+                "filename": "SaveA_1.sav"
+            },
+            {
+                "id": 12,
+                "filename": "SaveA_2.sav"
+            },
+            {
+                "id": 13,
+                "filename": "SaveA_3.sav"
+            },
+            {
+                "id": 14,
+                "filename": "SaveA_4.sav"
+            },
+            {
+                "id": 15,
+                "filename": "SaveA_5.sav"
+            },
+            {
+                "id": 16,
+                "filename": "SaveA_6.sav"
+            },
+            {
+                "id": 17,
+                "filename": "SaveA_7.sav"
+            },
+            {
+                "id": 18,
+                "filename": "SaveA_8.sav"
+            },
+            {
+                "id": 19,
+                "filename": "SaveA_9.sav"
+            }
         ]
     }
 }
