@@ -145,7 +145,7 @@ struct of_libc_table {
     int  (*close)(int);
     int  (*read)(int, void *, unsigned int);
     int  (*write)(int, const void *, unsigned int);
-    long (*lseek)(int, long, int);
+    long long (*lseek)(int, long long, int);
 };
 
 /* Total function pointers + data pointers in the table (excluding header) */

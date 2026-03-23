@@ -35,7 +35,7 @@ static inline int write(int fd, const void *buf, unsigned int count) {
     return __OF_JT->write(fd, buf, count);
 }
 
-static inline long lseek(int fd, long offset, int whence) {
+static inline long long lseek(int fd, long long offset, int whence) {
     return __OF_JT->lseek(fd, offset, whence);
 }
 

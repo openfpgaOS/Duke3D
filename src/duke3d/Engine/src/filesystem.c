@@ -113,15 +113,7 @@ int32_t initgroupfile(const char  *filename)
     }
 
     read(archive->fileDescriptor, buf, 16);
-    
-    //FCS   : The ".grp" file format is just a collection of a lot of files stored into 1 big one.
-	//KS doc: I tried to make the format as simple as possible: The first 12 bytes contains my name,
-	//"KenSilverman". The next 4 bytes is the number of files that were compacted into the
-    //group file. Then for each file, there is a 16 byte structure, where the first 12
-    //bytes are the filename, and the last 4 bytes are the file's size. The rest of the
-    //group file is just the raw data packed one after the other in the same order as the list
-    //of files. - ken
-    
+
     // Check the magic number (12 bytes header).
     if ((buf[0] != 'K') || (buf[1] != 'e') || (buf[2] != 'n') ||
         (buf[3] != 'S') || (buf[4] != 'i') || (buf[5] != 'l') ||
@@ -132,7 +124,6 @@ int32_t initgroupfile(const char  *filename)
 
     // Read numFiles safely (byte-by-byte to avoid alignment issues)
     archive->numFiles = buf[12] | (buf[13]<<8) | (buf[14]<<16) | (buf[15]<<24);
-
     archive->gfilelist = malloc(archive->numFiles * sizeof(grpIndexEntry_t));
     archive->fileOffsets = malloc(archive->numFiles * sizeof(int32_t));
     archive->filesizes = malloc(archive->numFiles * sizeof(int32_t));
@@ -369,18 +360,18 @@ int32_t kread(int32_t handle, void *buffer, int32_t leng){
     
     //File is actually in the GRP
     archive = & grpSet.archives[openFile->grpID];
-        
+
     lseek(archive->fileDescriptor,
           archive->fileOffsets[openFile->fd] + openFile->cursor,
           SEEK_SET);
-    
+
     //Adjust leng so we cannot read more than filesystem-cursor location.
     leng = min(leng,archive->filesizes[openFile->fd]-openFile->cursor);
-    
+
     leng = read(archive->fileDescriptor,buffer,leng);
-    
+
     openFile->cursor += leng;
-	
+
     return leng;
     
 }

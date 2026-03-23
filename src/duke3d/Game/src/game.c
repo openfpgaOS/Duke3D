@@ -7648,21 +7648,23 @@ void Logo(void)
     clearview(0L);
 }
 
+static uint8_t tmb_bank[8000];  /* must persist — of_midi_load_bank stores a pointer */
+
 void loadtmb(void)
 {
-    uint8_t  tmb[8000];
     int32_t fil, l;
 
     fil = kopen4load("d3dtimbr.tmb",0);
 
-    if(fil == -1) 
+    if(fil == -1)
 		return;
 
     l = kfilelength(fil);
+    if (l > (int32_t)sizeof(tmb_bank)) l = (int32_t)sizeof(tmb_bank);
 
-    kread(fil,(uint8_t  *)tmb,l);
+    kread(fil, tmb_bank, l);
 
-    MUSIC_RegisterTimbreBank(tmb);
+    MUSIC_RegisterTimbreBank(tmb_bank);
 
     kclose(fil);
 }

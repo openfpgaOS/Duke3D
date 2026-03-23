@@ -26,7 +26,7 @@ int open(const char *path, int flags, ...) { return JT->open(path, flags); }
 int close(int fd)                          { return JT->close(fd); }
 int read(int fd, void *buf, unsigned int count)        { return JT->read(fd, buf, count); }
 int write(int fd, const void *buf, unsigned int count)  { return JT->write(fd, buf, count); }
-long lseek(int fd, long offset, int whence) { return JT->lseek(fd, offset, whence); }
+long long lseek(int fd, long long offset, int whence) { return JT->lseek(fd, offset, whence); }
 
 /* ======================================================================
  * Libc linkable symbols -- forwarding to jump table

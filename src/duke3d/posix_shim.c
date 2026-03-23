@@ -10,10 +10,10 @@
 
 /* Duke3D's filelength() -- get file size via lseek */
 long filelength(int fd) {
-    long cur = lseek(fd, 0, 1);  /* SEEK_CUR */
-    long end = lseek(fd, 0, 2);  /* SEEK_END */
-    lseek(fd, cur, 0);           /* SEEK_SET */
-    return end;
+    long long cur = lseek(fd, 0, 1);  /* SEEK_CUR */
+    long long end = lseek(fd, 0, 2);  /* SEEK_END */
+    lseek(fd, cur, 0);                /* SEEK_SET */
+    return (long)end;
 }
 
 /* Duke3D control.c uses STUBBED() macro */
