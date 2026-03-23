@@ -48,7 +48,7 @@ CONSOLE_SRCS = \
 
 MIDI_SRCS = Game/src/midi/midi_of.c
 
-SHIM_SRCS = of_posix.c posix_shim.c d3d_audio.c d3d_save.c
+SHIM_SRCS = posix_shim.c d3d_audio.c d3d_save.c
 
 SRCS = $(ENGINE_SRCS) $(GAME_SRCS) $(AUDIOLIB_SRCS) $(CONSOLE_SRCS) $(MIDI_SRCS) $(SHIM_SRCS)
 

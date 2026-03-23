@@ -137,10 +137,19 @@ struct of_libc_table {
     int (*isupper)(int);
     int (*islower)(int);
     int (*isprint)(int);
+
+    /* ================================================================
+     * POSIX I/O (5) — raw file descriptors for game engine ports
+     * ================================================================ */
+    int  (*open)(const char *, int, ...);
+    int  (*close)(int);
+    int  (*read)(int, void *, unsigned int);
+    int  (*write)(int, const void *, unsigned int);
+    long (*lseek)(int, long, int);
 };
 
 /* Total function pointers + data pointers in the table (excluding header) */
-#define OF_LIBC_COUNT 83
+#define OF_LIBC_COUNT 88
 
 /* App-side accessor */
 #define __of_libc ((const struct of_libc_table *)OF_LIBC_ADDR)
@@ -249,6 +258,13 @@ struct of_libc_table {
 #define OF_LIBC_SLOT_ISUPPER        80
 #define OF_LIBC_SLOT_ISLOWER        81
 #define OF_LIBC_SLOT_ISPRINT        82
+
+/* POSIX I/O (slots 83-87) */
+#define OF_LIBC_SLOT_OPEN           83
+#define OF_LIBC_SLOT_CLOSE          84
+#define OF_LIBC_SLOT_READ           85
+#define OF_LIBC_SLOT_WRITE          86
+#define OF_LIBC_SLOT_LSEEK          87
 
 #endif /* OF_LIBC_H */
 

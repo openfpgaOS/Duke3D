@@ -418,7 +418,6 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 void sound(short num)
 {
 #ifdef OPENFPGA
-    extern int d3d_sound_play(int, int, int);
     d3d_sound_play(num, soundpr[num], 255);
     return;
 #endif

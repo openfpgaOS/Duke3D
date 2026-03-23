@@ -6,9 +6,9 @@
  */
 
 #include <stdint.h>
+#include <unistd.h>
 
 /* Duke3D's filelength() -- get file size via lseek */
-extern long lseek(int, long, int);
 long filelength(int fd) {
     long cur = lseek(fd, 0, 1);  /* SEEK_CUR */
     long end = lseek(fd, 0, 2);  /* SEEK_END */

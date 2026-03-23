@@ -83,6 +83,29 @@ static inline void of_video_blit_letterbox(const uint8_t *src, int src_w, int sr
         __builtin_memset(fb + OF_SCREEN_W * bottom, 0, OF_SCREEN_W * (OF_SCREEN_H - bottom));
 }
 
+/* Color mode constants */
+#define OF_VIDEO_MODE_8BIT     0  /* 8-bit indexed: 256 colors, 1 byte/pixel */
+#define OF_VIDEO_MODE_4BIT     1  /* 4-bit indexed: 16 colors, 0.5 byte/pixel */
+#define OF_VIDEO_MODE_2BIT     2  /* 2-bit indexed: 4 colors, 0.25 byte/pixel */
+#define OF_VIDEO_MODE_RGB565   3  /* 16-bit direct: R5G6B5, 2 bytes/pixel */
+#define OF_VIDEO_MODE_RGB555   4  /* 15-bit direct: X1R5G5B5, 2 bytes/pixel */
+#define OF_VIDEO_MODE_RGBA5551 5  /* 15+1 bit: R5G5B5A1, 2 bytes/pixel */
+
+/* Framebuffer size per mode (320x240) */
+#define OF_FB_SIZE_8BIT     (320 * 240)         /* 76,800 bytes */
+#define OF_FB_SIZE_4BIT     (320 * 240 / 2)     /* 38,400 bytes */
+#define OF_FB_SIZE_2BIT     (320 * 240 / 4)     /* 19,200 bytes */
+#define OF_FB_SIZE_16BPP    (320 * 240 * 2)     /* 153,600 bytes */
+
+static inline void of_video_set_color_mode(int mode) {
+    __of_syscall1(OF_SYS_VIDEO_SET_COLOR_MODE, mode);
+}
+
+/* Get surface as 16-bit for direct color modes */
+static inline uint16_t *of_video_surface16(void) {
+    return (uint16_t *)of_video_surface();
+}
+
 #else /* OF_PC */
 
 void     of_video_init(void);

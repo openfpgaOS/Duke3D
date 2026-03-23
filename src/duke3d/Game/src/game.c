@@ -7760,7 +7760,9 @@ void Startup(void)
    CONFIG_SetDefaults();
    CONFIG_ReadKeys();
    SoundToggle = 1;
-   MusicToggle = 0;
+   MusicToggle = 1;
+   MusicDevice = SC_SoundScape;
+   MusicVolume = 200;
    FXDevice = 0;   /* SC_SoundScape — menu shows sound ON, audio via d3d_audio */
    NumVoices = 0;
    d3d_audio_init();

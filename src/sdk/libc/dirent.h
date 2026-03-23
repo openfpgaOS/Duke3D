@@ -1,4 +1,4 @@
-/* dirent.h -- openfpgaOS stub (no directory operations) */
+/* dirent.h -- openfpgaOS stub for directory operations */
 #ifndef _OF_DIRENT_H
 #define _OF_DIRENT_H
 
@@ -6,12 +6,30 @@
 #include_next <dirent.h>
 #else
 
-struct dirent { char d_name[256]; int d_namlen; };
+#include <stddef.h>
+
+struct dirent {
+    unsigned long d_ino;
+    unsigned short d_namlen;
+    char          d_name[256];
+};
+
 typedef struct { int __fd; } DIR;
 
-static inline DIR *opendir(const char *name) { (void)name; return (DIR *)0; }
-static inline struct dirent *readdir(DIR *d) { (void)d; return (struct dirent *)0; }
-static inline int closedir(DIR *d) { (void)d; return 0; }
+static inline DIR *opendir(const char *name) {
+    (void)name;
+    return (DIR *)NULL;
+}
+
+static inline struct dirent *readdir(DIR *dirp) {
+    (void)dirp;
+    return (struct dirent *)NULL;
+}
+
+static inline int closedir(DIR *dirp) {
+    (void)dirp;
+    return -1;
+}
 
 #endif /* OF_PC */
 #endif /* _OF_DIRENT_H */

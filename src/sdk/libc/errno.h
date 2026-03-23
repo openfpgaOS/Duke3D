@@ -15,9 +15,9 @@ static int __of_errno;
 #define ENOMEM  12
 #define EACCES  13
 #define EINVAL  22
+#define EEXIST  17
 #define ENOSYS  38
 #define ERANGE  34
-#define EEXIST  17
 
 #endif /* OF_PC */
 #endif /* _OF_ERRNO_H */

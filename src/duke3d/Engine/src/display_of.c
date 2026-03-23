@@ -19,6 +19,7 @@
 #include "display.h"
 #include "fixedPoint_math.h"
 #include "../../d3d_audio.h"
+#include "of_midi.h"
 #include "engine.h"
 #include "draw.h"
 #include "cache.h"
@@ -593,9 +594,10 @@ void sampletimer(void)
     _handle_events();
 
     /* Keep audio FIFO fed during asset loading and wait loops */
-    {
-        d3d_audio_pump();
-    }
+    d3d_audio_pump();
+
+    /* Pump MIDI music playback */
+    of_midi_pump();
 
     i = (int64_t)of_time_ms();
     n = (int32_t)(i * timerticspersec / timerfreq) - timerlastsample;

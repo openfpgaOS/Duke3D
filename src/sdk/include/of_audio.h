@@ -43,7 +43,7 @@ static inline int of_audio_ring_free(void) {
     return (int)__of_syscall0(OF_SYS_AUDIO_RING_FREE);
 }
 
-static inline void of_audio_opl_write(uint8_t reg, uint8_t val) {
+static inline void of_audio_opl_write(uint16_t reg, uint8_t val) {
     __of_syscall2(OF_SYS_OPL_WRITE, reg, val);
 }
 
@@ -56,7 +56,7 @@ static inline void of_audio_opl_reset(void) {
 void of_audio_init(void);
 int  of_audio_write(const int16_t *samples, int count);
 int  of_audio_free(void);
-void of_audio_opl_write(uint8_t reg, uint8_t val);
+void of_audio_opl_write(uint16_t reg, uint8_t val);
 void of_audio_opl_reset(void);
 static inline int of_audio_enqueue(const int16_t *s, int c) { (void)s; (void)c; return 0; }
 static inline int of_audio_ring_free(void) { return 0; }

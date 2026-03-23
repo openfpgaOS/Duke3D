@@ -22,6 +22,7 @@
 #define OF_SYS_VIDEO_CLEAR             0x1006
 #define OF_SYS_VIDEO_SET_PALETTE_BULK  0x1007
 #define OF_SYS_VIDEO_FLUSH_CACHE       0x1008
+#define OF_SYS_VIDEO_SET_COLOR_MODE    0x1009
 
 /* Audio */
 #define OF_SYS_AUDIO_WRITE             0x1010

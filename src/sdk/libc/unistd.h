@@ -1,7 +1,7 @@
-/* unistd.h -- openfpgaOS POSIX-like I/O stubs
+/* unistd.h -- openfpgaOS POSIX I/O
  *
- * These wrap the openfpgaOS data slot API into POSIX-like file descriptors.
- * See of_posixio.h for implementation.
+ * open/close/read/write/lseek route through the OS jump table (musl).
+ * musl's lseek correctly uses _llseek on riscv32.
  */
 #ifndef _OF_UNISTD_H
 #define _OF_UNISTD_H
@@ -11,19 +11,35 @@
 #else
 
 #include <stddef.h>
+#include "of_libc.h"
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
 
-/* Forward declarations -- implemented in of_posixio.h */
-int   open(const char *path, int flags, ...);
-int   close(int fd);
-int   read(int fd, void *buf, unsigned int count);
-int   write(int fd, const void *buf, unsigned int count);
-long  lseek(int fd, long offset, int whence);
+#define __OF_JT ((const struct of_libc_table *)OF_LIBC_ADDR)
 
-/* Minimal stubs for functions Duke3D references */
+static inline int open(const char *path, int flags, ...) {
+    return __OF_JT->open(path, flags);
+}
+
+static inline int close(int fd) {
+    return __OF_JT->close(fd);
+}
+
+static inline int read(int fd, void *buf, unsigned int count) {
+    return __OF_JT->read(fd, buf, count);
+}
+
+static inline int write(int fd, const void *buf, unsigned int count) {
+    return __OF_JT->write(fd, buf, count);
+}
+
+static inline long lseek(int fd, long offset, int whence) {
+    return __OF_JT->lseek(fd, offset, whence);
+}
+
+/* Minimal stubs */
 static inline int   getpid(void)        { return 1; }
 static inline int   isatty(int fd)      { (void)fd; return 0; }
 static inline int   access(const char *path, int mode) { (void)path; (void)mode; return -1; }

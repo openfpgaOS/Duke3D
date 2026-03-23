@@ -47,9 +47,12 @@ LIBGCC = $(shell $(CC) -march=$(ARCH) -mabi=$(ABI) -print-libgcc-file-name)
 
 # ── Objects ───────────────────────────────────────────────────────
 CRT_START = $(CRT_DIR)/start.o
-OBJS      = $(CRT_START) $(SRCS:.c=.o)
+CRT_POSIX = $(CRT_DIR)/of_posix.o
+CRT_MIDI  = $(CRT_DIR)/of_midi.o
+APP_OBJS  = $(SRCS:.c=.o)
+OBJS      = $(CRT_START) $(CRT_POSIX) $(CRT_MIDI) $(APP_OBJS)
 
-# ── openfpgaOS build ─────────────────────────────────────────────────
+# ── Pocket build ─────────────────────────────────────────────────
 app.elf: $(OBJS) $(APP_LD)
 	$(LD) $(ALL_LDFLAGS) -o $@ $(OBJS) $(LIBGCC)
 
@@ -69,6 +72,6 @@ app_pc: $(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(SDK_DIR)/include/of.h
 		$(SRCS) $(SDK_DIR)/pc/of_sdl2.c \
 		$(SDL_CFLAGS) $(SDL_LIBS) -lm -o $@
 
-# ── Shared clean rule ────────────────────────────────────────────
+# ── Shared clean rule (preserves pre-built CRT objects) ─────────
 sdk-clean:
-	rm -f $(OBJS) app.elf app_pc
+	rm -f $(APP_OBJS) app.elf app_pc
