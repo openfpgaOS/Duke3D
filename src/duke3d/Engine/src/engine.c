@@ -25,6 +25,12 @@
 #include "build.h"
 #include "engine.h"
 #include "tiles.h"
+#ifdef OPENFPGA
+#include "of_bram.h"
+#else
+#define OF_FASTTEXT
+#define OF_FASTDATA
+#endif
 
 int32_t stereowidth = 23040, stereopixelwidth = 28, ostereopixelwidth = -1;
 int32_t stereomode = 0, visualpage, activepage, whiteband, blackband;
@@ -87,7 +93,8 @@ int32_t pow2long[32] =
     16777216L,33554432L,67108864L,134217728L,
     268435456L,536870912L,1073741824L,2147483647L,
 };
-int32_t reciptable[2048], fpuasm;
+OF_FASTDATA int32_t reciptable[2048];
+int32_t fpuasm;
 
 char  kensmessage[128];
 
@@ -711,7 +718,7 @@ static void slowhline (int32_t xr, int32_t yp)
 
 
 /* renders non-parallaxed ceilings. --ryan. */
-static void ceilscan (int32_t x1, int32_t x2, int32_t sectnum)
+static OF_FASTTEXT void ceilscan (int32_t x1, int32_t x2, int32_t sectnum)
 {
     int32_t i, j, ox, oy, x, y1, y2, twall, bwall;
     sectortype *sec;
@@ -945,7 +952,7 @@ static void ceilscan (int32_t x1, int32_t x2, int32_t sectnum)
 
 
 /* renders non-parallaxed floors. --ryan. */
-static void florscan (int32_t x1, int32_t x2, int32_t sectnum)
+static OF_FASTTEXT void florscan (int32_t x1, int32_t x2, int32_t sectnum)
 {
     int32_t i, j, ox, oy, x, y1, y2, twall, bwall;
     sectortype *sec;
@@ -1226,7 +1233,7 @@ static void florscan (int32_t x1, int32_t x2, int32_t sectnum)
  *
  *  --ryan.
  */
-static void wallscan(int32_t x1, int32_t x2,
+static OF_FASTTEXT void wallscan(int32_t x1, int32_t x2,
                      int16_t *uwal, int16_t *dwal,
                      int32_t *swal, int32_t *lwal)
 {
@@ -1416,7 +1423,7 @@ static void wallscan(int32_t x1, int32_t x2,
 
 
 /* this renders masking sprites. See wallscan(). --ryan. */
-static void maskwallscan(int32_t x1, int32_t x2,
+static OF_FASTTEXT void maskwallscan(int32_t x1, int32_t x2,
                          short *uwal, short *dwal,
                          int32_t *swal, int32_t *lwal)
 {
@@ -1727,7 +1734,7 @@ static void parascan(int32_t dax1, int32_t dax2, int32_t sectnum,uint8_t  dastat
 
 
 #define BITSOFPRECISION 3  /* Don't forget to change this in A.ASM also! */
-static void grouscan (int32_t dax1, int32_t dax2, int32_t sectnum, uint8_t  dastat)
+static OF_FASTTEXT void grouscan (int32_t dax1, int32_t dax2, int32_t sectnum, uint8_t  dastat)
 {
     int32_t i, l, x, y, dx, dy, wx, wy, y1, y2, daz;
     int32_t daslope, dasqr;
@@ -3163,7 +3170,7 @@ static void transmaskvline2 (int32_t x)
     faketimerhandler();
 }
 
-static void transmaskwallscan(int32_t x1, int32_t x2)
+static OF_FASTTEXT void transmaskwallscan(int32_t x1, int32_t x2)
 {
     int32_t x;
 
@@ -4736,9 +4743,9 @@ static void ceilspritehline (int32_t x2, int32_t y)
     int32_t x1, v, bx, by;
 
     /*
-     * x = x1 + (x2-x1)t + (y1-y2)u  ³  x = 160v
-     * y = y1 + (y2-y1)t + (x2-x1)u  ³  y = (scrx-160)v
-     * z = z1 = z2                   ³  z = posz + (scry-horiz)v
+     * x = x1 + (x2-x1)t + (y1-y2)u  ï¿½  x = 160v
+     * y = y1 + (y2-y1)t + (x2-x1)u  ï¿½  y = (scrx-160)v
+     * z = z1 = z2                   ï¿½  z = posz + (scry-horiz)v
      */
 
     x1 = lastx[y];

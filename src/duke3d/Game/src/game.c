@@ -53,6 +53,9 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "util_lib.h"
 #include "function.h"
 #include "../../d3d_audio.h"
+#ifdef OPENFPGA
+#include "of_file.h"
+#endif
 
 #include "control.h"
 #include "sounds.h"
@@ -8185,12 +8188,9 @@ int main(int argc,char  **argv)
 #ifdef OPENFPGA
     /* Register data slot filenames for fopen/open() lookup.
      * The OS kernel resolves filenames to slot IDs via this table. */
-    {
-        extern void of_file_slot_register(unsigned int slot_id, const char *filename);
-        of_file_slot_register(1, "os.bin");
-        of_file_slot_register(2, "duke3d.elf");
-        of_file_slot_register(3, "duke3d.grp");
-    }
+    of_file_slot_register(1, "os.bin");
+    of_file_slot_register(2, "duke3d.elf");
+    of_file_slot_register(3, "duke3d.grp");
 #else
     for (int i = 0; i < argc; ++i)
         printf("ARG %d: %s\n", i, argv[i]);

@@ -9,6 +9,11 @@
 #include "platform.h"
 #include "build.h"
 #include "draw.h"
+#ifdef OPENFPGA
+#include "of_bram.h"
+#else
+#define OF_FASTTEXT
+#endif
 
 #if RENDER_LIMIT_PIXELS
 int64_t pixelsAllowed = 10000000000;
@@ -16,7 +21,7 @@ int64_t pixelsAllowed = 10000000000;
 
 uint8_t  *transluc = NULL;
 
-static int transrev = 0;
+static OF_FASTDATA int transrev = 0;
 
 
 #define shrd(a,b,c) (((b)<<(32-(c))) | ((a)>>(c)))
@@ -28,9 +33,9 @@ extern intptr_t asm2;
 extern uint8_t *asm3;
 extern int32_t asm4;
 
-static uint8_t machxbits_al;
-static uint8_t bitsSetup;
-static const uint8_t * textureSetup;
+static OF_FASTDATA uint8_t machxbits_al;
+static OF_FASTDATA uint8_t bitsSetup;
+static OF_FASTDATA const uint8_t * textureSetup;
 void sethlinesizes(int32_t i1, int32_t _bits, const uint8_t * textureAddress)
 {
     machxbits_al = i1;
@@ -40,7 +45,7 @@ void sethlinesizes(int32_t i1, int32_t _bits, const uint8_t * textureAddress)
 
 //FCS:   Draw ceiling/floors
 //Draw a line from destination in the framebuffer to framebuffer-numPixels
-void hlineasm4(int32_t numPixels, int32_t shade, uint32_t i4, uint32_t i5, uint8_t *dest){
+OF_FASTTEXT void hlineasm4(int32_t numPixels, int32_t shade, uint32_t i4, uint32_t i5, uint8_t *dest){
 
     int32_t shifter = ((256-machxbits_al) & 0x1f);
     uint32_t source;
@@ -183,7 +188,7 @@ void rmhlineasm4(int32_t i1, const uint8_t* shade, int32_t colorIndex, int32_t i
 
 //Variable used to draw column.
 //This is how much you have to skip in the framebuffer in order to be one pixel below.
-static int32_t bytesperline;
+static OF_FASTDATA int32_t bytesperline;
 void setBytesPerLine(int32_t _bytesperline)
 {
     bytesperline = _bytesperline;
@@ -191,10 +196,10 @@ void setBytesPerLine(int32_t _bytesperline)
 
 
 
-static uint8_t  mach3_al;
+static OF_FASTDATA uint8_t  mach3_al;
 
 //FCS:  RENDER TOP AND BOTTOM COLUMN
-int32_t prevlineasm1(int32_t i1, const uint8_t* palette, int32_t i3, int32_t i4, const uint8_t  *source, uint8_t  *dest)
+OF_FASTTEXT int32_t prevlineasm1(int32_t i1, const uint8_t* palette, int32_t i3, int32_t i4, const uint8_t  *source, uint8_t  *dest)
 {
     if (i3 == 0)
     {
@@ -218,7 +223,7 @@ int32_t prevlineasm1(int32_t i1, const uint8_t* palette, int32_t i3, int32_t i4,
 
 
 //FCS: This is used to draw wall border vertical lines
-int32_t vlineasm1(int32_t vince, const uint8_t* palookupoffse, int32_t numPixels, int32_t vplce, const uint8_t* texture, uint8_t* dest)
+OF_FASTTEXT int32_t vlineasm1(int32_t vince, const uint8_t* palookupoffse, int32_t numPixels, int32_t vplce, const uint8_t* texture, uint8_t* dest)
 {
     uint32_t temp;
 
@@ -245,7 +250,7 @@ int32_t vlineasm1(int32_t vince, const uint8_t* palookupoffse, int32_t numPixels
 } 
 
 
-int32_t tvlineasm1(int32_t i1, const uint8_t *texture, int32_t numPixels, int32_t i4, const uint8_t  *source, uint8_t  *dest)
+OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t *texture, int32_t numPixels, int32_t i4, const uint8_t  *source, uint8_t  *dest)
 {
     uint8_t shiftValue = (globalshiftval & 0x1f);
     
@@ -283,9 +288,9 @@ int32_t tvlineasm1(int32_t i1, const uint8_t *texture, int32_t numPixels, int32_
 } /* tvlineasm1 */
 
 
-static uint8_t  tran2shr;
-static const uint8_t* tran2pal_ebx;
-static const uint8_t* tran2pal_ecx;
+static OF_FASTDATA uint8_t  tran2shr;
+static OF_FASTDATA const uint8_t* tran2pal_ebx;
+static OF_FASTDATA const uint8_t* tran2pal_ecx;
 void setuptvlineasm2(int32_t i1, const uint8_t* i2, const uint8_t* i3)
 {
 	tran2shr = (i1&0x1f);
@@ -294,7 +299,7 @@ void setuptvlineasm2(int32_t i1, const uint8_t* i2, const uint8_t* i3)
 } /* */
 
 
-void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4, uint32_t i5, uintptr_t i6)
+OF_FASTTEXT void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4, uint32_t i5, uintptr_t i6)
 {
 	uint32_t ebp = i1;
 	uint32_t tran2inca = i2;
@@ -368,8 +373,8 @@ void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4, uint32_t i
 
 
 
-static uint8_t  machmv;
-int32_t mvlineasm1(int32_t vince, const uint8_t* palookupoffse, int32_t i3, int32_t vplce, const uint8_t* texture, uint8_t  *dest)
+static OF_FASTDATA uint8_t  machmv;
+OF_FASTTEXT int32_t mvlineasm1(int32_t vince, const uint8_t* palookupoffse, int32_t i3, int32_t vplce, const uint8_t* texture, uint8_t  *dest)
 {
     uint32_t temp;
 
@@ -399,7 +404,7 @@ void setupvlineasm(int32_t i1)
 }
 
 //FCS This is used to fill the inside of a wall (so it draws VERTICAL column, always).
-void vlineasm4(int32_t columnIndex, uint8_t* framebuffer)
+OF_FASTTEXT void vlineasm4(int32_t columnIndex, uint8_t* framebuffer)
 {
 	if (!RENDER_DRAW_WALL_INSIDE)
 		return;
@@ -433,7 +438,7 @@ void setupmvlineasm(int32_t i1)
     machmv = (i1&0x1f);
 }
 
-void mvlineasm4(int32_t columnIndex, uint8_t* framebuffer)
+OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t* framebuffer)
 {
     int i;
     uint32_t temp;
@@ -470,11 +475,11 @@ void mvlineasm4(int32_t columnIndex, uint8_t* framebuffer)
 
 /* ---------------  SPRITE RENDERING METHOD (USED TO BE HIGHLY OPTIMIZED ASSEMBLY) ----------------------------*/
 
-const uint8_t * tspal;
-uint32_t tsmach_eax1;
-uint32_t adder;
-uint32_t tsmach_eax3;
-uint32_t tsmach_ecx;
+OF_FASTDATA const uint8_t * tspal;
+OF_FASTDATA uint32_t tsmach_eax1;
+OF_FASTDATA uint32_t adder;
+OF_FASTDATA uint32_t tsmach_eax3;
+OF_FASTDATA uint32_t tsmach_ecx;
 void tsetupspritevline(const uint8_t * palette, int32_t i2, int32_t i3, int32_t i4, int32_t i5)
 {
 	tspal = palette;
@@ -487,7 +492,7 @@ void tsetupspritevline(const uint8_t * palette, int32_t i2, int32_t i3, int32_t 
 /*
  FCS: Draw a sprite vertical line of pixels.
  */
-void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t i4, const uint8_t  * texture, uint8_t  * dest)
+OF_FASTTEXT void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t i4, const uint8_t  * texture, uint8_t  * dest)
 {
     uint8_t colorIndex;
     
@@ -567,10 +572,10 @@ void settrans(int32_t type){
 	transrev = type;
 }
 
-static uint8_t  * textureData;
-static uint8_t  * mmach_asm3;
-static int32_t mmach_asm1;
-static int32_t mmach_asm2;
+static OF_FASTDATA uint8_t  * textureData;
+static OF_FASTDATA uint8_t  * mmach_asm3;
+static OF_FASTDATA int32_t mmach_asm1;
+static OF_FASTDATA int32_t mmach_asm2;
 
 void mhline(uint8_t  * texture, int32_t i2, int32_t numPixels, int32_t i4, int32_t i5, uint8_t* dest)
 {
@@ -582,9 +587,9 @@ void mhline(uint8_t  * texture, int32_t i2, int32_t numPixels, int32_t i4, int32
 }
 
 
-static uint8_t  mshift_al = 26;
-static uint8_t  mshift_bl = 6;
-void mhlineskipmodify( uint32_t i2, int32_t numPixels, int32_t i5, uint8_t* dest)
+static OF_FASTDATA uint8_t  mshift_al = 26;
+static OF_FASTDATA uint8_t  mshift_bl = 6;
+OF_FASTTEXT void mhlineskipmodify( uint32_t i2, int32_t numPixels, int32_t i5, uint8_t* dest)
 {
     uint32_t ebx;
     int32_t colorIndex;
@@ -620,10 +625,10 @@ void msethlineshift(int32_t i1, int32_t i2)
 } /* msethlineshift */
 
 
-static uint8_t * tmach_eax;
-static uint8_t * tmach_asm3;
-static int32_t tmach_asm1;
-static int32_t tmach_asm2;
+static OF_FASTDATA uint8_t * tmach_eax;
+static OF_FASTDATA uint8_t * tmach_asm3;
+static OF_FASTDATA int32_t tmach_asm1;
+static OF_FASTDATA int32_t tmach_asm2;
 
 void thline(uint8_t  * i1, int32_t i2, int32_t i3, int32_t i4, int32_t i5, uint8_t * i6)
 {
@@ -634,9 +639,9 @@ void thline(uint8_t  * i1, int32_t i2, int32_t i3, int32_t i4, int32_t i5, uint8
     thlineskipmodify(asm2,i2,i3,i4,i5,i6);
 }
 
-static uint8_t  tshift_al = 26;
-static uint8_t  tshift_bl = 6;
-void thlineskipmodify(int32_t i1, uint32_t i2, uint32_t i3, int32_t i4, int32_t i5, uint8_t * i6)
+static OF_FASTDATA uint8_t  tshift_al = 26;
+static OF_FASTDATA uint8_t  tshift_bl = 6;
+OF_FASTTEXT void thlineskipmodify(int32_t i1, uint32_t i2, uint32_t i3, int32_t i4, int32_t i5, uint8_t * i6)
 {
     uint32_t ebx;
     int counter = (i3>>16);
@@ -679,12 +684,12 @@ void tsethlineshift(int32_t i1, int32_t i2)
 
 
 
-static intptr_t slopemach_ebx;
-static int32_t slopemach_ecx;
-static int32_t slopemach_edx;
-static uint8_t  slopemach_ah1;
-static uint8_t  slopemach_ah2;
-static float asm2_f;
+static OF_FASTDATA intptr_t slopemach_ebx;
+static OF_FASTDATA int32_t slopemach_ecx;
+static OF_FASTDATA int32_t slopemach_edx;
+static OF_FASTDATA uint8_t  slopemach_ah1;
+static OF_FASTDATA uint8_t  slopemach_ah2;
+static OF_FASTDATA float asm2_f;
 typedef union { unsigned int i; float f; } bitwisef2i;
 void setupslopevlin(int32_t i1, intptr_t i2, int32_t i3)
 {
@@ -706,7 +711,7 @@ extern int32_t fpuasm;
 #define high32(a) ((int)(((int64_t)(a)&(int64_t)0xffffffff00000000)>>32))
 
 //FCS: Render RENDER_SLOPPED_CEILING_AND_FLOOR
-void slopevlin(intptr_t i1, uint32_t i2, intptr_t* i3, uint32_t index, int32_t i4, int32_t i5, int32_t i6)
+OF_FASTTEXT void slopevlin(intptr_t i1, uint32_t i2, intptr_t* i3, uint32_t index, int32_t i4, int32_t i5, int32_t i6)
 {
     bitwisef2i c;
 	uintptr_t ecx, eax, ebx, edx, esi;

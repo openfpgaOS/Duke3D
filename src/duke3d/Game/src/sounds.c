@@ -37,6 +37,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "filesystem.h"
 #include "global.h"
 #include "sounds.h"
+#include "../../d3d_audio.h"
 #include "soundefs.h"
 
 #define LOUDESTVOLUME 150
@@ -253,7 +254,6 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 {
 #ifdef OPENFPGA
     {
-        extern int d3d_sound_play(int, int, int);
         int32_t sndist;
 
         if (num < 0 || num >= NUM_SOUNDS || !SoundToggle)

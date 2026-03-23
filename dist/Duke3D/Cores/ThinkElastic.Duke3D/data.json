@@ -3,10 +3,10 @@
         "magic": "APF_VER_1",
         "data_slots": [
             {
-                "id": 0,
+                "id": 7,
                 "name": "OS Data",
                 "required": false,
-                "parameters": "0x01",
+                "parameters": 0,
                 "address": "0x30280000",
                 "size_maximum": "0x10000"
             },

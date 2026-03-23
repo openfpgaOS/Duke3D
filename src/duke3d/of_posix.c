@@ -188,10 +188,6 @@ int abs(int x) { return x < 0 ? -x : x; }
  * OS convenience -- linkable symbols for SDK inline functions
  * ====================================================================== */
 
-void of_print(const char *s) {
-    while (*s) __of_syscall1(OF_SYS_TERM_PUTCHAR, *s++);
-}
-
 unsigned int of_time_ms(void) {
     return (unsigned int)__of_syscall0(OF_SYS_TIMER_GET_MS);
 }

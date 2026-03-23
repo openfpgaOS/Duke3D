@@ -18,6 +18,7 @@
 #include "build.h"
 #include "display.h"
 #include "fixedPoint_math.h"
+#include "../../d3d_audio.h"
 #include "engine.h"
 #include "draw.h"
 #include "cache.h"
@@ -251,7 +252,6 @@ void _nextpage(void)
 
     /* openfpgaOS audio mixer */
     {
-        extern void d3d_audio_pump(void);
         d3d_audio_pump();
     }
 
@@ -594,7 +594,6 @@ void sampletimer(void)
 
     /* Keep audio FIFO fed during asset loading and wait loops */
     {
-        extern void d3d_audio_pump(void);
         d3d_audio_pump();
     }
 
