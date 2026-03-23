@@ -68,6 +68,19 @@ static uint32_t of_palette[256];
 #define STICK_MOUSE_SCALE  6   /* right stick -> mouse sensitivity */
 
 /* ======================================================================
+ * Interact menu variables (Pocket menu -> SDRAM)
+ *
+ * Index 0 = Run Mode:  0 = Always Run, 1 = Hold Y = Run, 2 = Walk
+ * ====================================================================== */
+#define INTERACT_RUN_MODE  0
+
+#define RUN_MODE_ALWAYS    0
+#define RUN_MODE_USE_RUN   1
+#define RUN_MODE_WALK      2
+
+int current_run_mode = RUN_MODE_ALWAYS;  /* read by game.c to sync ud.auto_run */
+
+/* ======================================================================
  * Button-to-scancode mapping
  *
  * Each entry: { of button mask, DOS scancode, extended prefix (0 if none) }
@@ -82,13 +95,13 @@ typedef struct {
 static const btn_map_t button_map[] = {
     /* Action buttons */
     { OF_BTN_A,      0x1D, 0x00 },  /* A      -> LCtrl  = Fire         */
-    { OF_BTN_B,      0x1E, 0x00 },  /* B      -> 'A'    = Jump         */
-    { OF_BTN_X,      0x39, 0x00 },  /* X      -> Space  = Open/Use     */
+    { OF_BTN_B,      0x39, 0x00 },  /* B      -> Space  = Open/Use     */
+    { OF_BTN_X,      0x1E, 0x00 },  /* X      -> 'A'    = Jump         */
     { OF_BTN_Y,      0x2C, 0x00 },  /* Y      -> 'Z'    = Crouch       */
 
-    /* Shoulders */
-    { OF_BTN_L1,     0x33, 0x00 },  /* L1     -> ','    = Strafe Left  */
-    { OF_BTN_R1,     0x34, 0x00 },  /* R1     -> '.'    = Strafe Right */
+    /* Shoulders = weapon cycling */
+    { OF_BTN_L1,     0x27, 0x00 },  /* L      -> ';'    = Prev Weapon  */
+    { OF_BTN_R1,     0x28, 0x00 },  /* R      -> '''    = Next Weapon  */
 
     /* Menu */
     { OF_BTN_START,  0x01, 0x00 },  /* Start  -> Escape = Menu         */
@@ -452,6 +465,9 @@ static void handle_events(void)
     released = ~buttons & prev_buttons;   /* just went up   */
     prev_buttons = buttons;
 
+    /* --- Poll interact menu for Run Mode changes --- */
+    current_run_mode = (int)of_interact_get(INTERACT_RUN_MODE);
+
     /* --- Digital buttons -> scancodes --- */
     for (i = 0; i < (int)NUM_BTN_MAPS; i++) {
         const btn_map_t *m = &button_map[i];
@@ -462,6 +478,14 @@ static void handle_events(void)
         if (released & m->btn) {
             send_key(m->scancode, m->extended, 0);
         }
+    }
+
+    /* --- "Use = Use + Run" mode: B also sends LShift while held --- */
+    if (current_run_mode == RUN_MODE_USE_RUN) {
+        if (pressed & OF_BTN_B)
+            send_key(0x2A, 0x00, 1);   /* LShift down = Run */
+        if (released & OF_BTN_B)
+            send_key(0x2A, 0x00, 0);   /* LShift up */
     }
 
     /* --- Left analog stick -> movement keys (Up/Down/Left/Right arrows) --- */

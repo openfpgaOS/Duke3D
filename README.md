@@ -86,7 +86,7 @@ SD Card/
 
 | Button | Duke3D |
 |--------|--------|
-| D-pad | Move / Strafe |
+| D-pad | Move / Turn |
 | A | Fire |
 | B | Open / Use |
 | X | Jump |

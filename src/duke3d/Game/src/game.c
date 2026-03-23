@@ -7022,12 +7022,20 @@ void nonsharedkeys(void)
         vscrn();
     }
 
+#ifdef OPENFPGA
+    /* Sync auto_run from Pocket interact menu Run Mode setting */
+    {
+        extern int current_run_mode;
+        ud.auto_run = (current_run_mode == 0) ? 1 : 0;  /* 0=Always Run */
+    }
+#else
     if( ACTION(gamefunc_AutoRun) )
     {
         CONTROL_ClearAction(gamefunc_AutoRun);
         ud.auto_run = 1-ud.auto_run;
         FTA(85+ud.auto_run,&ps[myconnectindex],1);
     }
+#endif
 
     if( ACTION(gamefunc_Map) )
     {
