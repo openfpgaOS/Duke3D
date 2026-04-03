@@ -1,14 +1,31 @@
 /*
- * of_mixer.h -- Audio Mixer API for openfpgaOS
+ * of_mixer.h -- Hardware PCM Mixer API for openfpgaOS
  *
- * Multi-voice PCM mixer with resampling.
- * Input: unsigned 8-bit PCM. Output: 48kHz stereo via audio FIFO.
+ * 32-voice hardware mixer. Samples must be 16-bit signed mono in CRAM1.
+ * Mixing runs entirely in FPGA fabric — zero CPU cost during playback.
+ * Output: 48kHz stereo via audio FIFO, mixed with OPL3 FM synthesis.
+ *
+ * Usage:
+ *   1. Load sample data into CRAM1 (memcpy to 0x31000000+)
+ *   2. Call of_mixer_init()
+ *   3. Call of_mixer_play() with the CRAM1 address of the sample
+ *
+ * Sample data must be in CRAM1 (0x31000000-0x31FFFFFF).
+ * Volume: 0-255 (mapped to 4-bit hardware volume 0-15).
+ * Resampling: nearest-neighbor via 16.16 fixed-point rate.
  */
 
 #ifndef OF_MIXER_H
 #define OF_MIXER_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
+
+#define OF_MIXER_MAX_VOICES  32
+#define OF_MIXER_OUTPUT_RATE 48000
 
 #ifndef OF_PC
 
@@ -19,9 +36,16 @@ static inline void of_mixer_init(int max_voices, int output_rate) {
     __of_syscall2(OF_SYS_MIXER_INIT, max_voices, output_rate);
 }
 
-static inline int of_mixer_play(const uint8_t *pcm_u8, uint32_t sample_count,
+/* Play a sample from CRAM1.
+ * pcm_s16: pointer to 16-bit signed mono samples in CRAM1 (0x31xxxxxx).
+ * sample_count: number of 16-bit samples.
+ * sample_rate: original sample rate in Hz (resampled to 48kHz).
+ * priority: unused (reserved).
+ * volume: 0-255 (mapped to 4-bit hw volume).
+ * Returns voice index (0-31) or -1 if no voice available. */
+static inline int of_mixer_play(const uint8_t *pcm_s16, uint32_t sample_count,
                                 uint32_t sample_rate, int priority, int volume) {
-    return (int)__of_syscall5(OF_SYS_MIXER_PLAY, (long)pcm_u8, sample_count,
+    return (int)__of_syscall5(OF_SYS_MIXER_PLAY, (long)pcm_s16, sample_count,
                               sample_rate, priority, volume);
 }
 
@@ -37,9 +61,8 @@ static inline void of_mixer_set_volume(int voice, int volume) {
     __of_syscall2(OF_SYS_MIXER_SET_VOLUME, voice, volume);
 }
 
-static inline void of_mixer_pump(void) {
-    __of_syscall0(OF_SYS_MIXER_PUMP);
-}
+/* No-op: hardware mixer runs autonomously, no CPU pumping needed. */
+static inline void of_mixer_pump(void) { }
 
 static inline int of_mixer_voice_active(int voice) {
     return (int)__of_syscall1(OF_SYS_MIXER_VOICE_ACTIVE, voice);
@@ -50,9 +73,9 @@ static inline int of_mixer_voice_active(int voice) {
 static inline void of_mixer_init(int max_voices, int output_rate) {
     (void)max_voices; (void)output_rate;
 }
-static inline int of_mixer_play(const uint8_t *pcm_u8, uint32_t sample_count,
+static inline int of_mixer_play(const uint8_t *pcm_s16, uint32_t sample_count,
                                 uint32_t sample_rate, int priority, int volume) {
-    (void)pcm_u8; (void)sample_count; (void)sample_rate;
+    (void)pcm_s16; (void)sample_count; (void)sample_rate;
     (void)priority; (void)volume;
     return -1;
 }
@@ -65,5 +88,9 @@ static inline void of_mixer_pump(void) {}
 static inline int of_mixer_voice_active(int voice) { (void)voice; return 0; }
 
 #endif /* OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_MIXER_H */

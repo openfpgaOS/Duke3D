@@ -7,7 +7,8 @@
 #
 
 SDK_DIR = ../../sdk
-SRCS = $(wildcard *.c)
+SRCS     = $(wildcard *.c)
+SRCS_CXX = $(wildcard *.cpp)
 
 include $(SDK_DIR)/sdk.mk
 

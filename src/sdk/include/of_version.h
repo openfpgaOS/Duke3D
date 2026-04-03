@@ -5,6 +5,10 @@
 #ifndef OF_VERSION_H
 #define OF_VERSION_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 #define OF_API_VERSION_MAJOR  1
@@ -34,5 +38,9 @@ static inline uint32_t of_get_version(void) {
 }
 
 #endif /* OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_VERSION_H */

@@ -7,6 +7,10 @@
 #ifndef OF_INPUT_H
 #define OF_INPUT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 #define OF_MAX_PLAYERS  2
@@ -96,5 +100,9 @@ uint32_t of_input_state(int player, of_input_state_t *state);
 void     of_input_set_deadzone(int16_t deadzone);
 
 #endif /* OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_INPUT_H */

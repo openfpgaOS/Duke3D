@@ -5,7 +5,6 @@
 
 # Apps with standard SDK build (single main.c, no SDL2 dependency)
 APPS = $(shell find . -maxdepth 1 -mindepth 1 -type d \
-         ! -name celeste ! -name fbdemo \
          | sort | sed 's|^\./||')
 
 all:

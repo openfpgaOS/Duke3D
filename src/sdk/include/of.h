@@ -27,6 +27,10 @@
 #ifndef OF_H
 #define OF_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 /* Foundation headers */
@@ -50,6 +54,7 @@
 #include "of_terminal.h"
 #include "of_tile.h"
 #include "of_cache.h"
+#include "of_dma.h"
 #include "of_interact.h"
 #include "of_mixer.h"
 #include "of_codec.h"
@@ -81,6 +86,10 @@ void of_exit(void);
 #ifdef OF_PC
 static inline void of_init(void) {
     of_video_init();
+}
+#endif
+
+#ifdef __cplusplus
 }
 #endif
 

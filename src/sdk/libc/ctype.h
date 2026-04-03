@@ -6,6 +6,10 @@
 #include_next <ctype.h>
 #else
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "of_libc.h"
 
 /* Jump table functions (count >= 83) */
@@ -24,6 +28,10 @@ static inline int isxdigit(int c) { return isdigit(c) || (c >= 'A' && c <= 'F') 
 static inline int ispunct(int c)  { return isprint(c) && !isalnum(c) && !isspace(c); }
 static inline int iscntrl(int c)  { return (c >= 0 && c < 0x20) || c == 0x7F; }
 static inline int isgraph(int c)  { return isprint(c) && c != ' '; }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_PC */
 #endif /* _OF_CTYPE_H */

@@ -7,6 +7,10 @@
 #ifndef OF_CODEC_H
 #define OF_CODEC_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 typedef struct {
@@ -47,5 +51,9 @@ static inline int of_codec_parse_wav(const uint8_t *data, uint32_t size,
 }
 
 #endif /* OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_CODEC_H */

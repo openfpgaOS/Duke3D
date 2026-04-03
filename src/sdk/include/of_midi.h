@@ -17,6 +17,10 @@
 #ifndef OF_MIDI_H
 #define OF_MIDI_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 /* Error codes */
@@ -61,5 +65,9 @@ int  of_midi_get_volume(void);
 /* Load a custom instrument bank (128 melodic + 47 percussion instruments,
  * 11 bytes each = 1925 bytes total).  Pass NULL to restore built-in bank. */
 void of_midi_load_bank(const uint8_t *bank);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_MIDI_H */

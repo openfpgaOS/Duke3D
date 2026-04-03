@@ -16,6 +16,10 @@
 #ifndef OF_INTERACT_H
 #define OF_INTERACT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 /* Base addresses */
@@ -35,5 +39,9 @@ static inline uint32_t of_interact_get(int index) {
 /* Compute the bridge address for interact variable N.
  * Use this in interact.json: "address": "0x03FExxxx" */
 #define OF_INTERACT_ADDR(n) (OF_INTERACT_BRIDGE_BASE + (n) * 4)
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_INTERACT_H */

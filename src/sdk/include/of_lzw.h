@@ -7,6 +7,10 @@
 #ifndef OF_LZW_H
 #define OF_LZW_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 #ifndef OF_PC
@@ -39,5 +43,9 @@ static inline int32_t of_lzw_uncompress(const uint8_t *in, int32_t comp_len,
 }
 
 #endif /* OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_LZW_H */

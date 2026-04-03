@@ -6,6 +6,10 @@
 #include_next <math.h>
 #else
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "of_libc.h"
 
 static inline float sinf(float x)              { return __of_libc->sinf(x); }
@@ -29,6 +33,10 @@ static inline float expf(float x)              { return __of_libc->expf(x); }
 static inline double sin(double x)             { return __of_libc->sin(x); }
 static inline double cos(double x)             { return __of_libc->cos(x); }
 static inline double sqrt(double x)            { return __of_libc->sqrt(x); }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_PC */
 #endif /* _OF_MATH_H */

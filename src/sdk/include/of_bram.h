@@ -14,12 +14,16 @@
  * Build with app_bram.ld linker script (sdk_bram.mk) instead of app.ld.
  * The OS ELF loader copies .app_fasttext from the ELF to BRAM at load time.
  *
- * Available BRAM: ~51KB (0x2000-0xFE00). OS uses 0x0000-0x1FFF.
- * Top 512 bytes (0xFE00-0xFFFF) reserved for trap handler stack frame.
+ * Available BRAM: ~23KB (0x2000-0x7E00). OS uses 0x0000-0x1FFF.
+ * Top 512 bytes reserved for trap handler stack frame.
  */
 
 #ifndef OF_BRAM_H
 #define OF_BRAM_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* Place a function in BRAM. noinline prevents the compiler from inlining
  * the function body into callers (which would copy it back to SDRAM). */
@@ -32,9 +36,13 @@
 /* Place read-only data in BRAM. */
 #define OF_FASTRODATA __attribute__((section(".app_fastrodata")))
 
-/* App BRAM region boundaries */
+/* App BRAM region boundaries (must match hal/regs.h) */
 #define OF_APP_BRAM_BASE   0x00002000
-#define OF_APP_BRAM_END    0x0000FE00
-#define OF_APP_BRAM_SIZE   (OF_APP_BRAM_END - OF_APP_BRAM_BASE)  /* ~55KB */
+#define OF_APP_BRAM_END    0x00007E00
+#define OF_APP_BRAM_SIZE   (OF_APP_BRAM_END - OF_APP_BRAM_BASE)  /* ~23KB */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_BRAM_H */

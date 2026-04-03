@@ -198,17 +198,13 @@ int main(void) {
     printf("\033[2J\033[H");
     printf("\033[93m  %s Save Test (step=%d)\033[0m\n\n", APP_NAME, STEP);
 
-    /* Diagnostic: read CRAM1 directly and via save API */
+    /* Raw byte test: read first 32 bytes via API */
     {
-        volatile uint32_t *c1 = (volatile uint32_t *)0x39000000;
-        printf("  CRAM1 @39M [0-3]: %08X %08X %08X %08X\n",
-               c1[0], c1[1], c1[2], c1[3]);
-
-        uint32_t words[4];
-        of_save_read(0, words, 0, 16);
-        printf("  save_read words : %08X %08X %08X %08X\n",
-               words[0], words[1], words[2], words[3]);
-        printf("  save_read @+4 from 0x39000000\n\n");
+        uint8_t raw[32];
+        of_save_read(0, raw, 0, 32);
+        printf("  Bytes @0: ");
+        for (int i = 0; i < 32; i++) printf("%02X ", raw[i]);
+        printf("\n\n");
     }
 
     if (is_virgin()) {

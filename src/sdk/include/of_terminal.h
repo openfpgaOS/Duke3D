@@ -7,6 +7,10 @@
 #ifndef OF_TERMINAL_H
 #define OF_TERMINAL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 #ifndef OF_PC
@@ -98,5 +102,9 @@ void of_print_at(int col, int row);
 #define ACS_SHADE_LIGHT  _ACS(176)  /* ░ */
 #define ACS_SHADE_MEDIUM _ACS(177)  /* ▒ */
 #define ACS_SHADE_DARK   _ACS(178)  /* ▓ */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_TERMINAL_H */

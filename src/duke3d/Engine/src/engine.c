@@ -93,7 +93,7 @@ int32_t pow2long[32] =
     16777216L,33554432L,67108864L,134217728L,
     268435456L,536870912L,1073741824L,2147483647L,
 };
-OF_FASTDATA int32_t reciptable[2048];
+int32_t reciptable[2048];
 int32_t fpuasm;
 
 char  kensmessage[128];

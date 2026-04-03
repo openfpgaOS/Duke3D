@@ -3,7 +3,6 @@
  * Loads an indexed PNG image and displays it.
  */
 
-#include <SDL2/SDL.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -43,6 +42,9 @@ static int png_file_size(uint32_t *size_out) {
 }
 
 int main(void) {
+    of_video_init();
+    of_video_set_display_mode(OF_DISPLAY_OVERLAY);
+
     printf("Loading image...\n");
 
     uint32_t file_size = 0;
@@ -67,25 +69,12 @@ int main(void) {
     }
     printf("Decoded %dx%d\n", w, h);
 
-    /* Switch to framebuffer mode */
-    SDL_Init(SDL_INIT_VIDEO);
-    SDL_Window *win = SDL_CreateWindow("fbdemo",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        SCREEN_W, SCREEN_H, SDL_WINDOW_SHOWN);
-    SDL_Surface *screen = SDL_GetWindowSurface(win);
-
     /* Set palette */
-    SDL_Color colors[256];
-    for (int i = 0; i < 256; i++) {
-        colors[i].r = (raw_palette[i] >> 16) & 0xFF;
-        colors[i].g = (raw_palette[i] >> 8) & 0xFF;
-        colors[i].b = raw_palette[i] & 0xFF;
-        colors[i].a = 0xFF;
-    }
-    SDL_SetPaletteColors(screen->format->palette, colors, 0, 256);
+    of_video_palette_bulk(raw_palette, 256);
 
     /* Clear and blit image centered */
-    SDL_FillRect(screen, NULL, 0);
+    of_video_clear(0);
+    uint8_t *fb = of_video_surface();
 
     int ox = (SCREEN_W - w) / 2;
     int oy = (SCREEN_H - h) / 2;
@@ -94,24 +83,42 @@ int main(void) {
 
     int copy_w = w < SCREEN_W ? w : SCREEN_W;
     int copy_h = h < SCREEN_H ? h : SCREEN_H;
-    uint8_t *fb = (uint8_t *)screen->pixels;
     for (int y = 0; y < copy_h; y++)
-        memcpy(&fb[(oy + y) * screen->pitch + ox], &pixel_buf[y * w], copy_w);
+        memcpy(&fb[(oy + y) * SCREEN_W + ox], &pixel_buf[y * w], copy_w);
 
-    SDL_UpdateWindowSurface(win);
+    of_video_flip();
 
-    /* Event loop */
-    SDL_Event ev;
-    while (1) {
-        while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_QUIT)
-                goto done;
-        }
-        SDL_Delay(16);
+    /* Clear terminal and show overlay text on top of the image */
+    of_print_clear();
+    of_print_at(0, 0);
+    of_print("OVERLAY MODE - Press any button");
+
+    /* Cycle through display modes on each button press:
+     * 0=Terminal, 1=Framebuffer, 2=Overlay */
+    static const char *mode_names[] = {
+        "Terminal", "Framebuffer", "Overlay"
+    };
+    int mode = OF_DISPLAY_OVERLAY;  /* start in overlay */
+
+    /* Wait for menu button to be released */
+    for (int i = 0; i < 30; i++) {
+        of_input_poll();
+        of_delay_ms(16);
     }
 
-done:
-    SDL_DestroyWindow(win);
-    SDL_Quit();
+    while (1) {
+        of_input_poll();
+        if (of_btn_pressed(OF_BTN_A) || of_btn_pressed(OF_BTN_B) ||
+            of_btn_pressed(OF_BTN_START)) {
+            mode = (mode + 1) % 3;
+            of_video_set_display_mode(mode);
+            of_print_clear();
+            of_print_at(0, 0);
+            of_print("Mode: ");
+            of_print(mode_names[mode]);
+        }
+        of_delay_ms(16);
+    }
+
     return 0;
 }

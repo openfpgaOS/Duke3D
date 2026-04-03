@@ -6,6 +6,10 @@
 #include_next <string.h>
 #else
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "of_libc.h"
 
 /* Original 12 functions (always available) */
@@ -57,6 +61,10 @@ static inline int strncasecmp(const char *a, const char *b, size_t n) {
 #define stricmp  strcasecmp
 #define strnicmp strncasecmp
 #define _stricmp strcasecmp
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_PC */
 #endif /* _OF_STRING_H */

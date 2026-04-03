@@ -5,6 +5,10 @@
 #ifndef OF_LINK_H
 #define OF_LINK_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 #ifndef OF_PC
@@ -31,5 +35,9 @@ int      of_link_recv(uint32_t *data);
 uint32_t of_link_status(void);
 
 #endif /* OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_LINK_H */

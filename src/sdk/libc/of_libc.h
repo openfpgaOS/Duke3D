@@ -17,6 +17,10 @@
 #ifndef OF_LIBC_H
 #define OF_LIBC_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>
@@ -265,6 +269,10 @@ struct of_libc_table {
 #define OF_LIBC_SLOT_READ           85
 #define OF_LIBC_SLOT_WRITE          86
 #define OF_LIBC_SLOT_LSEEK          87
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_LIBC_H */
 

@@ -8,6 +8,10 @@
 #ifndef OF_SYSCALL_H
 #define OF_SYSCALL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef OF_PC
 
 static inline long __of_syscall0(long n) {
@@ -65,5 +69,9 @@ static inline long __of_syscall5(long n, long arg0, long arg1,
 }
 
 #endif /* !OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_SYSCALL_H */

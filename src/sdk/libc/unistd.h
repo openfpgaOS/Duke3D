@@ -10,6 +10,10 @@
 #include_next <unistd.h>
 #else
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stddef.h>
 #include "of_libc.h"
 
@@ -43,6 +47,10 @@ static inline long long lseek(int fd, long long offset, int whence) {
 static inline int   getpid(void)        { return 1; }
 static inline int   isatty(int fd)      { (void)fd; return 0; }
 static inline int   access(const char *path, int mode) { (void)path; (void)mode; return -1; }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_PC */
 #endif /* _OF_UNISTD_H */

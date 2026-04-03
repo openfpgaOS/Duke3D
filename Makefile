@@ -75,7 +75,7 @@ release: duke3d apps
 	done
 
 # ── Deploy to SD card ────────────────────────────────────────────
-deploy: release
+deploy: all
 	@./deploy.sh
 
 # ── Clean ────────────────────────────────────────────────────────

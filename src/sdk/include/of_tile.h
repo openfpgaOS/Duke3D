@@ -8,6 +8,10 @@
 #ifndef OF_TILE_H
 #define OF_TILE_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 #define OF_TILE_COLS    64
@@ -108,5 +112,9 @@ static inline uint16_t of_tile_entry(int tile_id, int palette,
         (vflip ? (1 << 15) : 0)
     );
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_TILE_H */

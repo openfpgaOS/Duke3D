@@ -1,8 +1,8 @@
 /*
  * openfpgaOS Interact Demo
  *
- * Shows live values from the openfpgaOS menu (interact.json).
- * Open the openfpgaOS menu and change "App Option 1/2/3" to see values
+ * Shows live values from the Analogue Pocket menu (interact.json).
+ * Open the Pocket menu and change "App Option 1/2/3" to see values
  * update in real time.
  *
  * Interact variables are at SDRAM address 0x103FE000+:
@@ -20,7 +20,7 @@ static const char *opt3_names[] = { "Easy", "Normal", "Hard" };
 int main(void) {
     printf("\033[2J\033[H");  /* clear screen */
     printf("\033[93m  Interact Demo\033[0m\n\n");
-    printf("  Open openfpgaOS menu and change\n");
+    printf("  Open Pocket menu and change\n");
     printf("  App Option 1/2/3 to see\n");
     printf("  values update live.\n\n");
 

@@ -1,0 +1,318 @@
+/* iostream — openfpgaOS C++ stream support
+ *
+ * Provides std::cout, std::cerr and std::cin backed by the OS jump table.
+ * No exceptions, no RTTI, no dynamic memory — fully compatible with
+ * -fno-exceptions -fno-rtti freestanding builds.
+ *
+ * std::cout / std::cerr write through write(1/2, …) via the jump table.
+ * std::cin reads from fd 0 via read() with a 1-char pushback buffer.
+ * Number formatting uses the jump table's snprintf / strtod / strtol.
+ */
+#ifndef _OF_IOSTREAM_H
+#define _OF_IOSTREAM_H
+
+#ifdef OF_PC
+#include_next <iostream>
+#else
+
+#ifndef __cplusplus
+#error "<iostream> requires C++"
+#endif
+
+#include "of_libc.h"
+
+/* stdio.h defines printf-family names as macros that expand to
+ * "__OF_JT->name".  If stdio.h was included before this header those
+ * macros would corrupt member-access expressions like _jt()->snprintf(…).
+ * Save and remove every conflicting macro for our class bodies, then
+ * restore them so callers still see the macros after this header. */
+#ifdef snprintf
+#  pragma push_macro("snprintf")
+#  undef snprintf
+#  define _OF_IOSTREAM_RESTORE_SNPRINTF
+#endif
+#ifdef vsnprintf
+#  pragma push_macro("vsnprintf")
+#  undef vsnprintf
+#  define _OF_IOSTREAM_RESTORE_VSNPRINTF
+#endif
+#ifdef printf
+#  pragma push_macro("printf")
+#  undef printf
+#  define _OF_IOSTREAM_RESTORE_PRINTF
+#endif
+#ifdef fprintf
+#  pragma push_macro("fprintf")
+#  undef fprintf
+#  define _OF_IOSTREAM_RESTORE_FPRINTF
+#endif
+#ifdef sprintf
+#  pragma push_macro("sprintf")
+#  undef sprintf
+#  define _OF_IOSTREAM_RESTORE_SPRINTF
+#endif
+#ifdef vsprintf
+#  pragma push_macro("vsprintf")
+#  undef vsprintf
+#  define _OF_IOSTREAM_RESTORE_VSPRINTF
+#endif
+#ifdef sscanf
+#  pragma push_macro("sscanf")
+#  undef sscanf
+#  define _OF_IOSTREAM_RESTORE_SSCANF
+#endif
+
+namespace std {
+
+/* ── ostream ──────────────────────────────────────────────────────────── */
+
+class ostream {
+    int _fd;
+
+    const struct of_libc_table *_jt() const {
+        return (const struct of_libc_table *)OF_LIBC_ADDR;
+    }
+    void _raw(const char *s, unsigned n) const {
+        if (n) _jt()->write(_fd, s, n);
+    }
+    void _str(const char *s) const {
+        if (s) _raw(s, (unsigned)_jt()->strlen(s));
+    }
+
+public:
+    explicit ostream(int fd) : _fd(fd) {}
+
+    ostream &operator<<(bool b)             { _str(b ? "1" : "0"); return *this; }
+    ostream &operator<<(char c)             { _raw(&c, 1); return *this; }
+    ostream &operator<<(unsigned char c)    { _raw((const char *)&c, 1); return *this; }
+    ostream &operator<<(const char *s)      { _str(s); return *this; }
+
+    ostream &operator<<(short n) {
+        char b[8]; _jt()->snprintf(b, sizeof(b), "%d", (int)n); _str(b); return *this;
+    }
+    ostream &operator<<(unsigned short n) {
+        char b[8]; _jt()->snprintf(b, sizeof(b), "%u", (unsigned)n); _str(b); return *this;
+    }
+    ostream &operator<<(int n) {
+        char b[16]; _jt()->snprintf(b, sizeof(b), "%d", n); _str(b); return *this;
+    }
+    ostream &operator<<(unsigned int n) {
+        char b[16]; _jt()->snprintf(b, sizeof(b), "%u", n); _str(b); return *this;
+    }
+    ostream &operator<<(long n) {
+        char b[24]; _jt()->snprintf(b, sizeof(b), "%ld", n); _str(b); return *this;
+    }
+    ostream &operator<<(unsigned long n) {
+        char b[24]; _jt()->snprintf(b, sizeof(b), "%lu", n); _str(b); return *this;
+    }
+    ostream &operator<<(long long n) {
+        char b[24]; _jt()->snprintf(b, sizeof(b), "%lld", n); _str(b); return *this;
+    }
+    ostream &operator<<(unsigned long long n) {
+        char b[24]; _jt()->snprintf(b, sizeof(b), "%llu", n); _str(b); return *this;
+    }
+    ostream &operator<<(float f) {
+        char b[32]; _jt()->snprintf(b, sizeof(b), "%g", (double)f); _str(b); return *this;
+    }
+    ostream &operator<<(double d) {
+        char b[32]; _jt()->snprintf(b, sizeof(b), "%g", d); _str(b); return *this;
+    }
+    ostream &operator<<(const void *p) {
+        char b[16]; _jt()->snprintf(b, sizeof(b), "%p", p); _str(b); return *this;
+    }
+    ostream &operator<<(void *p) { return operator<<((const void *)p); }
+
+    ostream &operator<<(ostream &(*manip)(ostream &)) { return manip(*this); }
+
+    ostream &put(char c)                  { _raw(&c, 1); return *this; }
+    ostream &write(const char *s, long n) { if (n > 0) _raw(s, (unsigned)n); return *this; }
+    ostream &flush()                      { return *this; }
+};
+
+/* ── istream ──────────────────────────────────────────────────────────── */
+
+class istream {
+    bool _fail;
+    int  _pushback;   /* -1 = empty */
+
+    const struct of_libc_table *_jt() const {
+        return (const struct of_libc_table *)OF_LIBC_ADDR;
+    }
+
+    int _getc() {
+        if (_pushback != -1) { int c = _pushback; _pushback = -1; return c; }
+        unsigned char c;
+        return (_jt()->read(0, &c, 1) == 1) ? (int)c : -1;
+    }
+
+    void _unget(int c) { _pushback = c; }
+
+    /* Skip whitespace; non-whitespace char is pushed back. */
+    void _skip_ws() {
+        int c;
+        while ((c = _getc()) != -1 &&
+               (c == ' ' || c == '\t' || c == '\n' || c == '\r')) {}
+        if (c != -1) _unget(c);
+    }
+
+public:
+    istream() : _fail(false), _pushback(-1) {}
+
+    explicit operator bool() const { return !_fail; }
+    bool fail() const { return _fail; }
+    bool good() const { return !_fail; }
+    bool eof()  const { return _fail; }
+    void clear()      { _fail = false; _pushback = -1; }
+
+    istream &operator>>(char &c) {
+        _skip_ws();
+        int ch = _getc();
+        if (ch == -1) _fail = true;
+        else c = (char)ch;
+        return *this;
+    }
+
+    /* Read one whitespace-delimited word into a caller-supplied buffer. */
+    istream &operator>>(char *s) {
+        if (!s) { _fail = true; return *this; }
+        _skip_ws();
+        int ch = _getc();
+        if (ch == -1) { _fail = true; s[0] = '\0'; return *this; }
+        int i = 0;
+        while (ch != -1 && ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+            s[i++] = (char)ch;
+            ch = _getc();
+        }
+        s[i] = '\0';
+        if (ch != -1) _unget(ch);
+        return *this;
+    }
+
+    istream &operator>>(int &n) {
+        _skip_ws();
+        char buf[24]; int i = 0;
+        int ch = _getc();
+        if (ch == '-' || ch == '+') { if (ch == '-') buf[i++] = '-'; ch = _getc(); }
+        if (ch < '0' || ch > '9') { _fail = true; return *this; }
+        while (i < 23 && ch >= '0' && ch <= '9') { buf[i++] = (char)ch; ch = _getc(); }
+        buf[i] = '\0';
+        if (ch != -1) _unget(ch);
+        n = _jt()->atoi(buf);
+        return *this;
+    }
+
+    istream &operator>>(unsigned int &n) {
+        int tmp = 0; *this >> tmp; n = (unsigned int)tmp; return *this;
+    }
+
+    istream &operator>>(long &n) {
+        _skip_ws();
+        char buf[24]; int i = 0;
+        int ch = _getc();
+        if (ch == '-' || ch == '+') { if (ch == '-') buf[i++] = '-'; ch = _getc(); }
+        if (ch < '0' || ch > '9') { _fail = true; return *this; }
+        while (i < 23 && ch >= '0' && ch <= '9') { buf[i++] = (char)ch; ch = _getc(); }
+        buf[i] = '\0';
+        if (ch != -1) _unget(ch);
+        n = _jt()->strtol(buf, (char **)0, 10);
+        return *this;
+    }
+
+    istream &operator>>(unsigned long &n) {
+        long tmp = 0; *this >> tmp; n = (unsigned long)tmp; return *this;
+    }
+
+    istream &operator>>(float &f) {
+        _skip_ws();
+        char buf[64]; int i = 0;
+        int ch = _getc();
+        if (ch == '-' || ch == '+') { if (ch == '-') buf[i++] = '-'; ch = _getc(); }
+        if (ch == -1) { _fail = true; return *this; }
+        while (i < 63 && ch != -1 &&
+               ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+            buf[i++] = (char)ch; ch = _getc();
+        }
+        buf[i] = '\0';
+        if (ch != -1) _unget(ch);
+        if (i == 0) { _fail = true; return *this; }
+        char *end;
+        f = (float)_jt()->strtod(buf, &end);
+        if (end == buf) _fail = true;
+        return *this;
+    }
+
+    istream &operator>>(double &d) {
+        _skip_ws();
+        char buf[64]; int i = 0;
+        int ch = _getc();
+        if (ch == '-' || ch == '+') { if (ch == '-') buf[i++] = '-'; ch = _getc(); }
+        if (ch == -1) { _fail = true; return *this; }
+        while (i < 63 && ch != -1 &&
+               ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+            buf[i++] = (char)ch; ch = _getc();
+        }
+        buf[i] = '\0';
+        if (ch != -1) _unget(ch);
+        if (i == 0) { _fail = true; return *this; }
+        char *end;
+        d = _jt()->strtod(buf, &end);
+        if (end == buf) _fail = true;
+        return *this;
+    }
+
+    istream &operator>>(bool &b) { int n = 0; *this >> n; b = (n != 0); return *this; }
+
+    istream &ignore(int n = 1, int delim = -1) {
+        for (int i = 0; i < n; i++) {
+            int c = _getc();
+            if (c == -1 || c == delim) break;
+        }
+        return *this;
+    }
+};
+
+/* ── Stream manipulators ──────────────────────────────────────────────── */
+
+inline ostream &endl(ostream &os)  { os.put('\n'); return os; }
+inline ostream &flush(ostream &os) { return os.flush(); }
+
+/* ── Global stream objects (defined in of_cxxabi.cpp) ────────────────── */
+
+extern ostream cout;
+extern ostream cerr;
+extern istream cin;
+
+} /* namespace std */
+
+/* Restore any stdio.h macros that were saved above. */
+#ifdef _OF_IOSTREAM_RESTORE_SNPRINTF
+#  pragma pop_macro("snprintf")
+#  undef _OF_IOSTREAM_RESTORE_SNPRINTF
+#endif
+#ifdef _OF_IOSTREAM_RESTORE_VSNPRINTF
+#  pragma pop_macro("vsnprintf")
+#  undef _OF_IOSTREAM_RESTORE_VSNPRINTF
+#endif
+#ifdef _OF_IOSTREAM_RESTORE_PRINTF
+#  pragma pop_macro("printf")
+#  undef _OF_IOSTREAM_RESTORE_PRINTF
+#endif
+#ifdef _OF_IOSTREAM_RESTORE_FPRINTF
+#  pragma pop_macro("fprintf")
+#  undef _OF_IOSTREAM_RESTORE_FPRINTF
+#endif
+#ifdef _OF_IOSTREAM_RESTORE_SPRINTF
+#  pragma pop_macro("sprintf")
+#  undef _OF_IOSTREAM_RESTORE_SPRINTF
+#endif
+#ifdef _OF_IOSTREAM_RESTORE_VSPRINTF
+#  pragma pop_macro("vsprintf")
+#  undef _OF_IOSTREAM_RESTORE_VSPRINTF
+#endif
+#ifdef _OF_IOSTREAM_RESTORE_SSCANF
+#  pragma pop_macro("sscanf")
+#  undef _OF_IOSTREAM_RESTORE_SSCANF
+#endif
+
+#endif /* OF_PC */
+#endif /* _OF_IOSTREAM_H */

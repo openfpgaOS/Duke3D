@@ -6,6 +6,10 @@
 #include_next <errno.h>
 #else
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 static int __of_errno;
 #define errno __of_errno
 
@@ -18,6 +22,10 @@ static int __of_errno;
 #define EEXIST  17
 #define ENOSYS  38
 #define ERANGE  34
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_PC */
 #endif /* _OF_ERRNO_H */

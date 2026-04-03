@@ -8,6 +8,10 @@
 #ifndef OF_SYSCALL_NUMBERS_H
 #define OF_SYSCALL_NUMBERS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ======================================================================
  * Canonical syscall numbers (OF_SYS_* prefix)
  * ====================================================================== */
@@ -94,10 +98,6 @@
 /* Idle hook */
 #define OF_SYS_SET_IDLE_HOOK           0x10B4
 
-/* Audio ring buffer */
-#define OF_SYS_AUDIO_ENQUEUE           0x10B5
-#define OF_SYS_AUDIO_RING_FREE         0x10B6
-
 /* Memory allocation */
 #define OF_SYS_MALLOC                  0x10C0
 #define OF_SYS_FREE                    0x10C1
@@ -112,6 +112,7 @@
 #define OF_SYS_MIXER_SET_VOLUME        0x10D4
 #define OF_SYS_MIXER_PUMP              0x10D5
 #define OF_SYS_MIXER_VOICE_ACTIVE      0x10D6
+#define OF_SYS_MIXER_SET_PAN           0x10D7
 
 /* Audio Codec */
 #define OF_SYS_CODEC_PARSE_VOC         0x10D8
@@ -120,5 +121,17 @@
 /* LZW Compression */
 #define OF_SYS_LZW_COMPRESS            0x10E0
 #define OF_SYS_LZW_UNCOMPRESS          0x10E1
+
+/* DMA engine */
+#define OF_SYS_DMA_COPY                0x10F0
+#define OF_SYS_DMA_FILL                0x10F1
+#define OF_SYS_DMA_COPY_ASYNC          0x10F2
+#define OF_SYS_DMA_FILL_ASYNC          0x10F3
+#define OF_SYS_DMA_WAIT                0x10F4
+#define OF_SYS_DMA_BUSY                0x10F5
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_SYSCALL_NUMBERS_H */

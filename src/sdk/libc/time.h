@@ -6,6 +6,10 @@
 #include_next <time.h>
 #else
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 typedef uint32_t time_t;
@@ -38,6 +42,10 @@ static inline struct tm *localtime(const time_t *t) {
     (void)t;
     return &tm0;
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_PC */
 #endif /* _OF_TIME_H */

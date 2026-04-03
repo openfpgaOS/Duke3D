@@ -5,6 +5,10 @@
 #ifndef OF_ANALOGIZER_H
 #define OF_ANALOGIZER_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 typedef struct {
@@ -35,5 +39,9 @@ int of_analogizer_enabled(void);
 int of_analogizer_state(of_analogizer_state_t *state);
 
 #endif /* OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_ANALOGIZER_H */

@@ -3,12 +3,13 @@
 # This file is SDK-owned. Do not edit — it gets replaced on SDK updates.
 # Customize your build in Makefile instead.
 #
-# SDK version: 3
+# SDK version: 4
 #
 
 # ── Toolchain (auto-detect) ───────────────────────────────────────
 CROSS ?= $(shell which riscv64-unknown-elf-gcc >/dev/null 2>&1 && echo riscv64-unknown-elf- || echo riscv64-elf-)
 CC      = $(CROSS)gcc
+CXX     = $(CROSS)g++
 LD      = $(CROSS)gcc
 AS      = $(CROSS)gcc
 OBJDUMP = $(CROSS)objdump
@@ -23,7 +24,7 @@ SDK_DIR ?= src/sdk
 CRT_DIR  = $(SDK_DIR)/crt
 APP_LD  ?= $(SDK_DIR)/crt/app.ld
 
-# ── Compiler flags ────────────────────────────────────────────────
+# ── C compiler flags ─────────────────────────────────────────────
 SDK_CFLAGS  = -march=$(ARCH) -mabi=$(ABI) -O2 -Wall -Wextra
 SDK_CFLAGS += -ffreestanding -nostdlib -nostartfiles
 SDK_CFLAGS += -ffunction-sections -fdata-sections
@@ -34,6 +35,19 @@ SDK_CFLAGS += -isystem $(shell $(CC) -print-file-name=include)
 CFLAGS ?=
 ALL_CFLAGS = $(SDK_CFLAGS) $(CFLAGS)
 
+# ── C++ compiler flags ───────────────────────────────────────────
+SDK_CXXFLAGS  = -march=$(ARCH) -mabi=$(ABI) -O2 -Wall -Wextra
+SDK_CXXFLAGS += -ffreestanding -nostdlib -nostartfiles
+SDK_CXXFLAGS += -ffunction-sections -fdata-sections
+SDK_CXXFLAGS += -fno-builtin
+SDK_CXXFLAGS += -fno-exceptions -fno-rtti
+SDK_CXXFLAGS += -nostdinc -I$(SDK_DIR)/libc -I$(SDK_DIR)/include -I.
+SDK_CXXFLAGS += -isystem $(shell $(CC) -print-file-name=include)
+
+CXXFLAGS ?=
+ALL_CXXFLAGS = $(SDK_CXXFLAGS) $(CXXFLAGS)
+
+# ── Linker / assembler flags ─────────────────────────────────────
 SDK_LDFLAGS  = -march=$(ARCH) -mabi=$(ABI)
 SDK_LDFLAGS += -nostdlib -nostartfiles -static
 SDK_LDFLAGS += -T $(APP_LD) -Wl,--gc-sections
@@ -46,11 +60,22 @@ ASFLAGS = -march=$(ARCH)_zicsr -mabi=$(ABI)
 LIBGCC = $(shell $(CC) -march=$(ARCH) -mabi=$(ABI) -print-libgcc-file-name)
 
 # ── Objects ───────────────────────────────────────────────────────
-CRT_START = $(CRT_DIR)/start.o
-CRT_POSIX = $(CRT_DIR)/of_posix.o
-CRT_MIDI  = $(CRT_DIR)/of_midi.o
-APP_OBJS  = $(SRCS:.c=.o)
-OBJS      = $(CRT_START) $(CRT_POSIX) $(CRT_MIDI) $(APP_OBJS)
+CRT_START  = $(CRT_DIR)/start.o
+CRT_POSIX  = $(SDK_DIR)/of_posix.o
+CRT_MIDI   = $(SDK_DIR)/of_midi.o
+CRT_CXXABI = $(SDK_DIR)/of_cxxabi.o
+
+SRCS_CXX ?=
+APP_C_OBJS   = $(patsubst %.c,%.o,$(filter %.c,$(SRCS)))
+APP_CXX_OBJS = $(patsubst %.cpp,%.o,$(filter %.cpp,$(SRCS_CXX)))
+APP_OBJS     = $(APP_C_OBJS) $(APP_CXX_OBJS)
+
+# Include C++ ABI object when C++ sources are present
+ifneq ($(strip $(SRCS_CXX)),)
+OBJS = $(CRT_START) $(CRT_POSIX) $(CRT_MIDI) $(CRT_CXXABI) $(APP_OBJS)
+else
+OBJS = $(CRT_START) $(CRT_POSIX) $(CRT_MIDI) $(APP_OBJS)
+endif
 
 # ── Pocket build ─────────────────────────────────────────────────
 app.elf: $(OBJS) $(APP_LD)
@@ -61,6 +86,9 @@ $(CRT_DIR)/%.o: $(CRT_DIR)/%.S
 
 %.o: %.c
 	$(CC) $(ALL_CFLAGS) -c -o $@ $<
+
+%.o: %.cpp
+	$(CXX) $(ALL_CXXFLAGS) -c -o $@ $<
 
 # ── PC build (SDL2) ──────────────────────────────────────────────
 PC_CC ?= cc

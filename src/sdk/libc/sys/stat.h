@@ -6,6 +6,10 @@
 #include_next <sys/stat.h>
 #else
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 typedef uint32_t mode_t;
@@ -26,6 +30,8 @@ struct stat {
 #define S_IROTH 0004
 #define S_IWOTH 0002
 #define S_IXOTH 0001
+
+/* Legacy aliases */
 #define S_IREAD  S_IRUSR
 #define S_IWRITE S_IWUSR
 #define S_IEXEC  S_IXUSR
@@ -40,6 +46,10 @@ static inline int fstat(int fd, struct stat *buf) {
     (void)fd; (void)buf;
     return -1;
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_PC */
 #endif /* _OF_SYS_STAT_H */

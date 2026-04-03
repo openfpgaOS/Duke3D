@@ -7,6 +7,10 @@
 #ifndef OF_SAVE_H
 #define OF_SAVE_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 #ifndef OF_PC
@@ -46,5 +50,9 @@ void of_save_flush(int slot);
 void of_save_erase(int slot);
 
 #endif /* OF_PC */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OF_SAVE_H */
