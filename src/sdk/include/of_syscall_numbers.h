@@ -101,18 +101,25 @@ extern "C" {
 #define OF_SYS_MIXER_PUMP              0x10D5
 #define OF_SYS_MIXER_VOICE_ACTIVE      0x10D6
 #define OF_SYS_MIXER_SET_PAN           0x10D7
+#define OF_SYS_MIXER_SET_LOOP          0x10D8
+#define OF_SYS_MIXER_SET_RATE          0x10D9
+#define OF_SYS_MIXER_SET_VOL_LR        0x10DA
+#define OF_SYS_MIXER_SET_BIDI          0x10DB
+#define OF_SYS_MIXER_GET_POSITION      0x10DC
+#define OF_SYS_MIXER_SET_POSITION      0x10DD
+#define OF_SYS_MIXER_SET_VOICE         0x10DE
+#define OF_SYS_MIXER_ALLOC_SAMPLES     0x10DF
+#define OF_SYS_MIXER_FREE_SAMPLES      0x10E0
+#define OF_SYS_MIXER_SET_RATE_RAW      0x10E1
+#define OF_SYS_MIXER_SET_VOICE_RAW     0x10E2
 
 /* Audio Codec */
-#define OF_SYS_CODEC_PARSE_VOC         0x10D8
-#define OF_SYS_CODEC_PARSE_WAV         0x10D9
-
-/* Mixer sample allocation */
-#define OF_SYS_MIXER_ALLOC_SAMPLES     0x10DA
-#define OF_SYS_MIXER_FREE_SAMPLES      0x10DB
+#define OF_SYS_CODEC_PARSE_VOC         0x10E3
+#define OF_SYS_CODEC_PARSE_WAV         0x10E4
 
 /* LZW Compression */
-#define OF_SYS_LZW_COMPRESS            0x10E0
-#define OF_SYS_LZW_UNCOMPRESS          0x10E1
+#define OF_SYS_LZW_COMPRESS            0x10E5
+#define OF_SYS_LZW_UNCOMPRESS          0x10E6
 
 /* Interact */
 #define OF_SYS_INTERACT_GET            0x10F0

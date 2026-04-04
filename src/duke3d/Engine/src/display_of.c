@@ -617,11 +617,8 @@ void sampletimer(void)
     /* Poll input so button presses are detected even in non-rendering loops */
     _handle_events();
 
-    /* Keep audio FIFO fed during asset loading and wait loops */
+    /* Audio pump: MIDI is timer-driven (60Hz), voice completion polled here */
     d3d_audio_pump();
-
-    /* Pump MIDI music playback */
-    of_midi_pump();
 
     i = (int64_t)clock_ms();
     n = (int32_t)(i * timerticspersec / timerfreq) - timerlastsample;

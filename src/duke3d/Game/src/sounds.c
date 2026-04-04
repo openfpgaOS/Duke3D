@@ -90,6 +90,10 @@ void SoundStartup(void)
 
 void SoundShutdown( void )
    {
+#ifdef OPENFPGA
+   d3d_audio_shutdown();
+   return;
+#endif
    int32 status;
 
    // if they chose None lets return
@@ -259,27 +263,94 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 
         if (num < 0 || num >= NUM_SOUNDS || !SoundToggle)
             return -1;
+        if ((soundm[num] & 8) && ud.lockout)
+            return -1;
+        if (Sound[num].num > 3)
+            return -1;
 
-        if (i >= 0 && PN != APLAYER) {
-            int32_t cx = ps[screenpeek].oposx;
-            int32_t cy = ps[screenpeek].oposy;
-            int32_t ca = ps[screenpeek].ang + ps[screenpeek].look_ang;
-            sndist = FindDistance2D(cx - SX, cy - SY);
-            if (sndist > 8192) return -1;
-            int dist = sndist >> 5;
-            if (dist > 255) dist = 255;
+        /* Redirect non-positional sounds */
+        if (soundm[num] & 128) { sound(num); return 0; }
+
+        int32_t cx = ps[screenpeek].oposx;
+        int32_t cy = ps[screenpeek].oposy;
+        int32_t cz = ps[screenpeek].oposz;
+        short cs = ps[screenpeek].cursectnum;
+        int32_t ca = ps[screenpeek].ang + ps[screenpeek].look_ang;
+
+        if (i >= 0 && PN == APLAYER && sprite[i].yvel == screenpeek) {
+            /* Player's own sounds: full volume, center pan */
+            sndist = 0;
+            sndang = 0;
+        } else if (i >= 0) {
+            /* 3D positioned sound */
+            sndist = FindDistance3D(cx - SX, cy - SY, (cz - SZ) >> 4);
+
+            /* Sector reverb scaling */
+            if ((soundm[num] & 16) == 0 && PN == MUSICANDSFX &&
+                SLT < 999 && (sector[SECT].lotag & 0xff) < 9)
+                sndist = divscale14(sndist, SHT + 1);
+
+            sndist += soundvo[num];
+            if (sndist < 0) sndist = 0;
+
+            /* Occlusion: increase distance when source not visible */
+            if (sndist && PN != MUSICANDSFX &&
+                !cansee(cx, cy, cz - (24 << 8), cs,
+                        SX, SY, SZ - (24 << 8), SECT))
+                sndist += sndist >> 5;
+
+            /* Explosions clamp distance */
+            if (num == PIPEBOMB_EXPLODE || num == LASERTRIP_EXPLODE ||
+                num == RPG_EXPLODE) {
+                if (sndist > 6144) sndist = 6144;
+            } else if (sndist > 31444 && PN != MUSICANDSFX) {
+                return -1;
+            }
+
+            /* Full-volume flag */
+            if (soundm[num] & 16) sndist = 0;
+
+            /* Floor distance at LOUDESTVOLUME */
+            if (sndist < ((255 - LOUDESTVOLUME) << 6))
+                sndist = ((255 - LOUDESTVOLUME) << 6);
+
             sndang = 2048 + ca - getangle(cx - x, cy - y);
             sndang &= 2047;
-            voice = d3d_sound_play_3d(num, soundpr[num], sndang >> 6, dist);
         } else {
-            voice = d3d_sound_play(num, soundpr[num], 200);
+            /* No sprite — play centered */
+            sndist = 0;
+            sndang = 0;
         }
 
-        if (voice >= 0 && i >= 0) {
-            SoundOwner[num][Sound[num].num].i = i;
-            SoundOwner[num][Sound[num].num].voice = voice;
-            Sound[num].num++;
-            d3d_sound_set_owned(voice);
+        /* Stop duplicate sounds from same sprite */
+        if (i >= 0 && Sound[num].num > 0 && PN != MUSICANDSFX) {
+            if (SoundOwner[num][0].i == i) stopsound(num);
+            else if (Sound[num].num > 1) stopsound(num);
+            else if (badguy(&sprite[i]) && sprite[i].extra <= 0) stopsound(num);
+        }
+
+        /* Looping sounds: only one instance */
+        if ((soundm[num] & 1) && Sound[num].num > 0)
+            return -1;
+
+        int dist = sndist >> 6;
+        if (dist > 255) dist = 255;
+
+        if (sndist == 0)
+            voice = d3d_sound_play(num, soundpr[num], 255);
+        else
+            voice = d3d_sound_play_3d(num, soundpr[num], sndang, dist);
+
+        if (voice >= 0) {
+            if (soundm[num] & 1)
+                d3d_sound_set_loop(voice);
+
+            if (i >= 0) {
+                SoundOwner[num][Sound[num].num].i = i;
+                SoundOwner[num][Sound[num].num].voice = voice;
+                Sound[num].num++;
+                d3d_sound_set_owned(voice);
+            }
         }
         return voice;
     }
@@ -427,7 +498,11 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 void sound(short num)
 {
 #ifdef OPENFPGA
-    d3d_sound_play(num, soundpr[num], 255);
+    {
+        int voice = d3d_sound_play(num, soundpr[num], 255);
+        if (voice >= 0 && (soundm[num] & 1))
+            d3d_sound_set_loop(voice);
+    }
     return;
 #endif
     short pitch,pitche,pitchs,cx;
@@ -608,10 +683,9 @@ void pan3dsound(void)
 
 #ifdef OPENFPGA
         {
-            int vol = 255 - (sndist >> 6);
-            if (vol < 0) vol = 0;
-            d3d_sound_set_volume(SoundOwner[j][k].voice, vol);
-            /* TODO: d3d_sound_set_pan when OS supports it */
+            int dist = sndist >> 6;
+            if (dist > 255) dist = 255;
+            d3d_sound_set_pan(SoundOwner[j][k].voice, sndang, dist);
         }
 #else
         FX_Pan3D(SoundOwner[j][k].voice,sndang>>6,sndist>>6);

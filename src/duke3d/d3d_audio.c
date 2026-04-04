@@ -2,11 +2,11 @@
  * d3d_audio.c — Sound playback for Duke3D on openfpgaOS
  *
  * Routes all game audio through the OS hardware mixer (of_mixer.h).
- * Handles VOC/WAV parsing, CRAM1 upload, voice tracking, and
- * completion callbacks via polling.
+ * Handles VOC/WAV parsing, CRAM1 upload, voice tracking, completion
+ * callbacks, and 3D positional audio (distance → volume, angle → L/R pan).
  *
- * Missing OS features (looping, pitch shift) are stubbed — sounds
- * play once at original rate until the OS mixer adds support.
+ * A 60Hz timer interrupt drives MIDI playback and voice completion
+ * polling, ensuring consistent timing independent of frame rate.
  */
 
 #include <stdint.h>
@@ -16,31 +16,19 @@
 #include "of_file.h"
 #include "of_mixer.h"
 #include "of_codec.h"
+#include "of_timer.h"
+#include "of_midi.h"
 
 /* Game headers */
 #include "duke3d.h"
 #include "filesystem.h"
 
+/* BUILD engine sine table: short[2048], range -16383 to +16383
+ * sintable[ang & 2047]       = sin(ang * pi/1024) * 16383
+ * sintable[(ang+512) & 2047] = cos(ang * pi/1024) * 16383 */
+extern short sintable[];
+
 static int audio_initialized = 0;
-
-/* ================================================================
- * CRAM1 bump allocator for decoded PCM samples
- * Samples must live in CRAM1 (0x31000000+) for the hardware mixer.
- * ================================================================ */
-#define CRAM1_BASE  0x31000000
-#define CRAM1_SIZE  (16 * 1024 * 1024)  /* 16MB CRAM1 */
-
-static uint32_t cram1_offset = 0;
-
-static void *cram1_alloc(uint32_t size) {
-    /* Word-align */
-    size = (size + 3) & ~3;
-    if (cram1_offset + size > CRAM1_SIZE)
-        return NULL;
-    void *ptr = (void *)(CRAM1_BASE + cram1_offset);
-    cram1_offset += size;
-    return ptr;
-}
 
 /* ================================================================
  * Per-sound cached decode: raw PCM in CRAM1
@@ -84,16 +72,66 @@ static void untrack_voice(int voice) {
 }
 
 /* ================================================================
+ * 3D audio: angle + distance → stereo L/R volumes
+ * ================================================================ */
+
+/* Convert Duke angle (0-2047 BAMS) + distance (0-255) to L/R volumes.
+ * angle 0 = ahead, 512 = right, 1024 = behind, 1536 = left.
+ * Uses BUILD engine sintable for smooth panning. */
+static void angle_dist_to_lr(int angle, int distance,
+                              int *out_vol_l, int *out_vol_r)
+{
+    int volume = 255 - distance;
+    if (volume < 0) volume = 0;
+
+    /* sintable[(angle+512)&2047] = cos(angle) → front/back
+     * sintable[angle&2047]       = sin(angle) → left/right
+     * sin > 0 when angle 0-1023 (right side)
+     * sin < 0 when angle 1024-2047 (left side) */
+    int s = sintable[angle & 2047];  /* -16383 to +16383 */
+
+    /* Map sine to pan: 0 (full left) to 255 (full right), 128 = center */
+    int pan = 128 + ((s * 127) >> 14);
+
+    *out_vol_l = (volume * (255 - pan)) >> 8;
+    *out_vol_r = (volume * pan) >> 8;
+}
+
+/* ================================================================
+ * Timer-driven audio pump (60 Hz)
+ * ================================================================ */
+
+#define AUDIO_TICK_HZ 60
+
+static volatile int pump_pending = 0;
+
+static void audio_timer_tick(void)
+{
+    pump_pending = 1;
+}
+
+/* ================================================================
  * Public API
  * ================================================================ */
 
 void d3d_audio_init(void)
 {
     of_mixer_init(MAX_ACTIVE_VOICES, OF_MIXER_OUTPUT_RATE);
+    of_mixer_free_samples();
     init_voice_tracking();
     memset(decoded, 0, sizeof(decoded));
-    cram1_offset = 0;
     audio_initialized = 1;
+
+    /* Start timer for MIDI + voice completion polling */
+    of_timer_set_callback(audio_timer_tick, AUDIO_TICK_HZ);
+}
+
+void d3d_audio_shutdown(void)
+{
+    if (!audio_initialized) return;
+    of_timer_stop();
+    of_mixer_stop_all();
+    audio_initialized = 0;
 }
 
 /* Decode a sound from GRP and upload to CRAM1 (cached). */
@@ -125,9 +163,9 @@ static int ensure_decoded(int num)
     if (rc < 0 || result.pcm == NULL || result.pcm_len == 0)
         return 0;
 
-    /* Allocate CRAM1 and copy decoded PCM */
+    /* Allocate sample memory via kernel and copy decoded PCM */
     uint32_t byte_len = result.pcm_len * sizeof(int16_t);
-    int16_t *cram_ptr = (int16_t *)cram1_alloc(byte_len);
+    int16_t *cram_ptr = (int16_t *)of_mixer_alloc_samples(byte_len);
     if (cram_ptr == NULL)
         return 0;
 
@@ -157,7 +195,7 @@ int d3d_sound_play(int num, int priority, int volume)
     int voice = of_mixer_play((const uint8_t *)decoded[num].pcm,
                               decoded[num].sample_count,
                               decoded[num].sample_rate,
-                              priority, volume);
+                              priority, volume / 2);
 
     if (voice >= 0)
         track_voice(voice, num, 0);
@@ -166,8 +204,8 @@ int d3d_sound_play(int num, int priority, int volume)
 }
 
 /*
- * Play with 3D positioning. Angle/distance mapped to volume + pan.
- * Pan stubbed until of_mixer_set_pan is available.
+ * Play with 3D positioning. Angle (0-2047 BAMS) + distance (0-255)
+ * mapped to stereo L/R volumes via sine-based panning.
  */
 int d3d_sound_play_3d(int num, int priority, int angle, int distance)
 {
@@ -177,22 +215,43 @@ int d3d_sound_play_3d(int num, int priority, int angle, int distance)
     if (!ensure_decoded(num))
         return -1;
 
-    /* Map distance to volume (0=far, 255=near) */
-    int volume = 255 - distance;
-    if (volume < 0) volume = 0;
-    if (volume > 255) volume = 255;
+    int vol_l, vol_r;
+    angle_dist_to_lr(angle, distance, &vol_l, &vol_r);
 
+    /* Start voice at center volume, then set L/R immediately */
+    int avg = (vol_l + vol_r) >> 1;
     int voice = of_mixer_play((const uint8_t *)decoded[num].pcm,
                               decoded[num].sample_count,
                               decoded[num].sample_rate,
-                              priority, volume);
+                              priority, avg);
 
     if (voice >= 0) {
+        of_mixer_set_vol_lr(voice, vol_l, vol_r);
         track_voice(voice, num, 0);
-        /* TODO: of_mixer_set_pan(voice, angle) when OS supports it */
     }
 
     return voice;
+}
+
+/*
+ * Update panning for an active 3D sound (called per-frame from pan3dsound).
+ */
+void d3d_sound_set_pan(int voice, int angle, int distance)
+{
+    if (!audio_initialized || voice < 0) return;
+
+    int vol_l, vol_r;
+    angle_dist_to_lr(angle, distance, &vol_l, &vol_r);
+    of_mixer_set_vol_lr(voice, vol_l, vol_r);
+}
+
+/*
+ * Enable looping on a voice (loops entire sample).
+ */
+void d3d_sound_set_loop(int voice)
+{
+    if (!audio_initialized || voice < 0) return;
+    of_mixer_set_loop(voice, 0, -1);
 }
 
 void d3d_sound_stop(int voice)
@@ -224,11 +283,17 @@ void d3d_sound_set_owned(int voice)
 
 /*
  * Poll for completed voices and fire Duke's TestCallBack.
- * Called once per frame from _nextpage().
+ * Called from timer interrupt and also from display loop as fallback.
  */
 void d3d_audio_pump(void)
 {
     if (!audio_initialized) return;
+
+    /* Process timer-driven work */
+    if (pump_pending) {
+        pump_pending = 0;
+        of_midi_pump();
+    }
 
     for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
         if (active_voices[i].voice >= 0) {

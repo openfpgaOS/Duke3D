@@ -28,6 +28,11 @@ static int  midi_looping = 0;
 static uint8_t midi_buffer[MIDI_BUF_SIZE];
 static uint32_t midi_buffer_len = 0;
 
+/* Converted instrument bank: 175 instruments x 11 bytes = 1925 bytes.
+ * Built from Duke3D's TMB format (13-byte sparse records) by
+ * scattering patches into the sequential layout of_midi expects. */
+static uint8_t converted_bank[175 * OF_MIDI_INST_SIZE];
+
 /* ---- error string -------------------------------------------------- */
 
 char *MUSIC_ErrorString(int ErrorNumber)
@@ -203,10 +208,43 @@ void MUSIC_RerouteMidiChannel(int channel,
     (void)function;
 }
 
+/* Parse Duke3D TMB format and convert to of_midi bank format.
+ *
+ * Duke3D TMB: variable number of 13-byte records:
+ *   [instrument_number (1)] [OPL data (11)] [note_offset (1)]
+ * The instrument number selects which slot to overwrite (0-174).
+ *
+ * of_midi bank: 175 sequential instruments, 11 bytes each:
+ *   128 melodic (GM program 0-127) + 47 percussion (notes 35-81).
+ */
 void MUSIC_RegisterTimbreBank(uint8_t *timbres)
 {
-    if (timbres && midi_initialized)
-        of_midi_load_bank(timbres);
+    if (!timbres || !midi_initialized)
+        return;
+
+    /* Start from built-in GM bank as baseline, then apply TMB overrides */
+    memcpy(converted_bank, of_midi_builtin_bank(),
+           175 * OF_MIDI_INST_SIZE);
+
+    /* Parse TMB records: each is 13 bytes */
+    /* The TMB file from loadtmb() has known length in tmb_bank,
+     * but we don't receive the length here. Scan until we hit
+     * an invalid instrument number or exhaust 8000 bytes. */
+    uint8_t *p = timbres;
+    uint8_t *end = timbres + 8000;  /* tmb_bank is 8000 bytes max */
+
+    while (p + 13 <= end) {
+        int inst_num = p[0];
+        if (inst_num >= 175) break;  /* invalid = end of records */
+
+        memcpy(&converted_bank[inst_num * OF_MIDI_INST_SIZE],
+               &p[1], OF_MIDI_INST_SIZE);
+        /* p[12] = note offset, ignored for now (used for percussion tuning) */
+
+        p += 13;
+    }
+
+    of_midi_load_bank(converted_bank);
 }
 
 /* ---- PlayMusic: load MIDI from GRP and play ------------------------ */
