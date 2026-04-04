@@ -87,7 +87,7 @@ int main(void) {
         fill_screen(fb, colors[frame % 3]);
 
         of_video_flip();
-        of_delay_ms(500);
+        usleep(500 * 1000);
         frame++;
     }
 }

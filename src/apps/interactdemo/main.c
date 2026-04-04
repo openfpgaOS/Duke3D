@@ -57,7 +57,7 @@ int main(void) {
             printf("   Option 3: \033[92m%-8s\033[0m (raw: %d)\n", s3, (int)v2);
         }
 
-        of_delay_ms(50);
+        usleep(50 * 1000);
     }
 
     return 0;

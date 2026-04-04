@@ -424,43 +424,7 @@ static void save_path(int slot, char *buf, int buflen) {
     snprintf(buf, buflen, "save_%d.bin", slot);
 }
 
-int of_save_read(int slot, void *buf, uint32_t offset, uint32_t len) {
-    char path[64];
-    save_path(slot, path, sizeof(path));
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        memset(buf, 0xFF, len);
-        return (int)len;
-    }
-    fseek(f, offset, SEEK_SET);
-    int n = fread(buf, 1, len, f);
-    fclose(f);
-    return n;
-}
 
-int of_save_write(int slot, const void *buf, uint32_t offset, uint32_t len) {
-    /* Read existing file (or create) */
-    char path[64];
-    save_path(slot, path, sizeof(path));
-
-    uint8_t *data = calloc(1, SAVE_SIZE);
-    FILE *f = fopen(path, "rb");
-    if (f) {
-        fread(data, 1, SAVE_SIZE, f);
-        fclose(f);
-    }
-
-    if (offset + len > SAVE_SIZE) len = SAVE_SIZE - offset;
-    memcpy(data + offset, buf, len);
-
-    f = fopen(path, "wb");
-    if (f) {
-        fwrite(data, 1, SAVE_SIZE, f);
-        fclose(f);
-    }
-    free(data);
-    return (int)len;
-}
 
 void of_save_flush(int slot) { (void)slot; }
 
@@ -520,14 +484,6 @@ int      of_link_send(uint32_t data)   { (void)data; return -1; }
 int      of_link_recv(uint32_t *data)  { (void)data; return -1; }
 uint32_t of_link_status(void)          { return 0; }
 
-/* ======================================================================
- * Terminal (stdout)
- * ====================================================================== */
-
-void of_print(const char *s)     { fputs(s, stdout); fflush(stdout); }
-void of_print_char(char c)       { putchar(c); fflush(stdout); }
-void of_print_clear(void)        { printf("\033[2J\033[H"); fflush(stdout); }
-void of_print_at(int col, int row) { printf("\033[%d;%dH", row + 1, col + 1); fflush(stdout); }
 
 /* ======================================================================
  * Analogizer (stubs)

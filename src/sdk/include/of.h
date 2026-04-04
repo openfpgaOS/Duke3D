@@ -32,6 +32,8 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <time.h>
+#include <unistd.h>
 
 /* Foundation headers */
 #include "of_error.h"
@@ -49,17 +51,18 @@ extern "C" {
 #include "of_timer.h"
 #include "of_file.h"
 #include "of_save.h"
-#include "of_link.h"
+#include "of_net.h"
+#include "of_link.h"       /* deprecated — redirects to of_net.h */
 #include "of_analogizer.h"
 #include "of_terminal.h"
 #include "of_tile.h"
 #include "of_cache.h"
-#include "of_dma.h"
 #include "of_interact.h"
 #include "of_mixer.h"
 #include "of_codec.h"
 #include "of_lzw.h"
-#include "of_bram.h"
+#include "of_fastram.h"
+#include "of_bram.h"       /* deprecated — redirects to of_fastram.h */
 #include "of_midi.h"
 
 /* ======================================================================

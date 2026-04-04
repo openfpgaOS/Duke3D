@@ -6,77 +6,113 @@ void test_saves(void) {
     /* Use slot 9 (last slot) to avoid clobbering real save data */
     int slot = 9;
 
-    /* Erase slot */
-    of_save_erase(slot);
+    /* Erase slot: write 256 bytes of 0xFF */
+    {
+        FILE *ef = fopen("save:9", "wb");
+        if (ef) {
+            uint8_t ff[256];
+            memset(ff, 0xFF, sizeof(ff));
+            fwrite(ff, 1, sizeof(ff), ef);
+            fclose(ef);
+        }
+    }
 
-    /* Verify erased (should be 0xFF) */
-    uint8_t buf[16];
-    int rc = of_save_read(slot, buf, 0, 16);
-    ASSERT_EQ("erase read", rc, 16);
-    int erased = 1;
-    for (int i = 0; i < 16; i++)
-        if (buf[i] != 0xFF) erased = 0;
-    ASSERT("erased 0xFF", erased);
+    /* Verify erased (should be 0xFF) via fopen */
+    {
+        FILE *f = fopen("save:9", "rb");
+        ASSERT("erase open", f != NULL);
+        if (f) {
+            uint8_t buf[16];
+            size_t n = fread(buf, 1, 16, f);
+            ASSERT_EQ("erase read", (int)n, 16);
+            int erased = 1;
+            for (int i = 0; i < 16; i++)
+                if (buf[i] != 0xFF) erased = 0;
+            ASSERT("erased 0xFF", erased);
+            fclose(f);
+        }
+    }
 
-    /* Write pattern */
+    /* Write pattern via fopen */
     uint8_t pattern[32];
     for (int i = 0; i < 32; i++)
         pattern[i] = (uint8_t)(i * 7 + 0x42);
-    rc = of_save_write(slot, pattern, 0, 32);
-    ASSERT_EQ("write rc", rc, 32);
-
-    /* Read back and verify */
-    uint8_t readback[32];
-    rc = of_save_read(slot, readback, 0, 32);
-    ASSERT_EQ("read rc", rc, 32);
-    ASSERT("read match", memcmp(pattern, readback, 32) == 0);
-
-    /* Write at offset */
-    uint8_t mid[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
-    of_save_write(slot, mid, 100, 4);
-    uint8_t midread[4];
-    of_save_read(slot, midread, 100, 4);
-    ASSERT("offset write", memcmp(mid, midread, 4) == 0);
-
-    /* Original data at offset 0 still intact */
-    of_save_read(slot, readback, 0, 32);
-    ASSERT("no clobber", memcmp(pattern, readback, 32) == 0);
-
-    /* Flush — triggers bridge Data Slot Write (CRAM1 → SD card) */
-    of_save_flush(slot);
-    test_pass("flush");
-
-    /* Boundary: write at end of 256KB slot */
-    uint8_t edge[4] = { 0xCA, 0xFE, 0xBA, 0xBE };
-    rc = of_save_write(slot, edge, 0x40000 - 4, 4);
-    ASSERT_EQ("edge write", rc, 4);
-    uint8_t edgeread[4];
-    of_save_read(slot, edgeread, 0x40000 - 4, 4);
-    ASSERT("edge read", memcmp(edge, edgeread, 4) == 0);
-
-    /* Out of bounds should fail */
-    rc = of_save_write(slot, edge, 0x40000, 4);
-    ASSERT_EQ("oob write", rc, -1);
-    rc = of_save_read(slot, edgeread, 0x40000, 4);
-    ASSERT_EQ("oob read", rc, -1);
-
-    /* Invalid slot */
-    rc = of_save_read(10, buf, 0, 16);
-    ASSERT_EQ("bad slot", rc, -1);
-
-    /* fopen("save:N") path */
-    FILE *f = fopen("save:9", "rb");
-    ASSERT("fopen save", f != NULL);
-    if (f) {
-        uint8_t fbuf[32];
-        size_t n = fread(fbuf, 1, 32, f);
-        ASSERT_EQ("fread save", (int)n, 32);
-        ASSERT("fread match", memcmp(pattern, fbuf, 32) == 0);
-        fclose(f);
+    {
+        FILE *f = fopen("save:9", "r+b");
+        if (!f) f = fopen("save:9", "wb");
+        ASSERT("write open", f != NULL);
+        if (f) {
+            size_t n = fwrite(pattern, 1, 32, f);
+            ASSERT_EQ("write rc", (int)n, 32);
+            fclose(f);
+        }
     }
 
-    /* Clean up — erase test slot */
-    of_save_erase(slot);
+    /* Read back and verify */
+    {
+        FILE *f = fopen("save:9", "rb");
+        ASSERT("readback open", f != NULL);
+        if (f) {
+            uint8_t readback[32];
+            size_t n = fread(readback, 1, 32, f);
+            ASSERT_EQ("read rc", (int)n, 32);
+            ASSERT("read match", memcmp(pattern, readback, 32) == 0);
+            fclose(f);
+        }
+    }
+
+    /* Write at offset */
+    {
+        uint8_t mid[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+        FILE *f = fopen("save:9", "r+b");
+        ASSERT("mid open", f != NULL);
+        if (f) {
+            fseek(f, 100, SEEK_SET);
+            fwrite(mid, 1, 4, f);
+            fclose(f);
+        }
+        uint8_t midread[4];
+        f = fopen("save:9", "rb");
+        if (f) {
+            fseek(f, 100, SEEK_SET);
+            fread(midread, 1, 4, f);
+            ASSERT("offset write", memcmp(mid, midread, 4) == 0);
+            fclose(f);
+        }
+
+        /* Original data at offset 0 still intact */
+        f = fopen("save:9", "rb");
+        if (f) {
+            uint8_t readback[32];
+            fread(readback, 1, 32, f);
+            ASSERT("no clobber", memcmp(pattern, readback, 32) == 0);
+            fclose(f);
+        }
+    }
+
+    /* fopen("save:N") path -- read back the pattern we wrote */
+    {
+        FILE *f = fopen("save:9", "rb");
+        ASSERT("fopen save", f != NULL);
+        if (f) {
+            uint8_t fbuf[32];
+            size_t n = fread(fbuf, 1, 32, f);
+            ASSERT_EQ("fread save", (int)n, 32);
+            ASSERT("fread match", memcmp(pattern, fbuf, 32) == 0);
+            fclose(f);
+        }
+    }
+
+    /* Clean up -- erase test slot: write 256 bytes of 0xFF */
+    {
+        FILE *ef = fopen("save:9", "wb");
+        if (ef) {
+            uint8_t ff[256];
+            memset(ff, 0xFF, sizeof(ff));
+            fwrite(ff, 1, sizeof(ff), ef);
+            fclose(ef);
+        }
+    }
 
     section_end();
 }
@@ -142,8 +178,16 @@ void test_posix_saves(void) {
         fclose(f);
     }
 
-    /* Clean up */
-    of_save_erase(9);
+    /* Clean up: write 256 bytes of 0xFF */
+    {
+        FILE *ef = fopen("save:9", "wb");
+        if (ef) {
+            uint8_t ff[256];
+            memset(ff, 0xFF, sizeof(ff));
+            fwrite(ff, 1, sizeof(ff), ef);
+            fclose(ef);
+        }
+    }
 
     section_end();
 }

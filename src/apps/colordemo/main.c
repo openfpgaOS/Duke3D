@@ -188,9 +188,9 @@ int main(void) {
                 mode = (mode + num_modes - 1) % num_modes;
                 break;
             }
-            of_delay_ms(16);
+            usleep(16 * 1000);
         }
-        of_delay_ms(200);  /* debounce */
+        usleep(200 * 1000);  /* debounce */
     }
 
     return 0;

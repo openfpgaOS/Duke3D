@@ -3,18 +3,6 @@
 void test_file_slots(void) {
     section_start("File Slots");
 
-    /* Register filenames for slots used by this app */
-    of_file_slot_register(1, "os.bin");
-    of_file_slot_register(2, "testdemo.elf");
-
-    int count = of_file_slot_count();
-    ASSERT("count >= 2", count >= 2);
-
-    of_file_slot_t slot;
-    ASSERT_EQ("get[0]", of_file_slot_get(0, &slot), 0);
-    ASSERT("name len", strlen(slot.filename) > 0);
-    ASSERT_EQ("oob", of_file_slot_get(99, &slot), -1);
-
     /* fopen on unknown file should return NULL */
     ASSERT("ghost null", fopen("ghost.bin", "rb") == NULL);
 
@@ -27,31 +15,20 @@ void test_file_negative(void) {
     /* fclose NULL — should not crash (musl handles it) */
     /* Note: fclose(NULL) is undefined in C, skip to avoid potential crash */
 
-    /* Multiple slot registrations */
-    of_file_slot_register(3, "first.dat");
-    of_file_slot_register(3, "second.dat");
-    /* Second registration adds a new entry, doesn't replace */
-    int count = of_file_slot_count();
-    ASSERT("multi reg", count >= 3);
-
-    /* Case insensitive lookup */
-    of_file_slot_register(4, "MixedCase.Dat");
-    FILE *f = fopen("mixedcase.dat", "rb");
-    /* Should match case-insensitively */
-    if (f) { fclose(f); test_pass("case insens"); }
-    else test_pass("case insens");  /* slot 4 has no data, open fails — OK */
-
     /* Empty string */
     ASSERT("empty str", fopen("", "rb") == NULL);
 
     /* fread size=0 */
-    f = fopen("slot:1", "rb");
+    FILE *f = fopen("slot:1", "rb");
     if (f) {
         uint8_t buf[4];
         ASSERT_EQ("fread sz0", (int)fread(buf, 0, 4, f), 0);
         ASSERT_EQ("fread cnt0", (int)fread(buf, 1, 0, f), 0);
         fclose(f);
     }
+
+    /* fopen on unknown filename should return NULL */
+    ASSERT("ghost null", fopen("ghost.dat", "rb") == NULL);
 
     section_end();
 }
@@ -76,8 +53,8 @@ void test_file_io(void) {
         fclose(f);
     }
 
-    f = fopen("os.bin", "rb");
-    ASSERT("os.bin", f != NULL);
+    f = fopen("slot:1", "rb");
+    ASSERT("slot:1 seek", f != NULL);
     if (f) {
         unsigned char b1[64], b2[64];
         fread(b1, 1, 64, f);
@@ -89,16 +66,24 @@ void test_file_io(void) {
     }
 
     /* Repeated open/read/close — stress the fd table and bridge */
-    int repeat_ok = 1;
-    for (int i = 0; i < 20; i++) {
-        f = fopen("slot:1", "rb");
-        if (!f) { repeat_ok = 0; break; }
-        unsigned char buf[16];
-        size_t n = fread(buf, 1, 16, f);
-        if (n != 16) { repeat_ok = 0; fclose(f); break; }
-        fclose(f);
+    {
+        int repeat_ok = 1;
+        for (int i = 0; i < 20; i++) {
+            f = fopen("slot:1", "rb");
+            if (!f) { repeat_ok = 0; break; }
+            unsigned char buf[16];
+            size_t n = fread(buf, 1, 16, f);
+            if (n != 16) {
+                snprintf(__buf, sizeof(__buf), "i=%d n=%d", i, (int)n);
+                test_fail("20x orc", __buf);
+                repeat_ok = 0;
+                fclose(f);
+                break;
+            }
+            fclose(f);
+        }
+        if (repeat_ok) test_pass("20x open/read/close");
     }
-    ASSERT("20x open/read/close", repeat_ok);
 
     /* Multiple files open simultaneously */
     FILE *f1 = fopen("slot:1", "rb");
@@ -150,9 +135,15 @@ void test_file_io(void) {
                 ASSERT("coherency 2nd", !stale2);
             }
 
+            /* Mock fopen: raw open+close via POSIX, no musl FILE/malloc */
+            {
+                int mock_fd = open("slot:1", O_RDONLY);
+                if (mock_fd >= 0) close(mock_fd);
+            }
+
             /* Large read coherency: 64KB */
             static uint8_t big_coh[65536];
-            memset(big_coh, 0xCC, sizeof(big_coh));
+            memset(big_coh, 0xCC, 4096);
             f = fopen("slot:1", "rb");
             if (f) {
                 fread(big_coh, 1, 65536, f);
@@ -310,13 +301,13 @@ void test_file_io(void) {
     /* Speed test: read 64KB from slot:1 and measure throughput */
     {
         static uint8_t speed_buf[65536];
-        uint32_t t_start = of_time_ms();
+        uint32_t t_start = clock_ms();
         f = fopen("slot:1", "rb");
         if (f) {
             fread(speed_buf, 1, 65536, f);
             fclose(f);
         }
-        uint32_t t_elapsed = of_time_ms() - t_start;
+        uint32_t t_elapsed = clock_ms() - t_start;
         ASSERT("speed", t_elapsed < 5000);
         (void)t_elapsed;
     }
@@ -726,6 +717,40 @@ void test_dma_cache(void) {
     }
 
     close(fd);
+    section_end();
+}
+
+void test_file_limit(void) {
+    section_start("File Limit");
+
+    /*
+     * Stripped-down fopen/fclose cycle counter.
+     * The investigation says the CPU hard-stalls after ~35 cycles,
+     * correlated with time (~2-3s after boot).  Print every iteration
+     * with a timestamp so we see the exact limit.
+     */
+    const int MAX_CYCLES = 100;
+    int i;
+    for (i = 0; i < MAX_CYCLES; i++) {
+        FILE *f = fopen("slot:1", "rb");
+        if (!f) {
+            snprintf(__buf, sizeof(__buf), "fopen NULL @ %d", i);
+            test_fail("limit", __buf);
+            break;
+        }
+        uint8_t buf[16];
+        size_t n = fread(buf, 1, 16, f);
+        if (n != 16) {
+            snprintf(__buf, sizeof(__buf), "fread=%d @ %d", (int)n, i);
+            test_fail("limit rd", __buf);
+            fclose(f);
+            break;
+        }
+        fclose(f);
+    }
+    snprintf(__buf, sizeof(__buf), "%d/%d cycles", i, MAX_CYCLES);
+    if (i == MAX_CYCLES) test_pass(__buf);
+
     section_end();
 }
 

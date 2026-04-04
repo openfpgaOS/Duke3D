@@ -250,7 +250,7 @@ void _platform_init(int argc, char **argv, const char *title, const char *iconNa
      * Video will init on first _nextpage() call. */
 
     /* Seed random from timer */
-    srand((unsigned int)of_time_ms());
+    srand((unsigned int)clock_ms());
 
     /* Zero out the internal framebuffer */
     memset(of_framebuffer, 0, sizeof(of_framebuffer));
@@ -586,7 +586,7 @@ int inittimer(int tickspersecond)
 
     timerfreq = 1000;
     timerticspersec = tickspersecond;
-    t = (int64_t)of_time_ms();
+    t = (int64_t)clock_ms();
     timerlastsample = (int32_t)(t * timerticspersec / timerfreq);
 
     usertimercallback = NULL;
@@ -603,7 +603,7 @@ void uninittimer(void)
 
 void resettimer(void)
 {
-    int64_t t = (int64_t)of_time_ms();
+    int64_t t = (int64_t)clock_ms();
     timerlastsample = (int32_t)(t * timerticspersec / timerfreq);
 }
 
@@ -623,7 +623,7 @@ void sampletimer(void)
     /* Pump MIDI music playback */
     of_midi_pump();
 
-    i = (int64_t)of_time_ms();
+    i = (int64_t)clock_ms();
     n = (int32_t)(i * timerticspersec / timerfreq) - timerlastsample;
 
     if (n > 0) {
@@ -639,8 +639,8 @@ void sampletimer(void)
 
 uint32_t getticks(void)
 {
-    if (!timerfreq) return of_time_ms();
-    return (uint32_t)((int64_t)of_time_ms() * 1000 / timerfreq);
+    if (!timerfreq) return clock_ms();
+    return (uint32_t)((int64_t)clock_ms() * 1000 / timerfreq);
 }
 
 int gettimerfreq(void)
@@ -673,7 +673,7 @@ void _uninitengine(void)
 void _idle(void)
 {
     _handle_events();
-    of_delay_ms(1);
+    usleep(1000);
 }
 
 /* --- 2D editor drawing primitives (minimal stubs for game mode) --- */

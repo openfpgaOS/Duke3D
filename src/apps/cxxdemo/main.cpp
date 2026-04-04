@@ -116,7 +116,7 @@ int main(void) {
         of_input_poll();
         if (of_btn_pressed(OF_BTN_START))
             break;
-        of_delay_ms(16);
+        usleep(16 * 1000);
     }
 
     return 0;

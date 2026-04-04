@@ -51,7 +51,7 @@ void section_end(void) {
 }
 
 /* --- Main --- */
-#define NUM_ITERATIONS 3
+#define NUM_ITERATIONS 10
 
 int main(void) {
     int iteration;
@@ -69,9 +69,9 @@ int main(void) {
         test_malloc();
         test_malloc_edge();
         test_malloc_free();
-        test_accel();
         test_memset_stack();
         test_psram_memory();
+        test_cram0_256k();
         test_file_slots();
         test_file_negative();
         test_file_io();
@@ -82,10 +82,10 @@ int main(void) {
         test_lseek_readahead();
         test_lseek_large_read();
         test_oversize_read();
+        test_file_limit();
         test_shutdown();
-        test_idle_hook();
-        test_audio_ring();
         test_mixer();
+        test_net();
         test_interact();
         test_audio();
         test_printf();
@@ -108,13 +108,13 @@ int main(void) {
 
         if (iteration < NUM_ITERATIONS - 1) {
             printf("  \033[92mPASS\033[0m -- next in 2s\n");
-            of_delay_ms(2000);
+            usleep(2000 * 1000);
         } else {
             printf("  \033[92mALL %d ITERATIONS PASSED\033[0m\n", NUM_ITERATIONS);
         }
     }
 
     while (1)
-        of_delay_ms(100);
+        usleep(100 * 1000);
     return 0;
 }

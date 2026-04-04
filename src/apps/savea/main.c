@@ -18,6 +18,30 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Helpers: read/write save slots via POSIX fopen("save:N") */
+static int save_read(int slot, void *buf, uint32_t offset, uint32_t len) {
+    char path[16];
+    snprintf(path, sizeof(path), "save:%d", slot);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (offset && fseek(f, offset, SEEK_SET) != 0) { fclose(f); return -1; }
+    int n = (int)fread(buf, 1, len, f);
+    fclose(f);
+    return n;
+}
+
+static int save_write(int slot, const void *buf, uint32_t offset, uint32_t len) {
+    char path[16];
+    snprintf(path, sizeof(path), "save:%d", slot);
+    FILE *f = fopen(path, "r+b");
+    if (!f) f = fopen(path, "wb");
+    if (!f) return -1;
+    if (offset && fseek(f, offset, SEEK_SET) != 0) { fclose(f); return -1; }
+    int n = (int)fwrite(buf, 1, len, f);
+    fclose(f);
+    return n;
+}
+
 #define NUM_VSAVES      10
 #define VSAVE_SIZE_EVEN 16384   /* 16KB for even slots (0,2,4,6,8) */
 #define VSAVE_SIZE_ODD  8192    /* 8KB for odd slots (1,3,5,7,9) */
@@ -79,11 +103,6 @@ static uint32_t xorshift32(void) {
 /* Number of physical slots used by NUM_VSAVES virtual saves */
 #define NUM_SLOTS       ((NUM_VSAVES + (SLOT_SIZE / VSAVE_SIZE) - 1) / (SLOT_SIZE / VSAVE_SIZE))
 
-static void flush_all_slots(void) {
-    for (int s = 0; s < NUM_SLOTS; s++)
-        of_save_flush(s);
-}
-
 /* Map virtual save index to (slot, offset) */
 static void vsave_location(int vsave_idx, int *slot, uint32_t *offset) {
     /* 10 vsaves × 32KB = 320KB. Slots are 128KB each, so 4 vsaves per slot.
@@ -135,10 +154,9 @@ static int write_vsave(int vsave_idx, uint32_t iteration) {
     /* Compute CRC over payload */
     hdr->crc = crc32(&buf[PAYLOAD_OFFSET], psz);
 
-    /* Write to save and flush with this vsave's size */
-    int rc = of_save_write(slot, buf, offset, sz);
+    /* Write to save */
+    int rc = save_write(slot, buf, offset, sz);
     if (rc != (int)sz) return -1;
-    of_save_flush_size(slot, sz);
     return 0;
 }
 
@@ -151,7 +169,7 @@ static int verify_vsave(int vsave_idx, uint32_t *out_iteration) {
     uint32_t psz = PAYLOAD_SIZE(sz);
 
     /* Read from save */
-    int rc = of_save_read(slot, buf, offset, sz);
+    int rc = save_read(slot, buf, offset, sz);
     if (rc != (int)sz) return -1;
 
     vsave_header_t *hdr = (vsave_header_t *)buf;
@@ -189,7 +207,7 @@ static int verify_vsave(int vsave_idx, uint32_t *out_iteration) {
 
 static int is_virgin(void) {
     uint8_t hdr[4];
-    of_save_read(0, hdr, 0, 4);
+    save_read(0, hdr, 0, 4);
     uint16_t magic = hdr[0] | (hdr[1] << 8);
     uint8_t app_id = hdr[2];
     return (magic != MAGIC || app_id != APP_ID);
@@ -304,6 +322,6 @@ int main(void) {
 
 done:
     while (1)
-        of_delay_ms(100);
+        usleep(100 * 1000);
     return 0;
 }

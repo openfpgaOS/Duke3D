@@ -7480,7 +7480,7 @@ void printstr(short x, short y, uint8_t  string[81], uint8_t  attribute)
 void Logo(void)
 {
     short i,soundanm;
-	
+
     soundanm = 0;
 
     ready2send = 0;
@@ -7504,16 +7504,16 @@ void Logo(void)
 		    if(!KB_KeyWaiting() && nomorelogohack == 0)
 		    {
 		        getpackets();
-				
+
 		        playanm("logo.anm",5);
 		        palto(0,0,0,63,false);
 		        KB_FlushKeyboardQueue();
 		    }
-		
+
 		    clearview(0L);
 		    nextpage();
 		}
-		
+
 		//MIDI start here
 		playmusic(&env_music_fn[0][0]);
 		
@@ -8091,25 +8091,26 @@ void findGRPToUse(uint8_t * groupfilefullpath)
 
 #else
 
+#ifndef OPENFPGA
 int dukeGRP_Match(char* filename,int length)
 {
     char* cursor = filename+length-4;
-    
+
     if (strncasecmp(cursor,".grp",4))
         return 0;
-    
+
     return !strncasecmp(filename,"duke3d",6);
 }
 
 
 #include <dirent.h>
 void findGRPToUse(char * groupfilefullpath){
-    
+
     char directoryToScan[512];
     struct dirent* dirEntry ;
-    
+
     directoryToScan[0] = '\0';
-    
+
     if (getGameDir()[0] != '\0')
     {
         strcat(directoryToScan,getGameDir());
@@ -8117,16 +8118,16 @@ void findGRPToUse(char * groupfilefullpath){
             strcat(directoryToScan,"/");
     }
     else{
-        strcat(directoryToScan, "./");    
+        strcat(directoryToScan, "./");
     }
-    
+
     printf("Scanning directory '%s' for a GRP file like '%s'.\n",directoryToScan,baseDir);
-    
+
     DIR* dir =  opendir(directoryToScan);
-    
+
     while ((dirEntry = readdir(dir)) != NULL)
     {
-        
+
 #ifdef __linux__
         if (dukeGRP_Match(dirEntry->d_name, _D_EXACT_NAMLEN(dirEntry)))
 #else
@@ -8136,9 +8137,10 @@ void findGRPToUse(char * groupfilefullpath){
             sprintf(groupfilefullpath,"%s",dirEntry->d_name);
             return;
         }
-        
+
     }
 }
+#endif /* !OPENFPGA */
 
 #endif
 
@@ -8150,9 +8152,9 @@ static int load_duke3d_groupfile(void)
     groupfilefullpath[0] = '\0';
 
 #ifdef OPENFPGA
-    /* No directory scanning on openfpgaOS — the filename is registered
-       in the OS file slot registry from the instance JSON. */
-    strcpy(groupfilefullpath, "duke3d.grp");
+    /* TODO: fix fopen/open by-name resolution so "duke3d.grp" works
+       without an instance JSON. For now, open the data slot directly. */
+    strcpy(groupfilefullpath, "slot:3");
 #else
     findGRPToUse(groupfilefullpath);
 #endif
@@ -8197,13 +8199,7 @@ int main(int argc,char  **argv)
 	//		"group of known dukers who know what they are doing should be using\n"
 	//		"it. Please report new bugs at xd@m-klein.com or on DX forums. Thx!\n\n");
 	
-#ifdef OPENFPGA
-    /* Register data slot filenames for fopen/open() lookup.
-     * The OS kernel resolves filenames to slot IDs via this table. */
-    of_file_slot_register(1, "os.bin");
-    of_file_slot_register(2, "duke3d.elf");
-    of_file_slot_register(3, "duke3d.grp");
-#else
+#ifndef OPENFPGA
     for (int i = 0; i < argc; ++i)
         printf("ARG %d: %s\n", i, argv[i]);
 #endif
@@ -8378,7 +8374,6 @@ int main(int argc,char  **argv)
 
     FX_StopAllSounds();
     clearsoundlocks();
-
 
     if(ud.warp_on > 1 && ud.multimode < 2)
     {

@@ -41,12 +41,12 @@ static uint32_t bench(fixed_t (*fn)(fixed_t, fixed_t)) {
     fixed_t a = 0x00018000;  /* 1.5 */
     fixed_t b = 0x00028000;  /* 2.5 */
 
-    uint32_t t0 = of_time_us();
+    uint32_t t0 = clock_us();
     for (int i = 0; i < ITERATIONS; i++) {
         a = fn(a, b);
         b = fn(b, a);
     }
-    uint32_t t1 = of_time_us();
+    uint32_t t1 = clock_us();
     sink = a + b;
     return t1 - t0;
 }
@@ -84,7 +84,7 @@ int main(void) {
         of_input_state(0, &st);
         if (st.buttons_pressed)
             break;
-        of_delay_ms(16);
+        usleep(16 * 1000);
     }
 
     return 0;

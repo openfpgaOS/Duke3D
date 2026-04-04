@@ -254,25 +254,34 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 {
 #ifdef OPENFPGA
     {
-        int32_t sndist;
+        int32_t sndist, sndang;
+        int voice;
 
         if (num < 0 || num >= NUM_SOUNDS || !SoundToggle)
             return -1;
 
-        /* Distance check — skip sounds too far away */
         if (i >= 0 && PN != APLAYER) {
             int32_t cx = ps[screenpeek].oposx;
             int32_t cy = ps[screenpeek].oposy;
+            int32_t ca = ps[screenpeek].ang + ps[screenpeek].look_ang;
             sndist = FindDistance2D(cx - SX, cy - SY);
-            if (sndist > 8192) return -1;  /* too far */
-            /* Scale volume by distance */
-            int vol = 255 - (sndist >> 5);
-            if (vol < 32) return -1;
-            d3d_sound_play(num, soundpr[num], vol);
+            if (sndist > 8192) return -1;
+            int dist = sndist >> 5;
+            if (dist > 255) dist = 255;
+            sndang = 2048 + ca - getangle(cx - x, cy - y);
+            sndang &= 2047;
+            voice = d3d_sound_play_3d(num, soundpr[num], sndang >> 6, dist);
         } else {
-            d3d_sound_play(num, soundpr[num], 200);
+            voice = d3d_sound_play(num, soundpr[num], 200);
         }
-        return 0;
+
+        if (voice >= 0 && i >= 0) {
+            SoundOwner[num][Sound[num].num].i = i;
+            SoundOwner[num][Sound[num].num].voice = voice;
+            Sound[num].num++;
+            d3d_sound_set_owned(voice);
+        }
+        return voice;
     }
 #endif
     int32_t sndist, cx, cy, cz, j,k;
@@ -487,7 +496,11 @@ int spritesound(uint16_t num, short i)
 void stopsound(short num)
 {
 #ifdef OPENFPGA
-    (void)num;
+    if(Sound[num].num > 0)
+    {
+        d3d_sound_stop(SoundOwner[num][Sound[num].num-1].voice);
+        testcallback(num);
+    }
     return;
 #endif
     if(Sound[num].num > 0)
@@ -507,7 +520,11 @@ void stopenvsound(short num,short i)
         for(j=0;j<k;j++)
            if(SoundOwner[num][j].i == i)
         {
+#ifdef OPENFPGA
+            d3d_sound_stop(SoundOwner[num][j].voice);
+#else
             FX_StopSound(SoundOwner[num][j].voice);
+#endif
             break;
         }
     }
@@ -589,7 +606,16 @@ void pan3dsound(void)
         if(sndist < ((255-LOUDESTVOLUME)<<6) )
             sndist = ((255-LOUDESTVOLUME)<<6);
 
+#ifdef OPENFPGA
+        {
+            int vol = 255 - (sndist >> 6);
+            if (vol < 0) vol = 0;
+            d3d_sound_set_volume(SoundOwner[j][k].voice, vol);
+            /* TODO: d3d_sound_set_pan when OS supports it */
+        }
+#else
         FX_Pan3D(SoundOwner[j][k].voice,sndang>>6,sndist>>6);
+#endif
     }
 }
 
@@ -643,15 +669,17 @@ void testcallback(uint32_t num)
 void clearsoundlocks(void)
 {
     int32_t i;
-    
-   
+
+#ifdef OPENFPGA
+    d3d_sound_stop_all();
+#endif
 
     for(i=0;i<NUM_SOUNDS;i++)
- 
+
             Sound[i].lock = 199;
 
     for(i=0;i<11;i++)
- 
+
             lumplockbyte[i] = 199;
 }
 

@@ -113,9 +113,9 @@ int main(int argc, char **argv) {
     printf("rendering...\n");
 	create_scene();
 
-	start_time = of_time_ms(); //get_millisec();
+	start_time = clock_ms(); //get_millisec();
 	render(xres, yres, 1);
-	rend_time = of_time_ms(); - start_time;
+	rend_time = clock_ms(); - start_time;
 
 	//memcpy(back_buffer->pixels, front_buffer->pixels, xres * yres * sizeof(uint16_t));
     //of_video_flip();
@@ -147,7 +147,7 @@ int main(int argc, char **argv) {
         if (of_btn_pressed(OF_BTN_A)) {
             break;
         }
-        of_delay_ms(16);
+        usleep(16 * 1000);
     }
 
 	return 0;

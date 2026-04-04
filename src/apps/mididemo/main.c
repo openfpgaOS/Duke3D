@@ -38,8 +38,6 @@ static int load_midi_file(void) {
 }
 
 int main(void) {
-    of_file_slot_register(3, "music.mid");
-
     printf("\033[2J\033[H");
     printf("    openfpgaOS MIDI Player\n");
     printf("    ======================\n\n");
@@ -115,7 +113,7 @@ int main(void) {
         }
 
         of_midi_pump();
-        of_delay_ms(1);
+        usleep(1 * 1000);
     }
 
     return 0;

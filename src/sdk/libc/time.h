@@ -1,4 +1,4 @@
-/* time.h -- openfpgaOS minimal time support */
+/* time.h -- openfpgaOS time support */
 #ifndef _OF_TIME_H
 #define _OF_TIME_H
 
@@ -16,17 +16,44 @@ typedef uint32_t time_t;
 typedef uint32_t clock_t;
 
 #define CLOCKS_PER_SEC 1000
+#define CLOCK_MONOTONIC 1
 
-/* clock() returns milliseconds via of_time_ms */
+struct timespec {
+    long tv_sec;
+    long tv_nsec;
+};
+
+/* clock_gettime via syscall (SYS_clock_gettime64 = 403 on riscv32) */
+static inline int clock_gettime(int clk_id, struct timespec *tp) {
+    register long a7 __asm__("a7") = 403;
+    register long a0 __asm__("a0") = clk_id;
+    register long a1 __asm__("a1") = (long)tp;
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a7) : "memory");
+    return (int)a0;
+}
+
+/* Convenience: milliseconds since boot */
+static inline uint32_t clock_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+/* Convenience: microseconds since boot */
+static inline uint32_t clock_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000000 + ts.tv_nsec / 1000);
+}
+
 static inline clock_t clock(void) {
-    /* Use of_time_ms() -- caller must include of.h before this */
-    extern uint32_t of_time_ms(void);
-    return (clock_t)of_time_ms();
+    return (clock_t)clock_ms();
 }
 
 static inline time_t time(time_t *t) {
-    extern uint32_t of_time_ms(void);
-    time_t val = (time_t)(of_time_ms() / 1000);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    time_t val = (time_t)ts.tv_sec;
     if (t) *t = val;
     return val;
 }

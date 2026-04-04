@@ -149,10 +149,7 @@ int32_t initgroupfile(const char  *filename)
 	// Compute CRC32 of the whole grp and implicitely caches the GRP in memory through windows caching service.
     // Rewind the fileDescriptor
 	lseek(archive->fileDescriptor, 0, SEEK_SET);
-    
-	//i = 1000000;
-	//groupfil_memory[numgroupfiles] = malloc(i);
-    
+
 #ifdef OPENFPGA
     /* Skip CRC32 computation on openfpgaOS — reading 11MB through DMA is slow
        and we don't need CRC validation for single-player. */

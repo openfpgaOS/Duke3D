@@ -1404,6 +1404,9 @@ int getfilenames(char  kind[6])
 	}
 	while (_dos_findnext(&fileinfo) == 0);
 
+#elif defined(OPENFPGA)
+    /* No directory scanning on openfpgaOS */
+    (void)kind;
 #elif (defined UNIX)
 
     DIR *dir;

@@ -40,37 +40,31 @@ extern "C" {
 #define OF_SYS_INPUT_GET_STATE         0x1021
 #define OF_SYS_INPUT_SET_DEADZONE      0x1022
 
-/* Save */
-#define OF_SYS_SAVE_READ               0x1030
-#define OF_SYS_SAVE_WRITE              0x1031
-#define OF_SYS_SAVE_FLUSH              0x1032
-#define OF_SYS_SAVE_ERASE              0x1033
-#define OF_SYS_SAVE_FLUSH_SIZE         0x1034
+/* Save — handled internally by fclose() */
 
 /* Analogizer */
 #define OF_SYS_ANALOGIZER_GET_STATE    0x1040
 #define OF_SYS_ANALOGIZER_IS_ENABLED   0x1041
 
-/* Terminal */
-#define OF_SYS_TERM_PUTCHAR            0x1050
-#define OF_SYS_TERM_CLEAR              0x1051
-#define OF_SYS_TERM_PRINTF             0x1052
-#define OF_SYS_TERM_SET_POS            0x1053
 
-/* Link cable */
-#define OF_SYS_LINK_SEND               0x1060
-#define OF_SYS_LINK_RECV               0x1061
-#define OF_SYS_LINK_GET_STATUS         0x1062
+/* Networking (replaces Link cable) */
+#define OF_SYS_NET_HOST_START          0x1060
+#define OF_SYS_NET_JOIN                0x1061
+#define OF_SYS_NET_STOP                0x1062
+#define OF_SYS_NET_STATUS              0x1063
+#define OF_SYS_NET_CLIENT_COUNT        0x1064
+#define OF_SYS_NET_SEND_TO             0x1065
+#define OF_SYS_NET_RECV_FROM           0x1066
+#define OF_SYS_NET_BROADCAST           0x1067
+#define OF_SYS_NET_SEND                0x1068
+#define OF_SYS_NET_RECV                0x1069
+#define OF_SYS_NET_POLL                0x106A
 
-/* Timer */
-#define OF_SYS_TIMER_GET_US            0x1070
-#define OF_SYS_TIMER_GET_MS            0x1071
-#define OF_SYS_TIMER_DELAY_US          0x1072
-#define OF_SYS_TIMER_DELAY_MS          0x1073
+/* Timer (time/delay via POSIX clock_gettime/usleep) */
+#define OF_SYS_TIMER_SET_CALLBACK      0x1074
+#define OF_SYS_TIMER_STOP              0x1075
 
-/* File (data slots) */
-#define OF_SYS_FILE_READ               0x1080
-#define OF_SYS_FILE_SIZE               0x1081
+/* File — handled internally by fread/fseek */
 
 /* Tile engine */
 #define OF_SYS_TILE_ENABLE             0x1090
@@ -90,13 +84,7 @@ extern "C" {
 /* Version */
 #define OF_SYS_GET_VERSION             0x10B0
 
-/* File slot registry */
-#define OF_SYS_FILE_SLOT_COUNT         0x10B1
-#define OF_SYS_FILE_SLOT_GET           0x10B2
-#define OF_SYS_FILE_SLOT_REGISTER      0x10B3
-
-/* Idle hook */
-#define OF_SYS_SET_IDLE_HOOK           0x10B4
+/* Idle hook — internal, called during DMA waits */
 
 /* Memory allocation */
 #define OF_SYS_MALLOC                  0x10C0
@@ -118,17 +106,16 @@ extern "C" {
 #define OF_SYS_CODEC_PARSE_VOC         0x10D8
 #define OF_SYS_CODEC_PARSE_WAV         0x10D9
 
+/* Mixer sample allocation */
+#define OF_SYS_MIXER_ALLOC_SAMPLES     0x10DA
+#define OF_SYS_MIXER_FREE_SAMPLES      0x10DB
+
 /* LZW Compression */
 #define OF_SYS_LZW_COMPRESS            0x10E0
 #define OF_SYS_LZW_UNCOMPRESS          0x10E1
 
-/* DMA engine */
-#define OF_SYS_DMA_COPY                0x10F0
-#define OF_SYS_DMA_FILL                0x10F1
-#define OF_SYS_DMA_COPY_ASYNC          0x10F2
-#define OF_SYS_DMA_FILL_ASYNC          0x10F3
-#define OF_SYS_DMA_WAIT                0x10F4
-#define OF_SYS_DMA_BUSY                0x10F5
+/* Interact */
+#define OF_SYS_INTERACT_GET            0x10F0
 
 #ifdef __cplusplus
 }

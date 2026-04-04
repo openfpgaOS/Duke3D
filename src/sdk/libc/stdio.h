@@ -19,7 +19,9 @@ extern "C" {
 
 typedef void FILE;
 
+#ifndef __OF_JT
 #define __OF_JT ((const struct of_libc_table *)OF_LIBC_ADDR)
+#endif
 
 #define stdout (__OF_JT->stdout_ptr)
 #define stderr (__OF_JT->stderr_ptr)
@@ -28,9 +30,11 @@ typedef void FILE;
 #endif
 #define EOF    (-1)
 
+#ifndef SEEK_SET
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+#endif
 
 /* ======================================================================
  * File I/O — routed through musl via jump table

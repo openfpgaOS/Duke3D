@@ -621,8 +621,8 @@ SDL_GameControllerGetStringForButton(SDL_GameControllerButton b) {
  * Timer
  * ====================================================================== */
 
-static inline uint32_t SDL_GetTicks(void) { return of_time_ms(); }
-static inline void SDL_Delay(uint32_t ms) { of_delay_ms(ms); }
+static inline uint32_t SDL_GetTicks(void) { return clock_ms(); }
+static inline void SDL_Delay(uint32_t ms) { usleep(ms * 1000); }
 
 /* ======================================================================
  * Audio

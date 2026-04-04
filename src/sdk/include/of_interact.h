@@ -1,16 +1,11 @@
 /*
- * of_interact.h -- Analogue Pocket interact menu API
+ * of_interact.h -- Platform menu/settings API
  *
- * The APF interact system writes option values directly to SDRAM
- * at fixed addresses. Apps read these values to get user settings
- * from the Pocket menu (opened by pressing the menu button).
+ * Read option values set by the platform menu (Pocket menu button,
+ * MiSTer OSD, etc.). Variables are defined in dist/interact.json.
  *
- * Each variable occupies 4 bytes at INTERACT_BASE + (index * 4).
- * Variables are defined in dist/interact.json with addresses
- * pointing to bridge offsets of these SDRAM locations.
- *
- * Bridge address = CPU address - 0x10000000
- * e.g. INTERACT_BASE 0x103FE000 = bridge 0x03FE0000
+ * Each variable occupies 4 bytes. Use OF_INTERACT_ADDR(n) to compute
+ * the bridge address for interact.json.
  */
 
 #ifndef OF_INTERACT_H
@@ -22,23 +17,32 @@ extern "C" {
 
 #include <stdint.h>
 
-/* Base addresses */
-#define OF_INTERACT_BASE        0x103FE000
-#define OF_INTERACT_UNCACHED    0x503FE000
-#define OF_INTERACT_BRIDGE_BASE 0x03FE0000
 #define OF_INTERACT_MAX_VARS    64
 
+/* Bridge address for interact.json authoring.
+ * Use in interact.json: "address": "0x03FExxxx" */
+#define OF_INTERACT_BRIDGE_BASE 0x03FE0000
+#define OF_INTERACT_ADDR(n)     (OF_INTERACT_BRIDGE_BASE + (n) * 4)
+
 /* Read an interact variable by index (0-63).
- * Returns the 32-bit value set by the Pocket menu. */
+ * Returns the 32-bit value set by the platform menu. */
+#ifndef OF_PC
+
+#include "of_syscall.h"
+#include "of_syscall_numbers.h"
+
 static inline uint32_t of_interact_get(int index) {
-    if (index < 0 || index >= OF_INTERACT_MAX_VARS) return 0;
-    volatile uint32_t *vars = (volatile uint32_t *)OF_INTERACT_UNCACHED;
-    return vars[index];
+    return (uint32_t)__of_syscall1(OF_SYS_INTERACT_GET, index);
 }
 
-/* Compute the bridge address for interact variable N.
- * Use this in interact.json: "address": "0x03FExxxx" */
-#define OF_INTERACT_ADDR(n) (OF_INTERACT_BRIDGE_BASE + (n) * 4)
+#else /* OF_PC */
+
+static inline uint32_t of_interact_get(int index) {
+    (void)index;
+    return 0;
+}
+
+#endif
 
 #ifdef __cplusplus
 }
