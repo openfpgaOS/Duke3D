@@ -81,7 +81,7 @@ help:
 	@A="$(A)"; printf "    $(C_CMD)make $(C_VERB)build$(C_RESET) $(C_ARG)APP=%-8s$(C_RESET) Build sdk or $$A\n" "$$A"
 	@A="$(A)"; printf "    $(C_CMD)make $(C_VERB)debug$(C_RESET) $(C_ARG)APP=%-8s$(C_RESET) Build, push via UART, stream console\n" "$$A"
 	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET)               Copy everything to SD card\n"
-	@A="$(A)"; printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET)  $(C_ARG)APP=%-8s$(C_RESET) Copy sdk or $$A to SD card\n" "$$A"
+	@A="$(A)"; printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET) $(C_ARG)APP=%-8s$(C_RESET)  Copy sdk or $$A to SD card\n" "$$A"
 	@printf "    $(C_CMD)make $(C_VERB)tools$(C_RESET)              Build PHDP host tools\n"
 	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)            Package all cores into ZIPs\n"
 	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)              Remove all build artifacts\n"
