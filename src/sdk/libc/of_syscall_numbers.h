@@ -125,6 +125,7 @@ extern "C" {
 #define OF_SYS_MIXER_SET_VOL_RATE      0x10E3
 #define OF_SYS_MIXER_POLL_ENDED        0x10E4
 #define OF_SYS_MIXER_SET_END_CALLBACK  0x10E9
+#define OF_SYS_MIXER_RETRIGGER         0x10EA
 
 /* Audio Codec */
 #define OF_SYS_CODEC_PARSE_VOC         0x10E5

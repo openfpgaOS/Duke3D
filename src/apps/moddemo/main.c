@@ -245,25 +245,28 @@ static void play_note(int ch, mod_note_t *n) {
         int si = c->sample_idx - 1;
         if (si >= 0 && mod.sample_data[si]) {
             mod_sample_t *s = &mod.samples[si];
+            int vol = c->volume * 255 / 64;
 
-            /* Stop old voice */
-            if (c->voice >= 0)
-                of_mixer_stop(c->voice);
-
-            /* Start new voice — 8-bit samples, FMT16=0 in CTRL.
-             * of_mixer_play assumes 16-bit, so we use it for allocation
-             * and then the hardware handles 8-bit via CTRL flag.
-             * For now, play as-is — the hardware default is FMT16=1
-             * but 8-bit support is in the new FPGA. */
-            c->voice = of_mixer_play((const uint8_t *)mod.sample_data[si],
-                                     s->length, AMIGA_CLOCK / (n->period * 2),
-                                     0, c->volume * 255 / 64);
+            if (c->voice >= 0) {
+                /* Retrigger in-place — Amiga-style, no stop/start gap */
+                of_mixer_retrigger(c->voice,
+                                   (const uint8_t *)mod.sample_data[si],
+                                   s->length, AMIGA_CLOCK / (n->period * 2),
+                                   vol);
+            } else {
+                /* First note on this channel — allocate a voice */
+                c->voice = of_mixer_play((const uint8_t *)mod.sample_data[si],
+                                         s->length, AMIGA_CLOCK / (n->period * 2),
+                                         0, vol);
+            }
 
             if (c->voice >= 0) {
                 /* Set up loop if sample has one */
                 if (s->loop_length > 2)
                     of_mixer_set_loop(c->voice, s->loop_start,
                                       s->loop_start + s->loop_length);
+                else
+                    of_mixer_set_loop(c->voice, -1, 0);
 
                 /* Apply channel pan */
                 of_mixer_set_pan(c->voice, c->pan);

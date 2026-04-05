@@ -14,6 +14,7 @@
 #include <stdarg.h>
 
 #include "of_libc.h"
+#include "of_services.h"
 
 #define JT ((const struct of_libc_table *)OF_LIBC_ADDR)
 
@@ -130,27 +131,23 @@ int access(const char *path, int mode) {
 /* exit/abort handled in stdlib.h via ecall(93) → kernel switches to terminal FB */
 int mkdir(const char *p, int m){ (void)p; (void)m; return 0; }
 
-/* stat/fstat: route through musl → ecall → kernel SYS_statx.
- * The kernel writes a 256-byte statx struct, so we use a stack buffer
- * and extract st_size from offset 40 (sx[10]). */
+/* stat/fstat: use services table directly — no musl struct conversion needed */
 int fstat(int fd, struct _of_stat *buf) {
-    uint8_t tmp[256] __attribute__((aligned(8)));
-    int rc = JT->fstat(fd, tmp);
-    if (rc == 0 && buf) {
-        uint32_t *sx = (uint32_t *)tmp;
-        buf->st_size = sx[10];    /* stx_size low 32 (offset 40) */
-        buf->st_mode = 0100644;
-        buf->st_mtime = 0;
-    }
-    return rc;
+    if (!buf) return -1;
+    long sz = OF_SVC->file_size_fd(fd);
+    buf->st_size = (sz >= 0) ? (uint32_t)sz : 0;
+    buf->st_mode = 0100644;
+    buf->st_mtime = 0;
+    return (sz >= 0) ? 0 : -1;
 }
 
 int stat(const char *path, struct _of_stat *buf) {
-    int fd = JT->open(path, 0);
-    if (fd < 0) return -1;
-    int rc = fstat(fd, buf);
-    JT->close(fd);
-    return rc;
+    if (!buf) return -1;
+    long sz = OF_SVC->file_size(path);
+    buf->st_size = (sz >= 0) ? (uint32_t)sz : 0;
+    buf->st_mode = 0100644;
+    buf->st_mtime = 0;
+    return (sz >= 0) ? 0 : -1;
 }
 void *alloca(unsigned int sz)  { return __builtin_alloca(sz); }
 int min(int a, int b)          { return a < b ? a : b; }
