@@ -19,7 +19,7 @@ C_LOGO  := \033[96m
 C_HEAD  := \033[1m
 C_CMD   := \033[93m
 C_VERB  := \033[1;93m
-C_ARG   := \033[36m
+C_ARG   := \033[3;93m
 C_RESET := \033[0m
 else
 C_LOGO  :=
