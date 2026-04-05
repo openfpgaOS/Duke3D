@@ -53,10 +53,14 @@ SHIM_SRCS = posix_shim.c d3d_audio.c d3d_save.c
 SRCS = $(ENGINE_SRCS) $(GAME_SRCS) $(AUDIOLIB_SRCS) $(CONSOLE_SRCS) $(MIDI_SRCS) $(SHIM_SRCS)
 
 # ── SDK paths ────────────────────────────────────────────────────
+APP       = duke3d
 SDK_DIR   = ../sdk
 ROOT      = $(realpath $(CURDIR)/../..)
-OBJ_DIR   = $(ROOT)/.obj/duke3d
+OBJ_DIR   = $(ROOT)/.obj/$(APP)
 BUILD_DIR = $(OBJ_DIR)
+DIST      = $(ROOT)/dist/Duke3D
+OUT       = $(ROOT)/build/$(APP)
+RUNTIME   = $(ROOT)/runtime
 
 # ── Extra flags for BUILD engine ─────────────────────────────────
 CFLAGS += -DOPENFPGA -DUNIX
@@ -78,9 +82,30 @@ include $(SDK_DIR)/sdk.mk
 $(CRT_DIR)/start.o: $(CRT_DIR)/start.S
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
-all: $(OBJ_DIR)/app.elf
+all: $(OBJ_DIR)/app.elf release
 	@$(SIZE) $<
 
-clean: sdk-clean
+# Assemble SD card image: dist/Duke3D/ + runtime + ELF → build/duke3d/
+release: $(OBJ_DIR)/app.elf
+	@rm -rf $(OUT)
+	@mkdir -p $(dir $(OUT))
+	@cp -r $(DIST) $(OUT)
+	@cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin $$(ls -d $(OUT)/Cores/*/)/
+	@mkdir -p $$(ls -d $(OUT)/Assets/*/)/common
+	@cp $(RUNTIME)/os.bin $$(ls -d $(OUT)/Assets/*/)/common/
+	@cp $< $$(ls -d $(OUT)/Assets/*/)/common/$(APP).elf
+	@echo "Ready: build/$(APP)/"
 
-.PHONY: all clean
+debug: all
+	@$(ROOT)/scripts/debug.sh $$(find $(OUT)/Assets -name "$(APP).elf" | head -1)
+
+copy: all
+	@$(SDK_DIR)/platforms/pocket/copy.sh "$(APP)" "$$(find $(OUT)/Assets -name '$(APP).elf' | head -1)"
+
+package: all
+	@$(ROOT)/scripts/package.sh Duke3D
+
+clean: sdk-clean
+	rm -rf $(OUT)
+
+.PHONY: all release debug copy package clean
