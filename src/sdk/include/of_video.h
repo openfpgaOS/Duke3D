@@ -43,13 +43,6 @@ static inline void of_video_sync(void) {
     __of_syscall0(OF_SYS_VIDEO_WAIT_FLIP);
 }
 
-/* Wait for the next vertical blank without flipping buffers.
- * Use this to pace palette animations or effects at 60Hz
- * when the framebuffer content hasn't changed. */
-static inline void of_video_vsync(void) {
-    __of_syscall0(OF_SYS_VIDEO_VSYNC);
-}
-
 static inline void of_video_clear(uint8_t color) {
     __of_syscall1(OF_SYS_VIDEO_CLEAR, color);
 }
@@ -138,7 +131,6 @@ void     of_video_init(void);
 uint8_t *of_video_surface(void);
 void     of_video_flip(void);
 void     of_video_sync(void);
-void     of_video_vsync(void);
 void     of_video_clear(uint8_t color);
 void     of_video_palette(uint8_t index, uint32_t rgb);
 void     of_video_palette_bulk(const uint32_t *pal, int count);

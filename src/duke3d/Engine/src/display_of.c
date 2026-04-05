@@ -234,6 +234,7 @@ static void ensure_video_init(void) {
     if (!video_initialized) {
         video_initialized = 1;
         of_video_init();
+        of_video_set_display_mode(OF_DISPLAY_OVERLAY);
         of_video_clear(0);
         of_video_palette_bulk(of_palette, 256);
         of_video_flip();
@@ -329,8 +330,14 @@ void VBE_getPalette(int32_t start, int32_t num, uint8_t *palettebuffer)
 void VBE_presentPalette(void)
 {
     if (!video_initialized) return;
-    of_video_flip();
-    retarget_frameplace();
+    /* Palette is already applied to hardware by VBE_setPalette →
+     * of_video_palette_bulk.  Do NOT flip the triple buffer here —
+     * the splash image lives in only one buffer, so flipping would
+     * show a stale/empty frame and rapid-fire flips can crash the OS.
+     *
+     * One-frame delay so each fade step is visible (~60 Hz pacing).
+     * Switch to of_video_vsync() once the syscall is stable. */
+    usleep(16000);
 }
 
 void getvalidvesamodes(void)

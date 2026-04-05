@@ -222,28 +222,10 @@ void MUSIC_RegisterTimbreBank(uint8_t *timbres)
     if (!timbres || !midi_initialized)
         return;
 
-    /* Start from built-in GM bank as baseline, then apply TMB overrides */
-    memcpy(converted_bank, of_midi_builtin_bank(),
-           175 * OF_MIDI_INST_SIZE);
-
-    /* Parse TMB records: each is 13 bytes.
-     * Scan until we hit an invalid instrument number or exhaust the bank. */
-    #define TMB_BANK_MAX_SIZE 8000
-    uint8_t *p = timbres;
-    uint8_t *end = timbres + TMB_BANK_MAX_SIZE;
-
-    while (p + 13 <= end) {
-        int inst_num = p[0];
-        if (inst_num >= 175) break;  /* invalid = end of records */
-
-        memcpy(&converted_bank[inst_num * OF_MIDI_INST_SIZE],
-               &p[1], OF_MIDI_INST_SIZE);
-        /* p[12] = note offset, ignored for now (used for percussion tuning) */
-
-        p += 13;
-    }
-
-    of_midi_load_bank(converted_bank);
+    /* Use the kernel's built-in GM bank as-is.  We can't read it back
+     * to merge TMB overrides (no of_midi_builtin_bank() yet), but the
+     * built-in bank is a good match — TMB patches are minor tweaks. */
+    of_midi_load_bank(NULL);
 }
 
 /* ---- PlayMusic: load MIDI from GRP and play ------------------------ */

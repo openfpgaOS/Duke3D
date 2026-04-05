@@ -130,127 +130,32 @@ int access(const char *path, int mode) {
 /* exit/abort handled in stdlib.h via ecall(93) → kernel switches to terminal FB */
 int mkdir(const char *p, int m){ (void)p; (void)m; return 0; }
 
-/* stat/fstat: use lseek to determine file size.
- * No ecall — uses the JT functions which are known working. */
+/* stat/fstat: route through musl → ecall → kernel SYS_statx.
+ * The kernel writes a 256-byte statx struct, so we use a stack buffer
+ * and extract st_size from offset 40 (sx[10]). */
+int fstat(int fd, struct _of_stat *buf) {
+    uint8_t tmp[256] __attribute__((aligned(8)));
+    int rc = JT->fstat(fd, tmp);
+    if (rc == 0 && buf) {
+        uint32_t *sx = (uint32_t *)tmp;
+        buf->st_size = sx[10];    /* stx_size low 32 (offset 40) */
+        buf->st_mode = 0100644;
+        buf->st_mtime = 0;
+    }
+    return rc;
+}
+
 int stat(const char *path, struct _of_stat *buf) {
     int fd = JT->open(path, 0);
     if (fd < 0) return -1;
-    /* Save pos, seek end, restore — all through musl's lseek */
-    long long sz = JT->lseek(fd, 0, 2);  /* SEEK_END */
+    int rc = fstat(fd, buf);
     JT->close(fd);
-    if (buf) {
-        buf->st_size = (sz > 0) ? (unsigned int)sz : 0;
-        buf->st_mode = 0100644;
-        buf->st_mtime = 0;
-    }
-    return 0;
-}
-
-int fstat(int fd, struct _of_stat *buf) {
-    if (fd < 0) return -1;
-    /* For fstat, save current position, seek to end, restore */
-    long long pos = JT->lseek(fd, 0, 1);  /* SEEK_CUR */
-    long long sz  = JT->lseek(fd, 0, 2);  /* SEEK_END */
-    if (pos >= 0)
-        JT->lseek(fd, pos, 0);            /* SEEK_SET restore */
-    if (buf) {
-        buf->st_size = (sz > 0) ? (unsigned int)sz : 0;
-        buf->st_mode = 0100644;
-        buf->st_mtime = 0;
-    }
-    return 0;
+    return rc;
 }
 void *alloca(unsigned int sz)  { return __builtin_alloca(sz); }
 int min(int a, int b)          { return a < b ? a : b; }
 int max(int a, int b)          { return a > b ? a : b; }
 int abs(int x)                 { return x < 0 ? -x : x; }
-
-/* ======================================================================
- * POSIX directory operations — opendir/readdir/closedir via syscalls
- * ====================================================================== */
-
-#include <dirent.h>
-
-/* riscv32 Linux syscall numbers */
-#define __NR_openat     56
-#define __NR_close      57
-#define __NR_getdents64 61
-#define O_RDONLY        0
-#define O_DIRECTORY     0200000
-
-static long __syscall3(long n, long a, long b, long c) {
-    register long a7 __asm__("a7") = n;
-    register long a0 __asm__("a0") = a;
-    register long a1 __asm__("a1") = b;
-    register long a2 __asm__("a2") = c;
-    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a7) : "memory");
-    return a0;
-}
-
-static long __syscall4(long n, long a, long b, long c, long d) {
-    register long a7 __asm__("a7") = n;
-    register long a0 __asm__("a0") = a;
-    register long a1 __asm__("a1") = b;
-    register long a2 __asm__("a2") = c;
-    register long a3 __asm__("a3") = d;
-    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3), "r"(a7) : "memory");
-    return a0;
-}
-
-static DIR __dir_storage;  /* single static DIR — no malloc needed for one opendir */
-
-DIR *opendir(const char *name) {
-    long fd = __syscall4(__NR_openat, -100 /* AT_FDCWD */, (long)name,
-                         O_RDONLY | O_DIRECTORY, 0);
-    if (fd < 0) return NULL;
-    __dir_storage.__fd = (int)fd;
-    __dir_storage.__buf_pos = 0;
-    __dir_storage.__buf_len = 0;
-    return &__dir_storage;
-}
-
-/* Kernel getdents64 entry layout (matches riscv32 linux_dirent64) */
-struct __kernel_dirent64 {
-    uint64_t d_ino;
-    int64_t  d_off;
-    uint16_t d_reclen;
-    uint8_t  d_type;
-    char     d_name[];
-};
-
-struct dirent *readdir(DIR *dirp) {
-    static struct dirent result;
-
-    if (dirp->__buf_pos >= dirp->__buf_len) {
-        /* Refill buffer */
-        long n = __syscall3(__NR_getdents64, dirp->__fd,
-                           (long)dirp->__buf, sizeof(dirp->__buf));
-        if (n <= 0) return NULL;
-        dirp->__buf_len = (int)n;
-        dirp->__buf_pos = 0;
-    }
-
-    struct __kernel_dirent64 *kd =
-        (struct __kernel_dirent64 *)(dirp->__buf + dirp->__buf_pos);
-    dirp->__buf_pos += kd->d_reclen;
-
-    result.d_ino = (unsigned long)kd->d_ino;
-    /* Copy name */
-    int i;
-    for (i = 0; i < 255 && kd->d_name[i]; i++)
-        result.d_name[i] = kd->d_name[i];
-    result.d_name[i] = '\0';
-    result.d_namlen = (unsigned short)i;
-
-    return &result;
-}
-
-int closedir(DIR *dirp) {
-    if (!dirp) return -1;
-    long rc = __syscall3(__NR_close, dirp->__fd, 0, 0);
-    dirp->__fd = -1;
-    return (int)rc;
-}
 
 /* ======================================================================
  * openfpgaOS convenience — linkable symbols for SDK inline functions

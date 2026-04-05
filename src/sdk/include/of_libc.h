@@ -146,10 +146,12 @@ struct of_libc_table {
     int  (*read)(int, void *, unsigned int);
     int  (*write)(int, const void *, unsigned int);
     long long (*lseek)(int, long long, int);
+    int  (*fstat)(int, void *);
+    int  (*stat)(const char *, void *);
 };
 
 /* Total function pointers + data pointers in the table (excluding header) */
-#define OF_LIBC_COUNT 88
+#define OF_LIBC_COUNT 90
 
 /* App-side accessor */
 #define __of_libc ((const struct of_libc_table *)OF_LIBC_ADDR)
@@ -265,6 +267,8 @@ struct of_libc_table {
 #define OF_LIBC_SLOT_READ           85
 #define OF_LIBC_SLOT_WRITE          86
 #define OF_LIBC_SLOT_LSEEK          87
+#define OF_LIBC_SLOT_FSTAT          88
+#define OF_LIBC_SLOT_STAT           89
 
 #endif /* OF_LIBC_H */
 

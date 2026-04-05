@@ -7486,15 +7486,19 @@ void Logo(void)
     ready2send = 0;
 
     KB_FlushKeyboardQueue();
+    printf("[Logo] setview\n");
 
     setview(0,0,xdim-1,ydim-1);
     clearview(0L);
+    printf("[Logo] palto black\n");
     palto(0,0,0,63,false);
 
     flushperms();
+    printf("[Logo] first nextpage\n");
     nextpage();
 
     MUSIC_StopSong();
+    printf("[Logo] VOLUMEONE=%d showcinema=%d\n", VOLUMEONE, ud.showcinematics);
 
 	if(ud.showcinematics && numplayers < 2)
 	{
@@ -7504,7 +7508,7 @@ void Logo(void)
 		    if(!KB_KeyWaiting() && nomorelogohack == 0)
 		    {
 		        getpackets();
-
+		        printf("[Logo] playanm logo.anm\n");
 		        playanm("logo.anm",5);
 		        palto(0,0,0,63,false);
 		        KB_FlushKeyboardQueue();
@@ -7515,20 +7519,24 @@ void Logo(void)
 		}
 
 		//MIDI start here
+		printf("[Logo] playmusic\n");
 		playmusic(&env_music_fn[0][0]);
 		
+		printf("[Logo] DREALMS fade\n");
 		//"REALITY IS OUR GAME" Screen
-	    for(i=0;i<64;i+=7) 
+	    for(i=0;i<64;i+=7)
 			palto(0,0,0,i,true);
 	    ps[myconnectindex].palette = drealms;
 	    palto(0,0,0,63,false);
+	    printf("[Logo] DREALMS sprite\n");
 	    rotatesprite(0,0,65536L,0,DREALMS,0,0,2+8+16+64, 0,0,xdim-1,ydim-1);
-	    nextpage(); 
+	    nextpage();
 		for(i=63;i>0;i-=7) 
 			palto(0,0,0,i,true);
         
         
         
+	    printf("[Logo] DREALMS wait\n");
 	    totalclock = 0;
 	    while( totalclock < (120*7) && !KB_KeyWaiting() )
 	        getpackets();
@@ -7543,14 +7551,16 @@ void Logo(void)
 	    nextpage();
 	    ps[myconnectindex].palette = titlepal;
 	    flushperms();
+	    printf("[Logo] BETASCREEN sprite\n");
 	    rotatesprite(0,0,65536L,0,BETASCREEN,0,0,2+8+16+64,0,0,xdim-1,ydim-1);
 	    KB_FlushKeyboardQueue();
 	    nextpage();
-	    for(i=63;i>0;i-=7) 
+	    printf("[Logo] BETASCREEN fade-in\n");
+	    for(i=63;i>0;i-=7)
 			palto(0,0,0,i,true);
 
 	    totalclock = 0;
-	
+	    printf("[Logo] animation loop\n");
 		//Animate screen (Duke picture wiht "DUKE" "NUKEM 3D" coming from far away and hitting the screen"
 	    while(totalclock < (860+120) && !KB_KeyWaiting())
 	    {
@@ -7610,7 +7620,8 @@ void Logo(void)
 	    }
 		// FIX_00077: Menu goes directly to the "NEW GAME" sub-menu when starting new game (Turrican)
 		KB_FlushKeyboardQueue();
-	} 
+		printf("[Logo] cinema done\n");
+	}
 	else if(numplayers > 1)
     {
 		// FIX_00079: "waiting player" screen not showing up (black screen)
@@ -7633,6 +7644,7 @@ void Logo(void)
 		playmusic(&env_music_fn[0][0]);
 	}
 
+    printf("[Logo] waitforeverybody\n");
     waitforeverybody();
 
     flushperms();
@@ -7646,6 +7658,7 @@ void Logo(void)
 
     palto(0,0,0,0,false);
     clearview(0L);
+    printf("[Logo] done\n");
 }
 
 static uint8_t tmb_bank[8000];  /* must persist — of_midi_load_bank stores a pointer */
