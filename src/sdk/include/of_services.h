@@ -78,9 +78,6 @@ struct of_services_table {
     void *    (*mixer_alloc_samples)(uint32_t size);
     void      (*mixer_free_samples)(void);
     void      (*mixer_set_end_callback)(void (*cb)(uint32_t ended_mask));
-    void      (*mixer_retrigger)(int voice, const uint8_t *pcm_s16,
-                                 uint32_t sample_count, uint32_t sample_rate,
-                                 int volume);
 
     /* -- Audio (5) -- */
     void      (*audio_init)(void);
@@ -107,6 +104,11 @@ struct of_services_table {
     /* -- File (2) -- */
     long      (*file_size)(const char *path);
     long      (*file_size_fd)(int fd);
+
+    /* -- Mixer extensions (append-only to preserve ABI) -- */
+    void      (*mixer_retrigger)(int voice, const uint8_t *pcm_s16,
+                                 uint32_t sample_count, uint32_t sample_rate,
+                                 int volume);
 };
 
 #ifndef OF_PC
