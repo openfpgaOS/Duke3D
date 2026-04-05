@@ -44,20 +44,19 @@ typedef struct {
 
 #ifndef OF_PC
 
-#include "of_syscall.h"
-#include "of_syscall_numbers.h"
+#include "of_services.h"
 
 static of_input_state_t __of_p0, __of_p1;
 
 static inline void of_input_poll(void) {
-    __of_syscall0(OF_SYS_INPUT_POLL);
-    __of_syscall2(OF_SYS_INPUT_GET_STATE, 0, (long)&__of_p0);
-    __of_syscall2(OF_SYS_INPUT_GET_STATE, 1, (long)&__of_p1);
+    OF_SVC->input_poll();
+    OF_SVC->input_get_state(0, &__of_p0);
+    OF_SVC->input_get_state(1, &__of_p1);
 }
 
-/* Single-player fast path: poll + get P0 in one syscall (saves 2 ecalls/frame) */
+/* Single-player fast path: poll + get P0 in one call */
 static inline void of_input_poll_p0(void) {
-    __of_syscall1(OF_SYS_INPUT_POLL_P0, (long)&__of_p0);
+    OF_SVC->input_poll_p0(&__of_p0);
 }
 
 static inline int of_btn(uint32_t mask) {
@@ -85,11 +84,12 @@ static inline int of_btn_released_p2(uint32_t mask) {
 }
 
 static inline uint32_t of_input_state(int player, of_input_state_t *state) {
-    return (uint32_t)__of_syscall2(OF_SYS_INPUT_GET_STATE, player, (long)state);
+    OF_SVC->input_get_state(player, state);
+    return state->buttons;
 }
 
 static inline void of_input_set_deadzone(int16_t deadzone) {
-    __of_syscall1(OF_SYS_INPUT_SET_DEADZONE, deadzone);
+    OF_SVC->input_set_deadzone(deadzone);
 }
 
 #else /* OF_PC */

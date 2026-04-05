@@ -14,12 +14,11 @@ extern "C" {
 
 #ifndef OF_PC
 
-#include "of_syscall.h"
-#include "of_syscall_numbers.h"
+#include "of_services.h"
 
 /* Flush D-cache for the draw buffer (same as of_video_flush). */
 static inline void of_cache_flush_video(void) {
-    __of_syscall0(OF_SYS_VIDEO_FLUSH_CACHE);
+    OF_SVC->video_flush_cache();
 }
 
 /* Invalidate I-cache (fence.i). */

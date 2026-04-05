@@ -24,35 +24,34 @@ extern "C" {
 
 #ifndef OF_PC
 
-#include "of_syscall.h"
-#include "of_syscall_numbers.h"
+#include "of_services.h"
 
 static inline void of_video_init(void) {
-    __of_syscall0(OF_SYS_VIDEO_INIT);
+    OF_SVC->video_init();
 }
 
 static inline uint8_t *of_video_surface(void) {
-    return (uint8_t *)__of_syscall0(OF_SYS_VIDEO_GET_SURFACE);
+    return OF_SVC->video_get_surface();
 }
 
 static inline void of_video_flip(void) {
-    __of_syscall0(OF_SYS_VIDEO_FLIP);
+    OF_SVC->video_flip();
 }
 
 static inline void of_video_sync(void) {
-    __of_syscall0(OF_SYS_VIDEO_WAIT_FLIP);
+    OF_SVC->video_wait_flip();
 }
 
 static inline void of_video_clear(uint8_t color) {
-    __of_syscall1(OF_SYS_VIDEO_CLEAR, color);
+    OF_SVC->video_clear(color);
 }
 
 static inline void of_video_palette(uint8_t index, uint32_t rgb) {
-    __of_syscall2(OF_SYS_VIDEO_SET_PALETTE, index, rgb);
+    OF_SVC->video_set_palette(index, rgb);
 }
 
 static inline void of_video_palette_bulk(const uint32_t *pal, int count) {
-    __of_syscall2(OF_SYS_VIDEO_SET_PALETTE_BULK, (long)pal, count);
+    OF_SVC->video_set_palette_bulk(pal, count);
 }
 
 /* Convert and set a VGA 6-bit palette (768 bytes: R,G,B triplets, 0-63 range).
@@ -71,11 +70,11 @@ static inline void of_video_palette_vga6(const uint8_t *vga_pal, int count) {
 /* Set a VGA 4-byte palette (BUILD/Quake/DOOM format: B6 G6 R6 pad per entry).
  * Kernel converts 6-bit→8-bit directly — no userspace math needed. */
 static inline void of_video_palette_vga4(const uint8_t *bgra6, int count) {
-    __of_syscall2(OF_SYS_VIDEO_SET_PALETTE_VGA4, (long)bgra6, count);
+    OF_SVC->video_set_palette_vga4(bgra6, count);
 }
 
 static inline void of_video_flush(void) {
-    __of_syscall0(OF_SYS_VIDEO_FLUSH_CACHE);
+    OF_SVC->video_flush_cache();
 }
 
 static inline void of_video_pixel(int x, int y, uint8_t color) {
@@ -99,7 +98,7 @@ static inline void of_video_blit_letterbox(const uint8_t *src, int src_w, int sr
 }
 
 static inline void of_video_set_display_mode(int mode) {
-    __of_syscall1(OF_SYS_VIDEO_SET_DISPLAY_MODE, mode);
+    OF_SVC->video_set_display_mode(mode);
 }
 
 /* Color mode constants */
@@ -117,7 +116,13 @@ static inline void of_video_set_display_mode(int mode) {
 #define OF_FB_SIZE_16BPP    (320 * 240 * 2)     /* 153,600 bytes */
 
 static inline void of_video_set_color_mode(int mode) {
-    __of_syscall1(OF_SYS_VIDEO_SET_COLOR_MODE, mode);
+    OF_SVC->video_set_color_mode(mode);
+}
+
+/* Register a callback invoked on every vsync (vblank) IRQ.
+ * Pass NULL to disable. Callback runs in kernel context — keep it short. */
+static inline void of_video_set_vsync_callback(void (*cb)(void)) {
+    OF_SVC->video_set_vsync_callback(cb);
 }
 
 /* Get surface as 16-bit for direct color modes */

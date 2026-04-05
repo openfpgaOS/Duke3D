@@ -60,6 +60,8 @@ extern "C" {
 #include "of_lzw.h"
 #include "of_bram.h"
 #include "of_midi.h"
+#include "of_caps.h"
+#include "of_services.h"
 
 /* ======================================================================
  * System

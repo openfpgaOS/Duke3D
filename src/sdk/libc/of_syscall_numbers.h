@@ -29,6 +29,7 @@ extern "C" {
 #define OF_SYS_VIDEO_SET_COLOR_MODE    0x1009
 #define OF_SYS_VIDEO_SET_PALETTE_VGA4 0x100A
 #define OF_SYS_VIDEO_VSYNC             0x100B
+#define OF_SYS_VIDEO_SET_VSYNC_CALLBACK 0x100C
 
 /* Audio */
 #define OF_SYS_AUDIO_WRITE             0x1010
@@ -123,6 +124,7 @@ extern "C" {
 #define OF_SYS_MIXER_SET_VOICE_RAW     0x10E2
 #define OF_SYS_MIXER_SET_VOL_RATE      0x10E3
 #define OF_SYS_MIXER_POLL_ENDED        0x10E4
+#define OF_SYS_MIXER_SET_END_CALLBACK  0x10E9
 
 /* Audio Codec */
 #define OF_SYS_CODEC_PARSE_VOC         0x10E5
@@ -134,6 +136,11 @@ extern "C" {
 
 /* Interact */
 #define OF_SYS_INTERACT_GET            0x10F0
+
+/* Async file I/O */
+#define OF_SYS_FILE_READ_ASYNC         0x10F1
+#define OF_SYS_FILE_ASYNC_POLL         0x10F2
+#define OF_SYS_FILE_ASYNC_BUSY         0x10F3
 
 #ifdef __cplusplus
 }

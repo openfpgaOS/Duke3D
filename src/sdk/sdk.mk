@@ -67,6 +67,12 @@ CRT_POSIX  = $(SDK_DIR)/of_posix.o
 CRT_MIDI   = $(SDK_DIR)/of_midi.o
 CRT_CXXABI = $(SDK_DIR)/of_cxxabi.o
 
+# Pre-built CRT objects — never rebuild (they use SDK-specific flags)
+$(CRT_START): ;
+$(CRT_POSIX): ;
+$(CRT_MIDI): ;
+$(CRT_CXXABI): ;
+
 SRCS_CXX ?=
 APP_C_OBJS   = $(patsubst %.c,$(OBJ_DIR)/%.o,$(filter %.c,$(SRCS)))
 APP_CXX_OBJS = $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(filter %.cpp,$(SRCS_CXX)))

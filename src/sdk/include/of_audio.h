@@ -19,27 +19,26 @@ extern "C" {
 
 #ifndef OF_PC
 
-#include "of_syscall.h"
-#include "of_syscall_numbers.h"
+#include "of_services.h"
 
 static inline void of_audio_init(void) {
-    __of_syscall0(OF_SYS_AUDIO_INIT);
+    OF_SVC->audio_init();
 }
 
 static inline int of_audio_write(const int16_t *samples, int count) {
-    return (int)__of_syscall2(OF_SYS_AUDIO_WRITE, (long)samples, count);
+    return OF_SVC->audio_write(samples, count);
 }
 
 static inline int of_audio_free(void) {
-    return (int)__of_syscall0(OF_SYS_AUDIO_GET_FREE);
+    return OF_SVC->audio_get_free();
 }
 
 static inline void of_audio_opl_write(uint16_t reg, uint8_t val) {
-    __of_syscall2(OF_SYS_OPL_WRITE, reg, val);
+    OF_SVC->opl_write(reg, val);
 }
 
 static inline void of_audio_opl_reset(void) {
-    __of_syscall0(OF_SYS_OPL_RESET);
+    OF_SVC->opl_reset();
 }
 
 #else /* OF_PC */

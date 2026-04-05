@@ -16,19 +16,18 @@ extern "C" {
 
 #ifndef OF_PC
 
-#include "of_syscall.h"
-#include "of_syscall_numbers.h"
+#include "of_services.h"
 
 /* Set a periodic timer callback at the given frequency (Hz).
  * The callback runs in interrupt context — keep it short.
  * Pass NULL or hz=0 to disable. */
 static inline void of_timer_set_callback(void (*fn)(void), uint32_t hz) {
-    __of_syscall2(OF_SYS_TIMER_SET_CALLBACK, (long)fn, (long)hz);
+    OF_SVC->timer_set_callback(fn, hz);
 }
 
 /* Stop the periodic timer and clear the callback. */
 static inline void of_timer_stop(void) {
-    __of_syscall0(OF_SYS_TIMER_STOP);
+    OF_SVC->timer_stop();
 }
 
 #else /* OF_PC */
