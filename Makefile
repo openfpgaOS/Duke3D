@@ -31,8 +31,9 @@ C_RESET :=
 endif
 
 # ── Display name (use detected app or <app> placeholder) ────────────
+# Truncate to 10 chars with ... if too long, to keep help aligned
 ifneq ($(APP_NAME),)
-A := $(APP_NAME)
+A := $(shell n="$(APP_NAME)"; [ $${#n} -gt 10 ] && echo "$${n:0:7}..." || echo "$$n")
 else
 A := <app>
 endif
@@ -77,10 +78,10 @@ help:
 	@echo ""
 	@printf "  $(C_HEAD)From the root:$(C_RESET)\n"
 	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)                    Build everything\n"
-	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)  $(C_ARG)APP=$(A)$(C_RESET)         Build sdk or $(A)\n"
-	@printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)   $(C_ARG)APP=$(A)$(C_RESET)         Build, push via UART, stream console\n"
+	@A="$(A)"; cmd="make build  APP=$$A"; printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)  $(C_ARG)APP=$$A$(C_RESET)%*s Build sdk or $$A\n" $$((29 - $${#cmd})) ""
+	@A="$(A)"; cmd="make exec   APP=$$A"; printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)   $(C_ARG)APP=$$A$(C_RESET)%*s Build, push via UART, stream console\n" $$((29 - $${#cmd})) ""
 	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy everything to SD card\n"
-	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET) $(C_ARG)APP=$(A)$(C_RESET)         Deploy sdk or $(A) to SD card\n"
+	@A="$(A)"; cmd="make deploy APP=$$A"; printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET) $(C_ARG)APP=$$A$(C_RESET)%*s Deploy sdk or $$A to SD card\n" $$((29 - $${#cmd})) ""
 	@printf "    $(C_CMD)make $(C_VERB)tools$(C_RESET)                    Build PHDP host tools\n"
 	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package all cores into ZIPs\n"
 	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove all build artifacts\n"
