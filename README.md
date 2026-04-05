@@ -188,6 +188,7 @@ of_video_init();                              // Initialize video
 uint8_t *fb = of_video_surface();             // Get back buffer (write here)
 of_video_flip();                              // Swap front/back buffers
 of_video_sync();                              // Wait until flip completes
+of_video_vsync();                             // Wait for next vblank (no flip)
 of_video_clear(0);                            // Fill back buffer with palette index
 of_video_pixel(x, y, color);                  // Set one pixel (bounds-checked)
 of_video_flush();                             // Flush D-cache (advanced)

@@ -28,6 +28,7 @@ extern "C" {
 #define OF_SYS_VIDEO_FLUSH_CACHE       0x1008
 #define OF_SYS_VIDEO_SET_COLOR_MODE    0x1009
 #define OF_SYS_VIDEO_SET_PALETTE_VGA4 0x100A
+#define OF_SYS_VIDEO_VSYNC             0x100B
 
 /* Audio */
 #define OF_SYS_AUDIO_WRITE             0x1010
