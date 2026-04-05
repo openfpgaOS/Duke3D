@@ -202,8 +202,8 @@ echo -e "${GREEN}Your app is ready!${RESET}"
 echo
 echo "  cd src/$SNAME"
 echo "  make              # build"
-echo "  make deploy       # deploy to Pocket SD card"
-echo "  make pc           # test on desktop (SDL2)"
+echo "  make copy         # copy to Pocket SD card"
+echo "  make test         # test on desktop (SDL2)"
 echo "  make package      # package for distribution"
 echo
 echo "Edit src/$SNAME/main.c to start building your app."

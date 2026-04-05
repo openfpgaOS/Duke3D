@@ -216,9 +216,9 @@ done
 # ── Optional: SDL2 for PC builds ────────────────────────────────────
 echo
 if command -v sdl2-config &>/dev/null || pkg-config --exists sdl2 2>/dev/null; then
-    ok "SDL2: available (for 'make pc' desktop builds)"
+    ok "SDL2: available (for 'make test' desktop builds)"
 else
-    warn "SDL2 not found — 'make pc' won't work (optional)"
+    warn "SDL2 not found — 'make test' won't work (optional)"
     case "$DISTRO" in
         arch)   echo "    sudo pacman -S sdl2" ;;
         debian) echo "    sudo apt install libsdl2-dev" ;;

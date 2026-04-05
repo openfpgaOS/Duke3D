@@ -77,12 +77,12 @@ cat > "$APP_DIR/Makefile" << 'MKEOF'
 # {{APP_DISPLAY}} — openfpgaOS App
 #
 # Targets:
-#   make            Build app
-#   make debug       Build, push via UART, stream console
-#   make copy     Copy to hardware (auto-detects SD card)
-#   make package    Create distributable ZIP
-#   make test       Test on desktop (SDL2)
-#   make clean      Remove build artifacts
+#   make              Build app
+#   make debug        Build, push via UART, stream console
+#   make copy         Copy to Pocket SD card
+#   make package      Create distributable ZIP
+#   make test         Test on desktop (SDL2)
+#   make clean        Remove build artifacts
 #
 
 APP       = {{APP}}
@@ -106,7 +106,7 @@ include $(SDK_DIR)/sdk.mk
 $(CRT_DIR)/start.o: $(CRT_DIR)/start.S
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
-# Build ELF, then assemble: dist/<app>/ + runtime + ELF = deployable
+# Build ELF, then assemble SD card image in build/<app>/
 all: $(OBJ_DIR)/app.elf release
 	@$(SIZE) $<
 

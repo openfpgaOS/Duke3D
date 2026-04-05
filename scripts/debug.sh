@@ -1,14 +1,14 @@
 #!/bin/bash
 #
-# openfpgaOS SDK — Quick Deploy & Run
+# openfpgaOS SDK — Debug (UART)
 #
 # Pushes a binary to the Pocket over UART, resets the core, and
 # streams console output until Ctrl+C.
 #
 # Usage:
-#   ./scripts/exec.sh path/to/app.elf        Push to slot 2 (Application)
-#   ./scripts/exec.sh path/to/os.bin         Push to slot 1 (OS)
-#   ./scripts/exec.sh --slot N path/to/file  Push to explicit slot
+#   ./scripts/debug.sh path/to/app.elf       Push to slot 2 (Application)
+#   ./scripts/debug.sh path/to/os.bin        Push to slot 1 (OS)
+#   ./scripts/debug.sh --slot N path/to/file Push to explicit slot
 #
 
 set -e

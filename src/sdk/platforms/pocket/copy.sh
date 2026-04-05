@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-# openfpgaOS SDK — Pocket Deploy
+# openfpgaOS SDK — Copy to Pocket SD Card
 #
 # Copies build/<app>/ to the Analogue Pocket SD card.
 # The build directory is already a complete SD card image.
 #
-# Usage: deploy.sh <APP_NAME> <ELF_PATH> [SD_PATH]
+# Usage: copy.sh <APP_NAME> <ELF_PATH> [SD_PATH]
 #
 # Platform: Analogue Pocket (APF)
 #

@@ -653,10 +653,10 @@ sudo make install                   # install to /usr/local/bin
 
 ```bash
 make                                # rebuild your app
-./scripts/exec.sh src/mygame/mygame.elf
+./scripts/debug.sh src/mygame/mygame.elf
 ```
 
-`exec.sh` starts the daemon if needed, clears pending slots, pushes the file (auto-detects slot 1 for `os.bin`, slot 2 for app ELFs), resets the core, and streams console output until Ctrl+C.
+`debug.sh` starts the daemon if needed, clears pending slots, pushes the file (auto-detects slot 1 for `os.bin`, slot 2 for app ELFs), resets the core, and streams console output until Ctrl+C.
 
 ---
 
@@ -751,11 +751,11 @@ make core --target mister              # future: MiSTer
 | Script | What it does |
 |--------|-------------|
 | `scripts/setup.sh` | Detects OS, installs RISC-V toolchain |
-| `scripts/new.sh` | Creates a new app (Makefile, main.c, instance.json) |
+| `scripts/new.sh` | Creates a new app (Makefile, main.c) |
 | `scripts/customize.sh` | Creates a standalone core for distribution (interactive) |
-| `scripts/copy.sh` | Deploys full SDK release to Pocket SD card |
+| `scripts/copy.sh` | Copies build/ to Pocket SD card |
+| `scripts/debug.sh` | Push binary via UART, reset core, stream output |
 | `scripts/package.sh` | ZIPs a core for distribution |
-| `scripts/exec.sh` | Push binary via UART, reset core, stream output |
 
 ---
 
@@ -792,27 +792,27 @@ For larger ports (Duke Nukem, Doom, etc.) that carry their own build system:
 
 ```
 openfpgaOS-SDK/
-├── Makefile              <- Top-level: setup, new, demos, release
+├── Makefile              <- Top-level: build, copy, debug, package
 ├── GETTING_STARTED.md    <- Quick start guide for developers
 ├── src/
 │   ├── <mygame>/         <- YOUR app (created by make core)
-│   │   ├── Makefile      <- Self-contained: build, copy, package
-│   │   ├── main.c        <- Your code
-│   │   └── instance.json <- Data slot mapping (only config you maintain)
-│   ├── apps/             <- Bundled example apps (SDK-owned)
+│   │   └── main.c        <- Your code + Makefile
+│   ├── apps/             <- Bundled demo apps (SDK-owned)
 │   │   ├── bramdemo/     <- BRAM hot-path benchmarking
 │   │   ├── celeste/      <- Full game example
 │   │   ├── colordemo/    <- Video color mode demo (all 6 modes)
 │   │   ├── cray/         <- Real-time C raytracer
 │   │   ├── cxxdemo/      <- C++ classes, templates, iostream
 │   │   ├── fbdemo/       <- PNG framebuffer display
-│   │   ├── memdemo/      <- memset/memcpy throughput benchmark
 │   │   ├── interactdemo/ <- Pocket menu variables
-│   │   ├── mididemo/     <- MIDI playback (of_midi library, 18-ch OPL3)
+│   │   ├── memdemo/      <- memset/memcpy throughput benchmark
+│   │   ├── mididemo/     <- MIDI playback (18-ch OPL3)
+│   │   ├── moddemo/      <- MOD/tracker music playback
 │   │   ├── savea/        <- Save slot integrity test
 │   │   ├── saveb/        <- Save cross-pollution test
 │   │   ├── slotdemo/     <- File slot registry display
 │   │   ├── testdemo/     <- Kernel test suite (182 assertions)
+│   │   ├── triplebuf/    <- Triple-buffer framebuffer demo
 │   │   └── wavdemo/      <- WAV audio playback
 │   └── sdk/              <- Headers, libc, CRT, build rules (SDK-owned)
 │       ├── include/      <- openfpgaOS API headers
@@ -821,10 +821,9 @@ openfpgaOS-SDK/
 │       ├── platforms/    <- Platform templates & copy scripts
 │       │   └── pocket/   <- Analogue Pocket target
 │       └── pc/           <- SDL2 shim for desktop builds
-├── dist/sdk/             <- SDK core configs (deployed as-is, SDK-owned)
-│   ├── core/             <- core.json, data.json, audio.json, ...
-│   ├── platform/         <- Platform metadata
-│   └── instances/        <- Instance JSONs for bundled apps
+├── dist/                 <- Static core configs (SD card layout)
+│   ├── sdk/              <- SDK core (Cores/, Assets/, Platforms/)
+│   └── <mygame>/         <- Your app's core (created by make core)
 ├── scripts/              <- Build/copy/packaging scripts (SDK-owned)
 └── runtime/              <- FPGA bitstream, OS binary, loader (SDK-owned)
 ```
@@ -833,13 +832,13 @@ openfpgaOS-SDK/
 
 | Yours (edit freely) | SDK-owned (updated via git pull) |
 |---------------------|----------------------------------|
-| `src/<mygame>/main.c` | `src/sdk/` |
-| `src/<mygame>/instance.json` | `src/apps/` |
-| | `dist/sdk/` |
-| | `runtime/` |
+| `src/<mygame>/` (your code) | `src/sdk/` (headers, build rules) |
+| `dist/<mygame>/` (your core configs) | `dist/sdk/` (SDK core configs) |
+| | `src/apps/` (demo apps) |
+| | `runtime/` (bitstream, os.bin) |
 | | `scripts/` |
 
-Core JSON configs live in `dist/sdk/` and are deployed directly to the SD card. When the SDK updates them, you get the changes automatically — no regeneration needed.
+Core JSON configs in `dist/sdk/` are SDK-owned. Your app's configs live in `dist/<mygame>/` (created by `make core`). Both get assembled into `build/` at build time.
 
 ---
 

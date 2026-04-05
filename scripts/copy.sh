@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# openfpgaOS SDK — Deploy to Pocket SD Card
+# openfpgaOS SDK — Copy to Pocket SD Card
 #
 # Copies build/sdk/ (the complete SD card image) to the mounted SD card.
 # Run 'make' from src/apps/ first to assemble build/sdk/.
 #
 # Usage:
-#   ./scripts/deploy.sh                     Auto-detect Pocket SD card
-#   ./scripts/deploy.sh /mnt/sdcard         Deploy to specific path
+#   ./scripts/copy.sh                       Auto-detect Pocket SD card
+#   ./scripts/copy.sh /mnt/sdcard           Copy to specific path
 #
 
 set -e
