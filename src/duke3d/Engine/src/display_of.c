@@ -281,7 +281,6 @@ void _nextpage(void)
         bars_remaining--;
     }
 
-    /* Queue this buffer for display, then retarget at the new back buffer */
     of_video_flip();
     retarget_frameplace();
 }
@@ -607,13 +606,19 @@ void sampletimer(void)
     n = (int32_t)(i * timerticspersec / timerfreq) - timerlastsample;
 
     if (n > 0) {
+        /* Always advance timerlastsample by the real elapsed amount
+         * so we don't accumulate permanent drift */
         totalclock += n;
         timerlastsample += n;
-    }
 
-    if (usertimercallback) {
-        for (; n > 0; n--)
-            usertimercallback();
+        /* But clamp callback iterations to prevent hang after loading pauses */
+        int callbacks = n;
+        if (callbacks > 4) callbacks = 4;
+
+        if (usertimercallback) {
+            for (; callbacks > 0; callbacks--)
+                usertimercallback();
+        }
     }
 }
 

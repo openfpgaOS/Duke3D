@@ -295,12 +295,11 @@ void d3d_audio_pump(void)
         of_midi_pump();
     }
 
-    /* Single register read: get bitmask of all voices that just ended.
-     * Replaces up to 32 individual voice_active syscalls. */
+    /* Single register read: bitmask of voices that finished since last poll */
     uint32_t ended = of_mixer_poll_ended();
     while (ended) {
-        int i = __builtin_ctz(ended);  /* lowest set bit = voice index */
-        ended &= ended - 1;           /* clear it */
+        int i = __builtin_ctz(ended);
+        ended &= ended - 1;
 
         if (active_voices[i].voice >= 0) {
             int snd = active_voices[i].sound_num;
