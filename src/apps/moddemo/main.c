@@ -274,11 +274,12 @@ static void play_note(int ch, mod_note_t *n) {
         c->target_period = n->period;
     }
 
-    /* Parse effect */
+    /* Parse effect — reset per-tick state, keep persistent values */
     c->vol_slide = 0;
-    c->porta_speed = (n->effect == 0x3) ? (n->param ? n->param : c->porta_speed) : 0;
     c->arp_x = 0;
     c->arp_y = 0;
+    if (n->effect == 0x3 && n->param)
+        c->porta_speed = n->param;  /* porta speed is sticky */
 
     switch (n->effect) {
     case 0x0:  /* Arpeggio */
@@ -326,17 +327,18 @@ static void tick_effects(int ch) {
             c->rate_fp16 = period_to_rate_fp16(period_table[note]);
     }
 
-    /* Portamento to note */
+    /* Portamento to note — do math in int to avoid uint16 underflow */
     if (c->porta_speed && c->target_period) {
-        if (c->period > c->target_period) {
-            c->period -= c->porta_speed;
-            if (c->period < c->target_period)
-                c->period = c->target_period;
-        } else if (c->period < c->target_period) {
-            c->period += c->porta_speed;
-            if (c->period > c->target_period)
-                c->period = c->target_period;
+        int p = (int)c->period;
+        int t = (int)c->target_period;
+        if (p > t) {
+            p -= c->porta_speed;
+            if (p < t) p = t;
+        } else if (p < t) {
+            p += c->porta_speed;
+            if (p > t) p = t;
         }
+        c->period = (uint16_t)p;
         c->rate_fp16 = period_to_rate_fp16(c->period);
     }
 
@@ -353,8 +355,8 @@ static void update_hardware(void) {
         channel_t *c = &channels[ch];
         if (c->voice < 0) continue;
 
-        /* Map MOD volume (0-64) + pan to L/R */
-        int vol = c->volume * 4;  /* 0-255 */
+        /* Map MOD volume (0-64) + pan to L/R (clamp to 0-255) */
+        int vol = c->volume * 255 / 64;
         int vol_l = (vol * (255 - c->pan)) >> 8;
         int vol_r = (vol * c->pan) >> 8;
 
