@@ -18,13 +18,15 @@ ifneq ($(shell tput colors 2>/dev/null),)
 C_LOGO  := \033[96m
 C_HEAD  := \033[1m
 C_CMD   := \033[93m
-C_DESC  := \033[0m
+C_VERB  := \033[1;93m
+C_ARG   := \033[36m
 C_RESET := \033[0m
 else
 C_LOGO  :=
 C_HEAD  :=
 C_CMD   :=
-C_DESC  :=
+C_VERB  :=
+C_ARG   :=
 C_RESET :=
 endif
 
@@ -46,35 +48,35 @@ help:
 	@echo "  \\____/___/  Duke Nukem 3D"
 	@printf "$(C_RESET)\n"
 	@printf "  $(C_HEAD)Getting started:$(C_RESET)\n"
-	@printf "    $(C_CMD)make setup$(C_RESET)                    Install RISC-V toolchain\n"
-	@printf "    $(C_CMD)make core$(C_RESET)                     Create your app\n"
+	@printf "    $(C_CMD)make $(C_VERB)setup$(C_RESET)                    Install RISC-V toolchain\n"
+	@printf "    $(C_CMD)make $(C_VERB)core$(C_RESET)                     Create your app\n"
 	@echo ""
 	@printf "  $(C_HEAD)Then work from your app directory:$(C_RESET)\n"
 	@printf "    $(C_CMD)cd src/<app>$(C_RESET)\n"
 	@printf "    $(C_CMD)make$(C_RESET)                          Build\n"
-	@printf "    $(C_CMD)make exec$(C_RESET)                     Build, push via UART, stream console\n"
-	@printf "    $(C_CMD)make deploy$(C_RESET)                   Deploy to Pocket SD card\n"
-	@printf "    $(C_CMD)make package$(C_RESET)                  Package core into a ZIP\n"
-	@printf "    $(C_CMD)make pc$(C_RESET)                       Test on desktop (SDL2)\n"
-	@printf "    $(C_CMD)make clean$(C_RESET)                    Remove build artifacts\n"
+	@printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)                     Build, push via UART, stream console\n"
+	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy to Pocket SD card\n"
+	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package core into a ZIP\n"
+	@printf "    $(C_CMD)make $(C_VERB)pc$(C_RESET)                       Test on desktop (SDL2)\n"
+	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove build artifacts\n"
 	@echo ""
 	@printf "  $(C_HEAD)To work with the demo apps:$(C_RESET)\n"
 	@printf "    $(C_CMD)cd src/apps$(C_RESET)\n"
 	@printf "    $(C_CMD)make$(C_RESET)                          Build all demos\n"
-	@printf "    $(C_CMD)make new APP=demo$(C_RESET)             Create a new demo app\n"
-	@printf "    $(C_CMD)make package$(C_RESET)                  Package SDK core into a ZIP\n"
-	@printf "    $(C_CMD)make deploy$(C_RESET)                   Deploy SDK + demos to SD card\n"
-	@printf "    $(C_CMD)make clean$(C_RESET)                    Remove build artifacts\n"
+	@printf "    $(C_CMD)make $(C_VERB)new$(C_RESET) $(C_ARG)APP=demo$(C_RESET)             Create a new demo app\n"
+	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package SDK core into a ZIP\n"
+	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy SDK + demos to SD card\n"
+	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove build artifacts\n"
 	@echo ""
 	@printf "  $(C_HEAD)From the root:$(C_RESET)\n"
-	@printf "    $(C_CMD)make build$(C_RESET)                    Build everything\n"
-	@printf "    $(C_CMD)make build  APP=<app>$(C_RESET)         Build sdk or <app>\n"
-	@printf "    $(C_CMD)make exec   APP=<app>$(C_RESET)         Build, push via UART, stream console\n"
-	@printf "    $(C_CMD)make deploy$(C_RESET)                   Deploy everything to SD card\n"
-	@printf "    $(C_CMD)make deploy APP=<app>$(C_RESET)         Deploy sdk or <app> to SD card\n"
-	@printf "    $(C_CMD)make tools$(C_RESET)                    Build PHDP host tools\n"
-	@printf "    $(C_CMD)make package$(C_RESET)                  Package all cores into ZIPs\n"
-	@printf "    $(C_CMD)make clean$(C_RESET)                    Remove all build artifacts\n"
+	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)                    Build everything\n"
+	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)  $(C_ARG)APP=<app>$(C_RESET)         Build sdk or <app>\n"
+	@printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)   $(C_ARG)APP=<app>$(C_RESET)         Build, push via UART, stream console\n"
+	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy everything to SD card\n"
+	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET) $(C_ARG)APP=<app>$(C_RESET)         Deploy sdk or <app> to SD card\n"
+	@printf "    $(C_CMD)make $(C_VERB)tools$(C_RESET)                    Build PHDP host tools\n"
+	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package all cores into ZIPs\n"
+	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove all build artifacts\n"
 
 # ── Setup ────────────────────────────────────────────────────────────
 setup:
