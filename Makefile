@@ -13,11 +13,27 @@ APP_NAME := $(shell for d in src/*/; do \
 	[ -f "$$d/Makefile" ] && basename "$$d"; \
 done)
 
+# ── Colors (auto-detect terminal) ────────────────────────────────────
+ifneq ($(shell tput colors 2>/dev/null),)
+C_LOGO  := \033[96m
+C_HEAD  := \033[1m
+C_CMD   := \033[93m
+C_DESC  := \033[0m
+C_RESET := \033[0m
+else
+C_LOGO  :=
+C_HEAD  :=
+C_CMD   :=
+C_DESC  :=
+C_RESET :=
+endif
+
 # ── Default target ───────────────────────────────────────────────────
 all: help
 
 # ── Help ─────────────────────────────────────────────────────────────
 help:
+	@printf "$(C_LOGO)"
 	@echo "         ___  ___  ___ ___"
 	@echo "        / _ \\/ _ \\/ -_) _ \\"
 	@echo "        \\___/ .__/\\__/_//_/"
@@ -28,37 +44,37 @@ help:
 	@echo "   / __ \\/ __/"
 	@echo "  / /_/ /\\ \\"
 	@echo "  \\____/___/  Duke Nukem 3D"
+	@printf "$(C_RESET)\n"
+	@printf "  $(C_HEAD)Getting started:$(C_RESET)\n"
+	@printf "    $(C_CMD)make setup$(C_RESET)                    Install RISC-V toolchain\n"
+	@printf "    $(C_CMD)make core$(C_RESET)                     Create your app\n"
 	@echo ""
-	@echo "  Getting started:"
-	@echo "    make setup                Install RISC-V toolchain"
-	@echo "    make core                 Create your app"
+	@printf "  $(C_HEAD)Then work from your app directory:$(C_RESET)\n"
+	@printf "    $(C_CMD)cd src/<app>$(C_RESET)\n"
+	@printf "    $(C_CMD)make$(C_RESET)                          Build\n"
+	@printf "    $(C_CMD)make exec$(C_RESET)                     Build, push via UART, stream console\n"
+	@printf "    $(C_CMD)make deploy$(C_RESET)                   Deploy to Pocket SD card\n"
+	@printf "    $(C_CMD)make package$(C_RESET)                  Package core into a ZIP\n"
+	@printf "    $(C_CMD)make pc$(C_RESET)                       Test on desktop (SDL2)\n"
+	@printf "    $(C_CMD)make clean$(C_RESET)                    Remove build artifacts\n"
 	@echo ""
-	@echo "  Then work from your app directory:"
-	@echo "    cd src/<app>"
-	@echo "    make                      Build"
-	@echo "    make exec                 Build, push via UART, stream console"
-	@echo "    make deploy               Deploy to Pocket SD card"
-	@echo "    make package              Package core into a ZIP"
-	@echo "    make pc                   Test on desktop (SDL2)"
-	@echo "    make clean                Remove build artifacts"
+	@printf "  $(C_HEAD)To work with the demo apps:$(C_RESET)\n"
+	@printf "    $(C_CMD)cd src/apps$(C_RESET)\n"
+	@printf "    $(C_CMD)make$(C_RESET)                          Build all demos\n"
+	@printf "    $(C_CMD)make new APP=demo$(C_RESET)             Create a new demo app\n"
+	@printf "    $(C_CMD)make package$(C_RESET)                  Package SDK core into a ZIP\n"
+	@printf "    $(C_CMD)make deploy$(C_RESET)                   Deploy SDK + demos to SD card\n"
+	@printf "    $(C_CMD)make clean$(C_RESET)                    Remove build artifacts\n"
 	@echo ""
-	@echo "  To work with the demo apps:"
-	@echo "    cd src/apps"
-	@echo "    make                      Build all demos"
-	@echo "    make new APP=demo         Create a new demo app"
-	@echo "    make package              Package SDK core into a ZIP"
-	@echo "    make deploy               Deploy SDK + demos to SD card"
-	@echo "    make clean                Remove build artifacts"
-	@echo ""
-	@echo "  From the root:"
-	@echo "    make build                    Build everything"
-	@echo "    make build  APP=<app>         Build sdk or <app>"
-	@echo "    make exec   APP=<app>         Build, push via UART, stream console"
-	@echo "    make deploy                   Deploy everything to SD card"
-	@echo "    make deploy APP=<app>         Deploy sdk or <app> to SD card"
-	@echo "    make tools                    Build PHDP host tools"
-	@echo "    make package                  Package all cores into ZIPs"
-	@echo "    make clean                    Remove all build artifacts"
+	@printf "  $(C_HEAD)From the root:$(C_RESET)\n"
+	@printf "    $(C_CMD)make build$(C_RESET)                    Build everything\n"
+	@printf "    $(C_CMD)make build  APP=<app>$(C_RESET)         Build sdk or <app>\n"
+	@printf "    $(C_CMD)make exec   APP=<app>$(C_RESET)         Build, push via UART, stream console\n"
+	@printf "    $(C_CMD)make deploy$(C_RESET)                   Deploy everything to SD card\n"
+	@printf "    $(C_CMD)make deploy APP=<app>$(C_RESET)         Deploy sdk or <app> to SD card\n"
+	@printf "    $(C_CMD)make tools$(C_RESET)                    Build PHDP host tools\n"
+	@printf "    $(C_CMD)make package$(C_RESET)                  Package all cores into ZIPs\n"
+	@printf "    $(C_CMD)make clean$(C_RESET)                    Remove all build artifacts\n"
 
 # ── Setup ────────────────────────────────────────────────────────────
 setup:
