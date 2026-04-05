@@ -51,14 +51,14 @@ help:
 	@echo "    make clean                Remove build artifacts"
 	@echo ""
 	@echo "  From the root:"
-	@echo "    make build                Build everything"
-	@echo "    make build APP=<app>      Build sdk or <app>"
-	@echo "    make exec APP=<app>       Build, push via UART, stream console"
-	@echo "    make deploy               Deploy everything to SD card"
-	@echo "    make deploy APP=<app>     Deploy sdk or <app> to SD card"
-	@echo "    make tools                Build PHDP host tools"
-	@echo "    make package              Package all cores into ZIPs"
-	@echo "    make clean                Remove all build artifacts"
+	@echo "    make build                    Build everything"
+	@echo "    make build  APP=<app>         Build sdk or <app>"
+	@echo "    make exec   APP=<app>         Build, push via UART, stream console"
+	@echo "    make deploy                   Deploy everything to SD card"
+	@echo "    make deploy APP=<app>         Deploy sdk or <app> to SD card"
+	@echo "    make tools                    Build PHDP host tools"
+	@echo "    make package                  Package all cores into ZIPs"
+	@echo "    make clean                    Remove all build artifacts"
 
 # ── Setup ────────────────────────────────────────────────────────────
 setup:
