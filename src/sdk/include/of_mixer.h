@@ -1,8 +1,8 @@
 /*
  * of_mixer.h -- Hardware PCM Mixer API for openfpgaOS
  *
- * 32-voice hardware mixer with linear interpolation. Mixing runs
- * entirely in FPGA fabric — zero CPU cost during playback.
+ * 32-voice hardware mixer. Mixing runs entirely in FPGA fabric —
+ * zero CPU cost during playback.
  * Output: 48kHz stereo via audio FIFO, mixed with OPL3 FM synthesis.
  *
  * Usage:
@@ -12,8 +12,9 @@
  *   4. Play: of_mixer_play(buf, sample_count, sample_rate, 0, volume)
  *   5. Optionally set loop, rate, stereo volume, bidi, position
  *
- * Volume: 0-255 per channel (8.8 fixed-point in hardware).
- * Resampling: 16.16 fixed-point rate with linear interpolation.
+ * Volume: 0-255 per channel (log curve applied in hardware).
+ * Resampling: 16.16 fixed-point rate.
+ * Volume ramp: hardware smooths transitions (configurable rate).
  */
 
 #ifndef OF_MIXER_H
@@ -80,7 +81,8 @@ static inline void of_mixer_set_pan(int voice, int pan) {
     __of_syscall2(OF_SYS_MIXER_SET_PAN, voice, pan);
 }
 
-/* Set loop points. Enables LOOP flag.
+/* Set loop region. loop_start/loop_end are sample indices.
+ * Playback wraps from loop_end back to loop_start (exclusive end).
  * Pass loop_start=-1 to disable looping. */
 static inline void of_mixer_set_loop(int voice, int loop_start, int loop_end) {
     __of_syscall3(OF_SYS_MIXER_SET_LOOP, voice, loop_start, loop_end);

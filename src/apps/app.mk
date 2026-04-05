@@ -1,23 +1,28 @@
 # openfpgaOS SDK — Per-App Build Rules
 #
-# Invoked as: make -C <appdir> -f ../app.mk
-# From src/apps/<name>/:
-#   SDK is at ../../sdk/
-#   sdk.mk is at ../../../sdk.mk
+# Included by each demo app's Makefile.
+# Intermediates: .obj/sdk/<name>/
+# Final ELF copied to build/sdk/ by the parent Makefile's release step.
 #
 
-SDK_DIR = ../../sdk
+SDK_DIR   = ../../sdk
+ROOT      = $(realpath $(CURDIR)/../../..)
+APP_NAME  = $(notdir $(CURDIR))
+OBJ_DIR   = $(ROOT)/.obj/sdk/$(APP_NAME)
+BUILD_DIR = $(OBJ_DIR)
+
 SRCS     = $(wildcard *.c)
 SRCS_CXX = $(wildcard *.cpp)
 
+.DEFAULT_GOAL := all
+
 include $(SDK_DIR)/sdk.mk
 
-# Explicit CRT build rule (pattern rule doesn't work across directories)
 $(CRT_DIR)/start.o: $(CRT_DIR)/start.S
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
-all: app.elf
-	$(SIZE) $<
+all: $(OBJ_DIR)/app.elf
+	@$(SIZE) $<
 
 clean: sdk-clean
 

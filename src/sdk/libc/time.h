@@ -37,16 +37,16 @@ static inline clock_t clock(void) {
     return (clock_t)of_time_ms();
 }
 
-/* clock_ms() returns milliseconds (alias for clock()) */
+/* clock_ms() returns milliseconds since boot */
 static inline uint32_t clock_ms(void) {
-    extern uint32_t of_time_ms(void);
-    return of_time_ms();
+    extern unsigned int of_time_ms(void);
+    return (uint32_t)of_time_ms();
 }
 
-/* clock_us() returns microseconds via of_time_us */
+/* clock_us() returns microseconds since boot */
 static inline uint32_t clock_us(void) {
-    extern uint32_t of_time_us(void);
-    return of_time_us();
+    extern unsigned int of_time_us(void);
+    return (uint32_t)of_time_us();
 }
 
 static inline time_t time(time_t *t) {

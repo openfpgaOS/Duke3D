@@ -7,9 +7,7 @@
                 "name": "Game",
                 "required": true,
                 "parameters": 275,
-                "extensions": [
-                    "json"
-                ]
+                "extensions": ["json"]
             },
             {
                 "id": 1,
@@ -32,7 +30,7 @@
                 "name": "Data 1",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
+                "extensions": ["mid", "mod", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
                 "deferload": true
             },
             {

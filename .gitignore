@@ -3,6 +3,7 @@
 app_pc
 save_*.bin
 build/
+.obj/
 releases/
-# Game data (too large to commit)
-*.grp
+src/tools/phdp/phdp
+src/tools/phdp/phdpd

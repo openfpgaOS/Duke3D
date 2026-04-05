@@ -10,10 +10,10 @@
  */
 
 #include "of.h"
+#include <time.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-#include <time.h>
 
 #define WAV_SLOT_ID     3
 #define MAX_WAV_SIZE    (4 * 1024 * 1024)
@@ -116,8 +116,8 @@ int main(void) {
     printf("  WAV Player Demo\n\n");
     printf("  Loading WAV file...\n");
 
-    FILE *f = fopen("audio.wav", "rb");
-    if (!f) f = fopen("slot:3", "rb");
+    /* TODO: use fopen("audio.wav") when DS_CMD_GETFILE returns filenames */
+    FILE *f = fopen("slot:3", "rb");
     if (!f) {
         printf("  Error: cannot open WAV\n");
         while (1) usleep(100 * 1000);

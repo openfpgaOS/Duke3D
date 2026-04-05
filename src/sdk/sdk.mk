@@ -20,9 +20,11 @@ ARCH = rv32imafc
 ABI  = ilp32f
 
 # ── Paths ─────────────────────────────────────────────────────────
-SDK_DIR ?= src/sdk
-CRT_DIR  = $(SDK_DIR)/crt
-APP_LD  ?= $(SDK_DIR)/crt/app.ld
+SDK_DIR   ?= src/sdk
+CRT_DIR    = $(SDK_DIR)/crt
+APP_LD    ?= $(SDK_DIR)/crt/app.ld
+BUILD_DIR ?= .
+OBJ_DIR   ?= $(BUILD_DIR)
 
 # ── C compiler flags ─────────────────────────────────────────────
 SDK_CFLAGS  = -march=$(ARCH) -mabi=$(ABI) -O2 -Wall -Wextra
@@ -66,8 +68,8 @@ CRT_MIDI   = $(SDK_DIR)/of_midi.o
 CRT_CXXABI = $(SDK_DIR)/of_cxxabi.o
 
 SRCS_CXX ?=
-APP_C_OBJS   = $(patsubst %.c,%.o,$(filter %.c,$(SRCS)))
-APP_CXX_OBJS = $(patsubst %.cpp,%.o,$(filter %.cpp,$(SRCS_CXX)))
+APP_C_OBJS   = $(patsubst %.c,$(OBJ_DIR)/%.o,$(filter %.c,$(SRCS)))
+APP_CXX_OBJS = $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(filter %.cpp,$(SRCS_CXX)))
 APP_OBJS     = $(APP_C_OBJS) $(APP_CXX_OBJS)
 
 # Include C++ ABI object when C++ sources are present
@@ -78,16 +80,19 @@ OBJS = $(CRT_START) $(CRT_POSIX) $(CRT_MIDI) $(APP_OBJS)
 endif
 
 # ── Pocket build ─────────────────────────────────────────────────
-app.elf: $(OBJS) $(APP_LD)
+$(BUILD_DIR)/app.elf: $(OBJS) $(APP_LD)
+	@mkdir -p $(dir $@)
 	$(LD) $(ALL_LDFLAGS) -o $@ $(OBJS) $(LIBGCC)
 
 $(CRT_DIR)/%.o: $(CRT_DIR)/%.S
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
-%.o: %.c
+$(OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
 	$(CC) $(ALL_CFLAGS) -c -o $@ $<
 
-%.o: %.cpp
+$(OBJ_DIR)/%.o: %.cpp
+	@mkdir -p $(dir $@)
 	$(CXX) $(ALL_CXXFLAGS) -c -o $@ $<
 
 # ── PC build (SDL2) ──────────────────────────────────────────────
@@ -102,4 +107,5 @@ app_pc: $(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(SDK_DIR)/include/of.h
 
 # ── Shared clean rule (preserves pre-built CRT objects) ─────────
 sdk-clean:
-	rm -f $(APP_OBJS) app.elf app_pc
+	rm -f $(APP_OBJS) $(BUILD_DIR)/app.elf app_pc
+	@if [ "$(OBJ_DIR)" != "." ] && [ -d "$(OBJ_DIR)" ]; then rm -rf "$(OBJ_DIR)"; fi

@@ -1,4 +1,5 @@
 #include "test.h"
+#include <time.h>
 
 /* PSRAM / SRAM memory map (cached CPU-side addresses)
  * CRAM0 cached:    0x30000000 – 0x30FFFFFF (16 MB)

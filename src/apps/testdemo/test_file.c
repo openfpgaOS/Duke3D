@@ -1,4 +1,5 @@
 #include "test.h"
+#include <time.h>
 
 void test_file_slots(void) {
     section_start("File Slots");

@@ -6,8 +6,8 @@
 # Auto-detects custom cores in build/ (created by customize.sh + make).
 #
 # Usage:
-#   ./package.sh                    Package SDK + all custom cores found
-#   ./package.sh <ShortName>        Package only a specific custom core
+#   ./scripts/package.sh                    Package SDK + all custom cores found
+#   ./scripts/package.sh <ShortName>        Package only a specific custom core
 #
 
 set -e
@@ -16,7 +16,7 @@ GREEN='\033[92m'
 CYAN='\033[96m'
 RESET='\033[0m'
 
-SDK_DIR="$(cd "$(dirname "$0")" && pwd)"
+SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SPECIFIC="$1"
 
 mkdir -p "$SDK_DIR/releases"
@@ -56,9 +56,9 @@ $(printf '=%.0s' $(seq 1 ${#GAME_NAME}))
 Version: $GAME_VERSION
 
 Installation:
-1. Extract this ZIP to your SD card root
+1. Extract this ZIP to your Analogue Pocket SD card root
 2. Merge with existing folders if prompted
-3. The game will appear in the openfpgaOS menu
+3. The game will appear in the Pocket menu
 
 Save files are created automatically on first use.
 EOF

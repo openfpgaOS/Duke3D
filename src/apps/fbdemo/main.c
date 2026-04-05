@@ -5,9 +5,10 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "of.h"
+#include <time.h>
+#include <unistd.h>
 #include "png.h"
 
 #define SCREEN_W 320

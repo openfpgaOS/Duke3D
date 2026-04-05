@@ -1,91 +1,113 @@
-# DukeNukem3D — Duke Nukem 3D for openfpgaOS (SDK fork)
+# Duke Nukem 3D for openfpgaOS
 #
-# Usage:
-#   make              Build Duke3D + bundled SDK apps → build/sdk/
-#   make deploy       Copy to SD card
-#   make clean        Remove all build artifacts
-#   make package      Package Duke3D standalone core as ZIP
+# Quick start:
+#   make build            Build Duke3D + SDK demos
+#   make build APP=duke3d Build just Duke3D
+#   make build APP=sdk    Build just SDK demos
+#   make deploy           Deploy to Pocket SD card
 
-# ── Paths ────────────────────────────────────────────────────────
-CORE_ID      = ThinkElastic.openfpgaOS
-PLATFORM     = openfpgaos
-RELEASE      = build/sdk
-REL_CORE     = $(RELEASE)/Cores/$(CORE_ID)
-REL_ASSETS   = $(RELEASE)/Assets/$(PLATFORM)/common
-REL_INSTANCE = $(RELEASE)/Assets/$(PLATFORM)/$(CORE_ID)
-REL_PLATFORM = $(RELEASE)/Platforms
-RUNTIME      = runtime
+# ── Paths ────────────────────────────────────────────────────────────
+RUNTIME = runtime
 
-# ── Default target ───────────────────────────────────────────────
-all: duke3d apps release
+# ── Default target ───────────────────────────────────────────────────
+all: help
 
-# ── Build Duke3D ─────────────────────────────────────────────────
-duke3d:
-	$(MAKE) -C src/duke3d
+# ── Help ─────────────────────────────────────────────────────────────
+help:
+	@echo "         ___  ___  ___ ___"
+	@echo "        / _ \\/ _ \\/ -_) _ \\"
+	@echo "        \\___/ .__/\\__/_//_/"
+	@echo "       ____/_/  ________"
+	@echo "      / __/ _ \\/ ___/ _ |"
+	@echo "     / _// ___/ (_ / __ |"
+	@echo "    /_/_/_/___\\___/_/ |_|"
+	@echo "   / __ \\/ __/"
+	@echo "  / /_/ /\\ \\"
+	@echo "  \\____/___/  Duke Nukem 3D"
+	@echo ""
+	@echo "  Build:"
+	@echo "    make build            Build everything"
+	@echo "    make build APP=duke3d Build just Duke3D  → build/duke3d/"
+	@echo "    make build APP=sdk    Build SDK demos    → build/sdk/"
+	@echo ""
+	@echo "  Deploy:"
+	@echo "    make deploy           Deploy everything to SD card"
+	@echo "    make deploy APP=duke3d Deploy just Duke3D"
+	@echo "    make deploy APP=sdk   Deploy just SDK + demos"
+	@echo ""
+	@echo "  Dev loop (UART):"
+	@echo "    make exec             Build Duke3D, push via UART, stream console"
+	@echo ""
+	@echo "  Other:"
+	@echo "    make package          Package Duke3D as distributable ZIP"
+	@echo "    make tools            Build PHDP host tools"
+	@echo "    make clean            Remove all build artifacts"
 
-# ── Build bundled SDK apps ───────────────────────────────────────
-apps:
+# ── Build ────────────────────────────────────────────────────────────
+build:
+ifdef APP
+ifeq ($(APP),sdk)
 	$(MAKE) -C src/apps
+else ifeq ($(APP),duke3d)
+	$(MAKE) -C src/duke3d
+	@$(MAKE) --no-print-directory release-duke3d
+else
+	$(MAKE) -C src/$(APP)
+endif
+else
+	$(MAKE) -C src/duke3d
+	$(MAKE) -C src/apps
+	@$(MAKE) --no-print-directory release-duke3d
+endif
 
-# ── Create build/sdk/ directory ──────────────────────────────────
-release: duke3d apps
-	@echo "Creating release/..."
-	@mkdir -p $(REL_CORE) $(REL_ASSETS) $(REL_INSTANCE) $(REL_PLATFORM)/_images
-	@# Core: bitstream + loader
-	@cp $(RUNTIME)/bitstream.rbf_r $(REL_CORE)/
-	@cp $(RUNTIME)/loader.bin $(REL_CORE)/
-	@# Core: JSON configs + icon
-	@[ -d dist/sdk/core ] && cp dist/sdk/core/*.json dist/sdk/core/*.bin $(REL_CORE)/ 2>/dev/null || true
-	@# Platform
-	@[ -d dist/sdk/platform ] && cp dist/sdk/platform/*.json $(REL_PLATFORM)/ 2>/dev/null || true
-	@[ -d dist/sdk/platform/_images ] && cp dist/sdk/platform/_images/*.bin $(REL_PLATFORM)/_images/ 2>/dev/null || true
-	@# OS binary
-	@cp $(RUNTIME)/os.bin $(REL_ASSETS)/
-	@# Duke3D
-	@[ -f src/duke3d/app.elf ] && cp src/duke3d/app.elf $(REL_ASSETS)/duke3d.elf || true
-	@# Bundled apps
-	@for d in src/apps/*/; do \
-		name=$$(basename "$$d"); \
-		[ -f "$$d/app.elf" ] && cp "$$d/app.elf" "$(REL_ASSETS)/$$name.elf" || true; \
-		find "$$d" -maxdepth 1 \( -name "*.mid" -o -name "*.wav" -o -name "*.dat" -o -name "*.png" \) \
-			-exec cp {} "$(REL_ASSETS)/" \; 2>/dev/null || true; \
-	done
-	@# Instance JSONs
-	@[ -d dist/sdk/instances ] && cp dist/sdk/instances/*.json $(REL_INSTANCE)/ 2>/dev/null || true
-	@echo "Release ready: $(RELEASE)/"
-	@# Standalone cores: for each dist/<name>/ (not sdk/), copy to build/<name>/
-	@for coredir in dist/*/; do \
-		name=$$(basename "$$coredir"); \
-		[ "$$name" = "sdk" ] && continue; \
-		[ ! -d "$$coredir/Cores" ] && continue; \
-		echo "Packaging standalone: $$name"; \
-		mkdir -p "build/$$name" && cp -r "$$coredir"/* "build/$$name/"; \
-		shortlower=$$(echo "$$name" | tr '[:upper:]' '[:lower:]'); \
-		if [ -f "src/$$shortlower/app.elf" ]; then \
-			find "build/$$name/Assets" -name "*.elf" -delete; \
-			assetdir=$$(find "build/$$name/Assets" -name "common" -type d | head -1); \
-			[ -n "$$assetdir" ] && cp "src/$$shortlower/app.elf" "$$assetdir/$$shortlower.elf"; \
-			sed -i "s/\"filename\": \".*\.elf\"/\"filename\": \"$$shortlower.elf\"/" \
-				"build/$$name/Cores/"*"/data.json" 2>/dev/null || true; \
-		fi; \
-		assetcommon=$$(find "build/$$name/Assets" -name "common" -type d | head -1); \
-		[ -n "$$assetcommon" ] && cp $(RUNTIME)/os.bin "$$assetcommon/" 2>/dev/null || true; \
-		cp $(RUNTIME)/bitstream.rbf_r "build/$$name/Cores/"*"/bitstream.rbf_r" 2>/dev/null || true; \
-		cp $(RUNTIME)/loader.bin "build/$$name/Cores/"*"/loader.bin" 2>/dev/null || true; \
-	done
+# ── Assemble build/duke3d/ from dist/ + runtime + ELF ────────────────
+release-duke3d:
+	@echo "Assembling build/duke3d/..."
+	@rm -rf build/duke3d
+	@mkdir -p build
+	@cp -r dist/Duke3D build/duke3d
+	@cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin $$(ls -d build/duke3d/Cores/*/)/
+	@mkdir -p $$(ls -d build/duke3d/Assets/*/)/common
+	@cp $(RUNTIME)/os.bin $$(ls -d build/duke3d/Assets/*/)/common/
+	@[ -f .obj/duke3d/app.elf ] && cp .obj/duke3d/app.elf $$(ls -d build/duke3d/Assets/*/)/common/duke3d.elf || true
+	@echo "Ready: build/duke3d/"
 
-# ── Deploy to SD card ────────────────────────────────────────────
-deploy: all
-	@./deploy.sh
+# ── Exec (UART) ─────────────────────────────────────────────────────
+exec:
+	$(MAKE) -C src/duke3d
+	@$(MAKE) --no-print-directory release-duke3d
+	@./scripts/exec.sh $$(find build/duke3d/Assets -name "duke3d.elf" | head -1)
 
-# ── Clean ────────────────────────────────────────────────────────
+# ── Deploy ───────────────────────────────────────────────────────────
+deploy:
+ifdef APP
+ifeq ($(APP),sdk)
+	$(MAKE) -C src/apps deploy
+else ifeq ($(APP),duke3d)
+	@$(MAKE) --no-print-directory build APP=duke3d
+	@src/sdk/platforms/pocket/deploy.sh "duke3d" "$$(find build/duke3d/Assets -name 'duke3d.elf' | head -1)"
+else
+	$(MAKE) -C src/$(APP) deploy
+endif
+else
+	@$(MAKE) --no-print-directory build
+	@src/sdk/platforms/pocket/deploy.sh "duke3d" "$$(find build/duke3d/Assets -name 'duke3d.elf' | head -1)"
+endif
+
+# ── Package ──────────────────────────────────────────────────────────
+package:
+	@$(MAKE) --no-print-directory build APP=duke3d
+	./scripts/package.sh Duke3D
+
+# ── Tools ────────────────────────────────────────────────────────────
+tools:
+	$(MAKE) -C src/tools/phdp
+
+# ── Clean ────────────────────────────────────────────────────────────
 clean:
 	$(MAKE) -C src/duke3d clean
 	$(MAKE) -C src/apps clean
-	rm -rf build releases
+	$(MAKE) -C src/tools/phdp clean 2>/dev/null || true
+	rm -rf build .obj releases
 
-# ── Package Duke3D standalone core ───────────────────────────────
-package:
-	./package.sh Duke3D
-
-.PHONY: all duke3d apps release deploy clean package
+.PHONY: all help build release-duke3d exec deploy package tools clean

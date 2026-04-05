@@ -53,7 +53,10 @@ SHIM_SRCS = posix_shim.c d3d_audio.c d3d_save.c
 SRCS = $(ENGINE_SRCS) $(GAME_SRCS) $(AUDIOLIB_SRCS) $(CONSOLE_SRCS) $(MIDI_SRCS) $(SHIM_SRCS)
 
 # ── SDK paths ────────────────────────────────────────────────────
-SDK_DIR = ../sdk
+SDK_DIR   = ../sdk
+ROOT      = $(realpath $(CURDIR)/../..)
+OBJ_DIR   = $(ROOT)/.obj/duke3d
+BUILD_DIR = $(OBJ_DIR)
 
 # ── Extra flags for BUILD engine ─────────────────────────────────
 CFLAGS += -DOPENFPGA -DUNIX
@@ -68,14 +71,15 @@ CFLAGS += -Wno-discarded-qualifiers -Wno-unused-function -Wno-array-parameter
 CFLAGS += -Wno-maybe-uninitialized -Wno-empty-body
 
 # ── SDK build rules ──────────────────────────────────────────────
+.DEFAULT_GOAL := all
+
 include $(SDK_DIR)/sdk.mk
 
-# Explicit CRT rule (pattern rule doesn't work across directories)
 $(CRT_DIR)/start.o: $(CRT_DIR)/start.S
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
-all: app.elf
-	$(SIZE) $<
+all: $(OBJ_DIR)/app.elf
+	@$(SIZE) $<
 
 clean: sdk-clean
 

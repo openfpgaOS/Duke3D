@@ -399,22 +399,6 @@ void of_opm_reset(void) {
  * Timer
  * ====================================================================== */
 
-uint32_t of_time_us(void) {
-    return (uint32_t)(get_us() - g_start_us);
-}
-
-uint32_t of_time_ms(void) {
-    return (uint32_t)((get_us() - g_start_us) / 1000ULL);
-}
-
-void of_delay_us(uint32_t us) {
-    uint64_t target = get_us() + us;
-    while (get_us() < target) { /* spin */ }
-}
-
-void of_delay_ms(uint32_t ms) {
-    SDL_Delay(ms);
-}
 
 /* ======================================================================
  * Save Files (file-backed)

@@ -1,4 +1,4 @@
-/* dirent.h -- openfpgaOS stub for directory operations */
+/* dirent.h -- openfpgaOS directory operations via POSIX syscalls */
 #ifndef _OF_DIRENT_H
 #define _OF_DIRENT_H
 
@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 #include <stddef.h>
+#include <stdint.h>
 
 struct dirent {
     unsigned long  d_ino;
@@ -18,22 +19,16 @@ struct dirent {
     char           d_name[256];
 };
 
-typedef struct { int __fd; } DIR;
+typedef struct {
+    int     __fd;
+    char    __buf[512];     /* getdents64 buffer */
+    int     __buf_pos;      /* current position in buffer */
+    int     __buf_len;      /* bytes returned by last getdents64 */
+} DIR;
 
-static inline DIR *opendir(const char *name) {
-    (void)name;
-    return (DIR *)NULL;
-}
-
-static inline struct dirent *readdir(DIR *dirp) {
-    (void)dirp;
-    return (struct dirent *)NULL;
-}
-
-static inline int closedir(DIR *dirp) {
-    (void)dirp;
-    return -1;
-}
+DIR *opendir(const char *name);
+struct dirent *readdir(DIR *dirp);
+int closedir(DIR *dirp);
 
 #ifdef __cplusplus
 }

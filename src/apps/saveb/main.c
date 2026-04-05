@@ -15,9 +15,10 @@
 #define STEP      2
 
 #include "of.h"
+#include <time.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
 /* Helpers: read/write save slots via POSIX fopen("save:N") */
 static int save_read(int slot, void *buf, uint32_t offset, uint32_t len) {

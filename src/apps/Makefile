@@ -1,21 +1,69 @@
-# openfpgaOS SDK — Build All Bundled Apps
+# openfpgaOS SDK — Demo Apps
 #
-# Each subdirectory is an app. Builds app.elf in each.
+# Build, deploy, and package the bundled demo apps.
+#
+# Targets:
+#   make                  Build all demos → build/sdk/
+#   make new APP=demo     Create a new demo app
+#   make deploy           Deploy build/sdk/ to SD card
+#   make package          Package build/sdk/ as ZIP
+#   make clean            Remove build artifacts
 #
 
-# Apps with standard SDK build (single main.c, no SDL2 dependency)
-APPS = $(shell find . -maxdepth 1 -mindepth 1 -type d \
-         | sort | sed 's|^\./||')
+SDK_ROOT  = $(realpath $(CURDIR)/../..)
+RUNTIME   = $(SDK_ROOT)/runtime
+DIST      = $(SDK_ROOT)/dist/sdk
+CORE_ID   = ThinkElastic.openfpgaOS
+PLATFORM  = openfpgaos
+BUILD     = $(SDK_ROOT)/build/sdk
 
-all:
+APPS = $(sort $(patsubst %/,%,$(dir $(wildcard */Makefile))))
+
+all: build-apps release
+
+build-apps:
 	@for app in $(APPS); do \
 		echo "Building $$app..."; \
-		$(MAKE) -C $$app -f ../app.mk || exit 1; \
+		$(MAKE) -C $$app || exit 1; \
 	done
+
+# Assemble: dist/ (static) + runtime + ELFs + data files = deployable
+release:
+	@echo "Assembling build/sdk/..."
+	@mkdir -p $(SDK_ROOT)/build
+	@cp -r $(DIST)/ $(BUILD)/
+	@# Runtime binaries
+	@cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin $(BUILD)/Cores/$(CORE_ID)/
+	@mkdir -p $(BUILD)/Assets/$(PLATFORM)/common
+	@cp $(RUNTIME)/os.bin $(BUILD)/Assets/$(PLATFORM)/common/
+	@# Demo ELFs + data files
+	@for app in $(APPS); do \
+		[ -f "$(SDK_ROOT)/.obj/sdk/$$app/app.elf" ] && \
+			cp "$(SDK_ROOT)/.obj/sdk/$$app/app.elf" "$(BUILD)/Assets/$(PLATFORM)/common/$$app.elf"; \
+		for f in $$app/*.mid $$app/*.mod $$app/*.wav $$app/*.dat $$app/*.png; do \
+			[ -f "$$f" ] && cp "$$f" "$(BUILD)/Assets/$(PLATFORM)/common/"; \
+		done; \
+	done 2>/dev/null; true
+	@echo "Ready: build/sdk/"
+
+new:
+	@test -n "$(APP)" || { echo "Usage: make new APP=myapp"; exit 1; }
+	@$(SDK_ROOT)/scripts/new.sh "$(APP)"
+	@if [ -d "$(SDK_ROOT)/src/$(APP)" ] && [ ! -d "$(APP)" ]; then \
+		mv "$(SDK_ROOT)/src/$(APP)" "./$(APP)"; \
+		echo "Moved to src/apps/$(APP)/"; \
+	fi
+
+deploy: all
+	@$(SDK_ROOT)/scripts/deploy.sh
+
+package: all
+	@$(SDK_ROOT)/scripts/package.sh
 
 clean:
 	@for app in $(APPS); do \
-		$(MAKE) -C $$app -f ../app.mk clean; \
+		$(MAKE) -C $$app clean; \
 	done
+	rm -rf $(BUILD)
 
-.PHONY: all clean
+.PHONY: all build-apps release new deploy package clean

@@ -13,9 +13,10 @@
  */
 
 #include "of.h"
+#include <time.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
 #define W 320
 #define H 240

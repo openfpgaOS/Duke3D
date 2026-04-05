@@ -5,9 +5,10 @@
  */
 
 #include "of.h"
+#include <time.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
 static int pass, fail;
 
@@ -38,14 +39,17 @@ int main(void) {
     uint8_t *s0 = of_video_surface();
     ASSERT("surface", s0 != NULL);
 
-    /* --- Test: 3 distinct buffers that cycle --- */
+    /* --- Test: 3 distinct buffers with vsync-paced flips --- */
     uint8_t *bufs[4];
     bufs[0] = of_video_surface();
     of_video_flip();
+    of_video_sync();  /* wait for vsync to consume the swap */
     bufs[1] = of_video_surface();
     of_video_flip();
+    of_video_sync();
     bufs[2] = of_video_surface();
     of_video_flip();
+    of_video_sync();
     bufs[3] = of_video_surface();
 
     ASSERT("cycle", bufs[3] == bufs[0]);
@@ -53,17 +57,27 @@ int main(void) {
     ASSERT("buf 1!=2", bufs[1] != bufs[2]);
     ASSERT("buf 0!=2", bufs[0] != bufs[2]);
 
-    /* --- Test: data retention across flips --- */
+    /* --- Test: rapid flips without vsync degrade gracefully --- */
+    uint8_t *r0 = of_video_surface();
+    of_video_flip();
+    of_video_flip();
+    uint8_t *r1 = of_video_surface();
+    ASSERT("rapid flip", r0 != NULL && r1 != NULL);
+
+    /* --- Test: data retention across vsync-paced flips --- */
     bufs[0] = of_video_surface();
     bufs[0][0] = 0xAA;
     of_video_flip();
+    of_video_sync();
     bufs[1] = of_video_surface();
     bufs[1][0] = 0xBB;
     of_video_flip();
+    of_video_sync();
     bufs[2] = of_video_surface();
     bufs[2][0] = 0xCC;
 
     of_video_flip();
+    of_video_sync();
     uint8_t *back = of_video_surface();
     ASSERT("retain", back == bufs[0] && back[0] == 0xAA);
 

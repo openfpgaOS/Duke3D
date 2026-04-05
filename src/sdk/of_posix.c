@@ -166,6 +166,93 @@ int max(int a, int b)          { return a > b ? a : b; }
 int abs(int x)                 { return x < 0 ? -x : x; }
 
 /* ======================================================================
+ * POSIX directory operations — opendir/readdir/closedir via syscalls
+ * ====================================================================== */
+
+#include <dirent.h>
+
+/* riscv32 Linux syscall numbers */
+#define __NR_openat     56
+#define __NR_close      57
+#define __NR_getdents64 61
+#define O_RDONLY        0
+#define O_DIRECTORY     0200000
+
+static long __syscall3(long n, long a, long b, long c) {
+    register long a7 __asm__("a7") = n;
+    register long a0 __asm__("a0") = a;
+    register long a1 __asm__("a1") = b;
+    register long a2 __asm__("a2") = c;
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a7) : "memory");
+    return a0;
+}
+
+static long __syscall4(long n, long a, long b, long c, long d) {
+    register long a7 __asm__("a7") = n;
+    register long a0 __asm__("a0") = a;
+    register long a1 __asm__("a1") = b;
+    register long a2 __asm__("a2") = c;
+    register long a3 __asm__("a3") = d;
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3), "r"(a7) : "memory");
+    return a0;
+}
+
+static DIR __dir_storage;  /* single static DIR — no malloc needed for one opendir */
+
+DIR *opendir(const char *name) {
+    long fd = __syscall4(__NR_openat, -100 /* AT_FDCWD */, (long)name,
+                         O_RDONLY | O_DIRECTORY, 0);
+    if (fd < 0) return NULL;
+    __dir_storage.__fd = (int)fd;
+    __dir_storage.__buf_pos = 0;
+    __dir_storage.__buf_len = 0;
+    return &__dir_storage;
+}
+
+/* Kernel getdents64 entry layout (matches riscv32 linux_dirent64) */
+struct __kernel_dirent64 {
+    uint64_t d_ino;
+    int64_t  d_off;
+    uint16_t d_reclen;
+    uint8_t  d_type;
+    char     d_name[];
+};
+
+struct dirent *readdir(DIR *dirp) {
+    static struct dirent result;
+
+    if (dirp->__buf_pos >= dirp->__buf_len) {
+        /* Refill buffer */
+        long n = __syscall3(__NR_getdents64, dirp->__fd,
+                           (long)dirp->__buf, sizeof(dirp->__buf));
+        if (n <= 0) return NULL;
+        dirp->__buf_len = (int)n;
+        dirp->__buf_pos = 0;
+    }
+
+    struct __kernel_dirent64 *kd =
+        (struct __kernel_dirent64 *)(dirp->__buf + dirp->__buf_pos);
+    dirp->__buf_pos += kd->d_reclen;
+
+    result.d_ino = (unsigned long)kd->d_ino;
+    /* Copy name */
+    int i;
+    for (i = 0; i < 255 && kd->d_name[i]; i++)
+        result.d_name[i] = kd->d_name[i];
+    result.d_name[i] = '\0';
+    result.d_namlen = (unsigned short)i;
+
+    return &result;
+}
+
+int closedir(DIR *dirp) {
+    if (!dirp) return -1;
+    long rc = __syscall3(__NR_close, dirp->__fd, 0, 0);
+    dirp->__fd = -1;
+    return (int)rc;
+}
+
+/* ======================================================================
  * openfpgaOS convenience — linkable symbols for SDK inline functions
  * ====================================================================== */
 

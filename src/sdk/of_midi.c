@@ -8,7 +8,7 @@
 #include "include/of_midi.h"
 #include "include/of_audio.h"
 #include "include/of_timer.h"
-#include "libc/time.h"
+#include <time.h>
 
 #ifndef NULL
 #define NULL ((void *)0)
@@ -1041,8 +1041,4 @@ void of_midi_load_bank(const uint8_t *bank) {
     /* Invalidate cached instruments so they get reloaded */
     for (int i = 0; i < OPL_CHANNELS; i++)
         M.opl_inst[i] = 0;
-}
-
-const uint8_t *of_midi_builtin_bank(void) {
-    return gm_bank;
 }
