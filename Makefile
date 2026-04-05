@@ -62,7 +62,7 @@ help:
 	@printf "  $(C_HEAD)Then work from your app directory:$(C_RESET)\n"
 	@printf "    $(C_CMD)cd src/$(A)$(C_RESET)\n"
 	@printf "    $(C_CMD)make$(C_RESET)                          Build\n"
-	@printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)                     Build, push via UART, stream console\n"
+	@printf "    $(C_CMD)make $(C_VERB)debug$(C_RESET)                    Build, push via UART, stream console\n"
 	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy to Pocket SD card\n"
 	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package core into a ZIP\n"
 	@printf "    $(C_CMD)make $(C_VERB)pc$(C_RESET)                       Test on desktop (SDL2)\n"
@@ -79,7 +79,7 @@ help:
 	@printf "  $(C_HEAD)From the root:$(C_RESET)\n"
 	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)                    Build everything\n"
 	@A="$(A)"; cmd="make build  APP=$$A"; printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)  $(C_ARG)APP=$$A$(C_RESET)%*s Build sdk or $$A\n" $$((29 - $${#cmd})) ""
-	@A="$(A)"; cmd="make exec   APP=$$A"; printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)   $(C_ARG)APP=$$A$(C_RESET)%*s Build, push via UART, stream console\n" $$((29 - $${#cmd})) ""
+	@A="$(A)"; cmd="make debug  APP=$$A"; printf "    $(C_CMD)make $(C_VERB)debug$(C_RESET)  $(C_ARG)APP=$$A$(C_RESET)%*s Build, push via UART, stream console\n" $$((29 - $${#cmd})) ""
 	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy everything to SD card\n"
 	@A="$(A)"; cmd="make deploy APP=$$A"; printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET) $(C_ARG)APP=$$A$(C_RESET)%*s Deploy sdk or $$A to SD card\n" $$((29 - $${#cmd})) ""
 	@printf "    $(C_CMD)make $(C_VERB)tools$(C_RESET)                    Build PHDP host tools\n"
@@ -114,16 +114,16 @@ else
 endif
 
 # ── Exec (UART push + console) ──────────────────────────────────────
-exec:
+debug:
 ifndef APP
 ifneq ($(APP_NAME),)
-	$(MAKE) -C src/$(APP_NAME) exec
+	$(MAKE) -C src/$(APP_NAME) debug
 else
-	@echo "Usage: make exec APP=$(A)"
+	@echo "Usage: make debug APP=$(A)"
 	@exit 1
 endif
 else
-	$(MAKE) -C src/$(APP) exec
+	$(MAKE) -C src/$(APP) debug
 endif
 
 # ── Deploy ───────────────────────────────────────────────────────────
@@ -177,4 +177,4 @@ else
 	rm -rf build .obj releases
 endif
 
-.PHONY: all help setup core build exec deploy package tools clean
+.PHONY: all help setup core build debug deploy package tools clean

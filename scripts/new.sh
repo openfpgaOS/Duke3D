@@ -78,7 +78,7 @@ cat > "$APP_DIR/Makefile" << 'MKEOF'
 #
 # Targets:
 #   make            Build app
-#   make exec       Build, push via UART, stream console
+#   make debug       Build, push via UART, stream console
 #   make deploy     Deploy to hardware (auto-detects SD card)
 #   make package    Create distributable ZIP
 #   make pc         Build for desktop (SDL2)
@@ -123,8 +123,8 @@ release: $(OBJ_DIR)/app.elf
 
 COMMON = $(shell ls -d $(OUT)/Assets/*/common 2>/dev/null)
 
-exec: all
-	@$(ROOT)/scripts/exec.sh $$(ls -d $(OUT)/Assets/*/common)/$(APP).elf
+debug: all
+	@$(ROOT)/scripts/debug.sh $$(ls -d $(OUT)/Assets/*/common)/$(APP).elf
 
 deploy: all
 	@$(SDK_DIR)/platforms/$(TARGET)/deploy.sh "$(APP)" "$$(ls -d $(OUT)/Assets/*/common)/$(APP).elf"
@@ -137,7 +137,7 @@ pc: app_pc
 clean: sdk-clean
 	rm -rf $(OUT)
 
-.PHONY: all release exec deploy package pc clean
+.PHONY: all release debug deploy package pc clean
 MKEOF
 
 # Fill in placeholders

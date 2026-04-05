@@ -113,7 +113,7 @@ From `src/mygame/`:
 | Command | What it does |
 |---------|-------------|
 | `make` | Build `mygame.elf` |
-| `make exec` | Build, push via UART, stream console |
+| `make debug` | Build, push via UART, stream console |
 | `make deploy` | Copy to Pocket SD card |
 | `make package` | Create distributable ZIP |
 | `make pc` | Build SDL2 desktop version |

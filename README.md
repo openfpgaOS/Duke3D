@@ -713,7 +713,7 @@ make core --target mister              # future: MiSTer
 | Command | What it does |
 |---------|-------------|
 | `make` | Build your app |
-| `make exec` | Build, push via UART, stream console |
+| `make debug` | Build, push via UART, stream console |
 | `make deploy` | Deploy to Pocket SD card |
 | `make package` | Package core into a ZIP |
 | `make pc` | Build SDL2 desktop version |
@@ -737,7 +737,7 @@ make core --target mister              # future: MiSTer
 | `make core` | Create your app (interactive) |
 | `make build` | Build everything |
 | `make build APP=<app>` | Build sdk or a specific app |
-| `make exec APP=<app>` | Build, push via UART, stream console |
+| `make debug APP=<app>` | Build, push via UART, stream console |
 | `make deploy` | Deploy everything to SD card |
 | `make deploy APP=<app>` | Deploy sdk or a specific app |
 | `make tools` | Build PHDP host tools |
