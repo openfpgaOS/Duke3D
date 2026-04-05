@@ -110,8 +110,8 @@ static void draw_frame(void) {
     GOTO(17, 30); printf("[  ]");
     GOTO(18, 26); printf("[  ]");
 
-    GOTO(16, 27); FG_GRAY; printf("Y "); RESET;
-    GOTO(17, 23); FG_GRAY; printf("X "); RESET;
+    GOTO(16, 27); FG_GRAY; printf("X "); RESET;
+    GOTO(17, 23); FG_GRAY; printf("Y "); RESET;
     GOTO(17, 31); FG_GRAY; printf("A "); RESET;
     GOTO(18, 27); FG_GRAY; printf("B "); RESET;
 
@@ -199,8 +199,8 @@ int main(void) {
             btn(18, 7,  " ",  b & OF_BTN_DOWN);
 
             /* Face buttons */
-            btn(16, 27, "Y ", b & OF_BTN_Y);
-            btn(17, 23, "X ", b & OF_BTN_X);
+            btn(16, 27, "X ", b & OF_BTN_X);
+            btn(17, 23, "Y ", b & OF_BTN_Y);
             btn(17, 31, "A ", b & OF_BTN_A);
             btn(18, 27, "B ", b & OF_BTN_B);
 
