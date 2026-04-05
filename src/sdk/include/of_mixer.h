@@ -48,8 +48,6 @@ static inline int of_mixer_play(const uint8_t *pcm_s16, uint32_t sample_count,
     return OF_SVC->mixer_play(pcm_s16, sample_count, sample_rate, priority, volume);
 }
 
-/* Retrigger: redirect an active voice to a new sample without stop/start gap.
- * Amiga-style seamless note retrigger — no click. */
 static inline void of_mixer_retrigger(int voice, const uint8_t *pcm_s16,
                                       uint32_t sample_count, uint32_t sample_rate,
                                       int volume) {
