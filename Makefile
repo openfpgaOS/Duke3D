@@ -30,6 +30,13 @@ C_ARG   :=
 C_RESET :=
 endif
 
+# ── Display name (use detected app or <app> placeholder) ────────────
+ifneq ($(APP_NAME),)
+A := $(APP_NAME)
+else
+A := <app>
+endif
+
 # ── Default target ───────────────────────────────────────────────────
 all: help
 
@@ -52,7 +59,7 @@ help:
 	@printf "    $(C_CMD)make $(C_VERB)core$(C_RESET)                     Create your app\n"
 	@echo ""
 	@printf "  $(C_HEAD)Then work from your app directory:$(C_RESET)\n"
-	@printf "    $(C_CMD)cd src/<app>$(C_RESET)\n"
+	@printf "    $(C_CMD)cd src/$(A)$(C_RESET)\n"
 	@printf "    $(C_CMD)make$(C_RESET)                          Build\n"
 	@printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)                     Build, push via UART, stream console\n"
 	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy to Pocket SD card\n"
@@ -70,10 +77,10 @@ help:
 	@echo ""
 	@printf "  $(C_HEAD)From the root:$(C_RESET)\n"
 	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)                    Build everything\n"
-	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)  $(C_ARG)APP=<app>$(C_RESET)         Build sdk or <app>\n"
-	@printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)   $(C_ARG)APP=<app>$(C_RESET)         Build, push via UART, stream console\n"
+	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)  $(C_ARG)APP=$(A)$(C_RESET)         Build sdk or $(A)\n"
+	@printf "    $(C_CMD)make $(C_VERB)exec$(C_RESET)   $(C_ARG)APP=$(A)$(C_RESET)         Build, push via UART, stream console\n"
 	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy everything to SD card\n"
-	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET) $(C_ARG)APP=<app>$(C_RESET)         Deploy sdk or <app> to SD card\n"
+	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET) $(C_ARG)APP=$(A)$(C_RESET)         Deploy sdk or $(A) to SD card\n"
 	@printf "    $(C_CMD)make $(C_VERB)tools$(C_RESET)                    Build PHDP host tools\n"
 	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package all cores into ZIPs\n"
 	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove all build artifacts\n"
@@ -111,7 +118,7 @@ ifndef APP
 ifneq ($(APP_NAME),)
 	$(MAKE) -C src/$(APP_NAME) exec
 else
-	@echo "Usage: make exec APP=<app>"
+	@echo "Usage: make exec APP=$(A)"
 	@exit 1
 endif
 else
