@@ -335,8 +335,7 @@ void VBE_presentPalette(void)
      * the splash image lives in only one buffer, so flipping would
      * show a stale/empty frame and rapid-fire flips can crash the OS.
      *
-     * One-frame delay so each fade step is visible (~60 Hz pacing).
-     * Switch to of_video_vsync() once the syscall is stable. */
+     * One-frame delay so each fade step is visible (~60 Hz pacing). */
     usleep(16000);
 }
 
