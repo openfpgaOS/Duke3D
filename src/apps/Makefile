@@ -1,11 +1,11 @@
 # openfpgaOS SDK — Demo Apps
 #
-# Build, deploy, and package the bundled demo apps.
+# Build, copy, and package the bundled demo apps.
 #
 # Targets:
 #   make                  Build all demos → build/sdk/
 #   make new APP=demo     Create a new demo app
-#   make deploy           Deploy build/sdk/ to SD card
+#   make copy           Copy build/sdk/ to SD card
 #   make package          Package build/sdk/ as ZIP
 #   make clean            Remove build artifacts
 #
@@ -54,8 +54,8 @@ new:
 		echo "Moved to src/apps/$(APP)/"; \
 	fi
 
-deploy: all
-	@$(SDK_ROOT)/scripts/deploy.sh
+copy: all
+	@$(SDK_ROOT)/scripts/copy.sh
 
 package: all
 	@$(SDK_ROOT)/scripts/package.sh
@@ -66,4 +66,4 @@ clean:
 	done
 	rm -rf $(BUILD)
 
-.PHONY: all build-apps release new deploy package clean
+.PHONY: all build-apps release new copy package clean

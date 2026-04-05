@@ -15,7 +15,7 @@ make setup                    # install RISC-V toolchain
 make core                     # create your app (follow the prompts)
 cd src/mygame
 make                          # build mygame.elf
-make deploy                   # deploy to Pocket SD card
+make copy                   # copy to Pocket SD card
 ```
 
 ### Toolchain
@@ -591,7 +591,7 @@ When there's only one instance JSON for your app, the Pocket auto-selects it —
 - Slot 9 (Game selector) is defined in the SDK's `data.json` — don't add it to your instance
 - Slot 0 is reserved by APF — do not use
 - Save slots use bridge address `0x30000000` (CRAM1) with 256 KB stride
-- Place data files in your app directory — deploy copies them to the SD card
+- Place data files in your app directory — copy copies them to the SD card
 
 ---
 
@@ -685,16 +685,16 @@ make                                # rebuild your app
 
 ## Multiplatform
 
-The SDK is designed for multiple hardware targets. Platform-specific logic — JSON templates, deploy scripts, directory layout — lives in `src/sdk/platforms/<target>/`.
+The SDK is designed for multiple hardware targets. Platform-specific logic — JSON templates, copy scripts, directory layout — lives in `src/sdk/platforms/<target>/`.
 
 ```
 src/sdk/platforms/
 ├── pocket/                  ← Analogue Pocket (current)
 │   ├── templates/*.json     ← APF JSON config templates
-│   └── deploy.sh            ← SD card deploy script
+│   └── copy.sh            ← SD card copy script
 └── mister/                  ← MiSTer FPGA (planned)
     ├── templates/            ← MiSTer-specific configs
-    └── deploy.sh             ← MiSTer deploy script
+    └── copy.sh             ← MiSTer copy script
 ```
 
 Your C code is the same across all platforms. When creating an app:
@@ -714,7 +714,7 @@ make core --target mister              # future: MiSTer
 |---------|-------------|
 | `make` | Build your app |
 | `make debug` | Build, push via UART, stream console |
-| `make deploy` | Deploy to Pocket SD card |
+| `make copy` | Copy to Pocket SD card |
 | `make package` | Package core into a ZIP |
 | `make pc` | Build SDL2 desktop version |
 | `make clean` | Remove build artifacts |
@@ -725,7 +725,7 @@ make core --target mister              # future: MiSTer
 |---------|-------------|
 | `make` | Build all demos |
 | `make new APP=demo` | Create a new demo app |
-| `make deploy` | Deploy SDK + demos to SD card |
+| `make copy` | Copy SDK + demos to SD card |
 | `make package` | Package SDK core into a ZIP |
 | `make clean` | Remove build artifacts |
 
@@ -738,8 +738,8 @@ make core --target mister              # future: MiSTer
 | `make build` | Build everything |
 | `make build APP=<app>` | Build sdk or a specific app |
 | `make debug APP=<app>` | Build, push via UART, stream console |
-| `make deploy` | Deploy everything to SD card |
-| `make deploy APP=<app>` | Deploy sdk or a specific app |
+| `make copy` | Copy everything to SD card |
+| `make copy APP=<app>` | Copy sdk or a specific app |
 | `make tools` | Build PHDP host tools |
 | `make package` | Package all cores into ZIPs |
 | `make clean` | Remove all build artifacts |
@@ -753,7 +753,7 @@ make core --target mister              # future: MiSTer
 | `scripts/setup.sh` | Detects OS, installs RISC-V toolchain |
 | `scripts/new.sh` | Creates a new app (Makefile, main.c, instance.json) |
 | `scripts/customize.sh` | Creates a standalone core for distribution (interactive) |
-| `scripts/deploy.sh` | Deploys full SDK release to Pocket SD card |
+| `scripts/copy.sh` | Deploys full SDK release to Pocket SD card |
 | `scripts/package.sh` | ZIPs a core for distribution |
 | `scripts/exec.sh` | Push binary via UART, reset core, stream output |
 
@@ -796,7 +796,7 @@ openfpgaOS-SDK/
 ├── GETTING_STARTED.md    <- Quick start guide for developers
 ├── src/
 │   ├── <mygame>/         <- YOUR app (created by make core)
-│   │   ├── Makefile      <- Self-contained: build, deploy, package
+│   │   ├── Makefile      <- Self-contained: build, copy, package
 │   │   ├── main.c        <- Your code
 │   │   └── instance.json <- Data slot mapping (only config you maintain)
 │   ├── apps/             <- Bundled example apps (SDK-owned)
@@ -818,14 +818,14 @@ openfpgaOS-SDK/
 │       ├── include/      <- openfpgaOS API headers
 │       ├── libc/         <- C standard library wrappers
 │       ├── crt/          <- Startup code + linker script
-│       ├── platforms/    <- Platform templates & deploy scripts
+│       ├── platforms/    <- Platform templates & copy scripts
 │       │   └── pocket/   <- Analogue Pocket target
 │       └── pc/           <- SDL2 shim for desktop builds
 ├── dist/sdk/             <- SDK core configs (deployed as-is, SDK-owned)
 │   ├── core/             <- core.json, data.json, audio.json, ...
 │   ├── platform/         <- Platform metadata
 │   └── instances/        <- Instance JSONs for bundled apps
-├── scripts/              <- Build/deploy/packaging scripts (SDK-owned)
+├── scripts/              <- Build/copy/packaging scripts (SDK-owned)
 └── runtime/              <- FPGA bitstream, OS binary, loader (SDK-owned)
 ```
 

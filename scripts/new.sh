@@ -79,7 +79,7 @@ cat > "$APP_DIR/Makefile" << 'MKEOF'
 # Targets:
 #   make            Build app
 #   make debug       Build, push via UART, stream console
-#   make deploy     Deploy to hardware (auto-detects SD card)
+#   make copy     Copy to hardware (auto-detects SD card)
 #   make package    Create distributable ZIP
 #   make pc         Build for desktop (SDL2)
 #   make clean      Remove build artifacts
@@ -126,8 +126,8 @@ COMMON = $(shell ls -d $(OUT)/Assets/*/common 2>/dev/null)
 debug: all
 	@$(ROOT)/scripts/debug.sh $$(ls -d $(OUT)/Assets/*/common)/$(APP).elf
 
-deploy: all
-	@$(SDK_DIR)/platforms/$(TARGET)/deploy.sh "$(APP)" "$$(ls -d $(OUT)/Assets/*/common)/$(APP).elf"
+copy: all
+	@$(SDK_DIR)/platforms/$(TARGET)/copy.sh "$(APP)" "$$(ls -d $(OUT)/Assets/*/common)/$(APP).elf"
 
 package: all
 	@$(ROOT)/scripts/package.sh $(APP)
@@ -137,7 +137,7 @@ pc: app_pc
 clean: sdk-clean
 	rm -rf $(OUT)
 
-.PHONY: all release debug deploy package pc clean
+.PHONY: all release debug copy package pc clean
 MKEOF
 
 # Fill in placeholders
@@ -150,7 +150,7 @@ cat > "$APP_DIR/main.c" << 'CEOF'
  * {{APP_DISPLAY}} — openfpgaOS app
  *
  * Build:   make
- * Deploy:  make deploy
+ * Copy:  make copy
  * PC test: make pc
  */
 
@@ -198,7 +198,7 @@ echo -e "${GREEN}Done!${RESET} Your app is at: src/$APP_LOWER/"
 echo
 echo "  cd src/$APP_LOWER"
 echo "  make              # build"
-echo "  make deploy       # deploy to Pocket SD card"
+echo "  make copy       # copy to Pocket SD card"
 echo "  make pc           # test on desktop (SDL2)"
 echo
 echo "Edit main.c to start building your app."

@@ -36,7 +36,7 @@ make core
 ```
 
 Follow the prompts (name, author). This creates `src/mygame/` with:
-- `Makefile` — self-contained build with deploy, package, and PC test targets
+- `Makefile` — self-contained build with copy, package, and PC test targets
 - `main.c` — hello world stub to start from
 - `instance.json` — maps your app's files to data slots (the only config you maintain)
 
@@ -49,12 +49,12 @@ make
 
 Builds `mygame.elf` — a RISC-V binary that runs on openfpgaOS.
 
-## 5. Deploy
+## 5. Copy
 
 Insert your Pocket's SD card and:
 
 ```bash
-make deploy
+make copy
 ```
 
 Auto-detects the SD card, copies the openfpgaOS runtime + your app, and creates the right directory structure. Eject, boot the Pocket, and your app appears in the menu.
@@ -86,7 +86,7 @@ openfpgaOS-SDK/
 │   ├── sdk/                 ← SDK (don't edit)
 │   │   ├── include/         ← openfpgaOS API (of.h, of_video.h, ...)
 │   │   ├── libc/            ← C standard library
-│   │   ├── platforms/       ← platform templates & deploy scripts
+│   │   ├── platforms/       ← platform templates & copy scripts
 │   │   │   └── pocket/      ← Analogue Pocket target
 │   │   └── crt/             ← startup code & linker script
 │   └── apps/                ← bundled demo apps (reference code)
@@ -102,7 +102,7 @@ openfpgaOS-SDK/
 | `src/mygame/main.c` (your code) | `src/sdk/` (headers, build rules) |
 | `src/mygame/instance.json` | `dist/sdk/` (core.json, data.json, audio.json, ...) |
 | | `runtime/` (bitstream, os.bin, loader) |
-| | `src/sdk/platforms/` (templates, deploy scripts) |
+| | `src/sdk/platforms/` (templates, copy scripts) |
 
 Core JSON configs (data.json, audio.json, video.json, etc.) are SDK-owned and deployed directly from `dist/sdk/`. When the SDK updates these files, you get the changes automatically with `git pull` — no regeneration step needed.
 
@@ -114,7 +114,7 @@ From `src/mygame/`:
 |---------|-------------|
 | `make` | Build `mygame.elf` |
 | `make debug` | Build, push via UART, stream console |
-| `make deploy` | Copy to Pocket SD card |
+| `make copy` | Copy to Pocket SD card |
 | `make package` | Create distributable ZIP |
 | `make pc` | Build SDL2 desktop version |
 | `make clean` | Remove build artifacts |
@@ -144,7 +144,7 @@ To add data files (up to 4), add entries for slots 3-6:
 { "id": 4, "filename": "sprites.dat" }
 ```
 
-Place the data files in your app directory alongside `main.c`. Deploy copies them automatically.
+Place the data files in your app directory alongside `main.c`. They get copied to the SD card automatically.
 
 ## Writing your app
 
@@ -190,14 +190,14 @@ See [README.md](README.md) for the full API reference.
 
 ## Multiplatform
 
-Apps target a platform. The default is `pocket` (Analogue Pocket). Platform-specific logic — deploy scripts, directory layout, JSON format — lives in `src/sdk/platforms/<target>/`.
+Apps target a platform. The default is `pocket` (Analogue Pocket). Platform-specific logic — copy scripts, directory layout, JSON format — lives in `src/sdk/platforms/<target>/`.
 
 ```bash
 make core --target pocket     # Analogue Pocket (default)
 # make core --target mister   # MiSTer (coming soon)
 ```
 
-Your C code is the same across all platforms. Only the deploy and packaging differ.
+Your C code is the same across all platforms. Only the copy and packaging differ.
 
 ## Updating the SDK
 

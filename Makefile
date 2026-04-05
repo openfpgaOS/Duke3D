@@ -63,7 +63,7 @@ help:
 	@printf "    $(C_CMD)cd src/$(A)$(C_RESET)\n"
 	@printf "    $(C_CMD)make$(C_RESET)                          Build\n"
 	@printf "    $(C_CMD)make $(C_VERB)debug$(C_RESET)                    Build, push via UART, stream console\n"
-	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy to Pocket SD card\n"
+	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET)                     Copy to Pocket SD card\n"
 	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package core into a ZIP\n"
 	@printf "    $(C_CMD)make $(C_VERB)pc$(C_RESET)                       Test on desktop (SDL2)\n"
 	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove build artifacts\n"
@@ -73,15 +73,15 @@ help:
 	@printf "    $(C_CMD)make$(C_RESET)                          Build all demos\n"
 	@printf "    $(C_CMD)make $(C_VERB)new$(C_RESET) $(C_ARG)APP=demo$(C_RESET)             Create a new demo app\n"
 	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package SDK core into a ZIP\n"
-	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy SDK + demos to SD card\n"
+	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET)                     Copy SDK + demos to SD card\n"
 	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove build artifacts\n"
 	@echo ""
 	@printf "  $(C_HEAD)From the root:$(C_RESET)\n"
 	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)                    Build everything\n"
 	@A="$(A)"; cmd="make build  APP=$$A"; printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)  $(C_ARG)APP=$$A$(C_RESET)%*s Build sdk or $$A\n" $$((29 - $${#cmd})) ""
 	@A="$(A)"; cmd="make debug  APP=$$A"; printf "    $(C_CMD)make $(C_VERB)debug$(C_RESET)  $(C_ARG)APP=$$A$(C_RESET)%*s Build, push via UART, stream console\n" $$((29 - $${#cmd})) ""
-	@printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET)                   Deploy everything to SD card\n"
-	@A="$(A)"; cmd="make deploy APP=$$A"; printf "    $(C_CMD)make $(C_VERB)deploy$(C_RESET) $(C_ARG)APP=$$A$(C_RESET)%*s Deploy sdk or $$A to SD card\n" $$((29 - $${#cmd})) ""
+	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET)                     Copy everything to SD card\n"
+	@A="$(A)"; cmd="make copy APP=$$A"; printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET) $(C_ARG)APP=$$A$(C_RESET)%*s Copy sdk or $$A to SD card\n" $$((29 - $${#cmd})) ""
 	@printf "    $(C_CMD)make $(C_VERB)tools$(C_RESET)                    Build PHDP host tools\n"
 	@printf "    $(C_CMD)make $(C_VERB)package$(C_RESET)                  Package all cores into ZIPs\n"
 	@printf "    $(C_CMD)make $(C_VERB)clean$(C_RESET)                    Remove all build artifacts\n"
@@ -126,20 +126,20 @@ else
 	$(MAKE) -C src/$(APP) debug
 endif
 
-# ── Deploy ───────────────────────────────────────────────────────────
-deploy:
+# ── Copy ───────────────────────────────────────────────────────────
+copy:
 ifdef APP
 ifeq ($(APP),sdk)
-	$(MAKE) -C src/apps deploy
+	$(MAKE) -C src/apps copy
 else
-	$(MAKE) -C src/$(APP) deploy
+	$(MAKE) -C src/$(APP) copy
 endif
 else
-	$(MAKE) -C src/apps deploy
+	$(MAKE) -C src/apps copy
 	@for d in src/*/; do \
 		[ "$$d" = "src/apps/" ] || [ "$$d" = "src/sdk/" ] || [ "$$d" = "src/tools/" ] && continue; \
 		[ -f "$$d/Makefile" ] || continue; \
-		$(MAKE) -C "$$d" deploy || true; \
+		$(MAKE) -C "$$d" copy || true; \
 	done
 endif
 
@@ -177,4 +177,4 @@ else
 	rm -rf build .obj releases
 endif
 
-.PHONY: all help setup core build debug deploy package tools clean
+.PHONY: all help setup core build debug copy package tools clean
