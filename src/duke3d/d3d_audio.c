@@ -295,20 +295,20 @@ void d3d_audio_pump(void)
         of_midi_pump();
     }
 
-    for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
+    /* Single register read: get bitmask of all voices that just ended.
+     * Replaces up to 32 individual voice_active syscalls. */
+    uint32_t ended = of_mixer_poll_ended();
+    while (ended) {
+        int i = __builtin_ctz(ended);  /* lowest set bit = voice index */
+        ended &= ended - 1;           /* clear it */
+
         if (active_voices[i].voice >= 0) {
-            if (!of_mixer_voice_active(active_voices[i].voice)) {
-                int snd = active_voices[i].sound_num;
-                int owned = active_voices[i].has_owner;
-                untrack_voice(i);
-                /* Only fire Duke's callback for voices with SoundOwner entries
-                 * (played via xyzsound). Fire-and-forget voices from sound()
-                 * have no SoundOwner entry — calling testcallback would
-                 * underflow Sound[].num. */
-                if (owned) {
-                    extern void testcallback(int32_t num);
-                    testcallback(snd);
-                }
+            int snd = active_voices[i].sound_num;
+            int owned = active_voices[i].has_owner;
+            untrack_voice(i);
+            if (owned) {
+                extern void testcallback(int32_t num);
+                testcallback(snd);
             }
         }
     }

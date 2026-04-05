@@ -17,15 +17,11 @@ extern "C" {
 #include <stddef.h>
 #include "of_libc.h"
 
-#ifndef SEEK_SET
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
-#endif
 
-#ifndef __OF_JT
 #define __OF_JT ((const struct of_libc_table *)OF_LIBC_ADDR)
-#endif
 
 static inline int open(const char *path, int flags, ...) {
     return __OF_JT->open(path, flags);
@@ -47,24 +43,14 @@ static inline long long lseek(int fd, long long offset, int whence) {
     return __OF_JT->lseek(fd, offset, whence);
 }
 
-/* usleep — delay in microseconds (via syscall) */
-static inline int usleep(unsigned int us) {
-    register long a7 __asm__("a7") = 115; /* SYS_clock_nanosleep */
-    register long a0 __asm__("a0") = 0;   /* CLOCK_REALTIME */
-    register long a1 __asm__("a1") = 0;   /* flags */
-    struct { long tv_sec; long tv_nsec; } ts;
-    ts.tv_sec = us / 1000000;
-    ts.tv_nsec = (us % 1000000) * 1000;
-    register long a2 __asm__("a2") = (long)&ts;
-    register long a3 __asm__("a3") = 0;
-    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3), "r"(a7) : "memory");
-    return 0;
-}
+/* Time */
+unsigned int usleep(unsigned int us);
+unsigned int sleep(unsigned int sec);
 
 /* Minimal stubs */
 static inline int   getpid(void)        { return 1; }
 static inline int   isatty(int fd)      { (void)fd; return 0; }
-static inline int   access(const char *path, int mode) { (void)path; (void)mode; return -1; }
+int access(const char *path, int mode);
 
 #ifdef __cplusplus
 }

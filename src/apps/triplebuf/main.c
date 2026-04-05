@@ -7,6 +7,7 @@
 #include "of.h"
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static int pass, fail;
 

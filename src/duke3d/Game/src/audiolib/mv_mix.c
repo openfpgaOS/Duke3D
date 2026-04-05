@@ -20,6 +20,15 @@ extern int g_CV_CubicInterpolation;
 
 #define do_cubic (g_CV_CubicInterpolation)
 
+/* Fast reciprocal multiply for division by constant 63 (MV_MaxVolume).
+   (x * 16513) >> 20 == x / 63 for |x| <= 2,097,151.
+   Max input here: 32767 * 63 = 2,064,321, well within range. */
+#define DIV63(x) (int)(((int64_t)(x) * 16513) >> 20)
+
+/* Fast reciprocal multiply for division by 6.
+   (x * 10923) >> 16 == x / 6 for |x| <= 524,287. */
+#define DIV6(x)  (int)(((int64_t)(x) * 10923) >> 16)
+
 #define gval0 MV_GVal[*MV_GPos&3]
 #define gval(x) MV_GVal[(*MV_GPos+x)&3]
 
@@ -29,7 +38,7 @@ int MV_cubic(int position)
 	xd = (position >> 1) & 0x7FFF;
 
 	fa  = gval(3) - 3*gval(2) + 3*gval(1) - gval0;
-	fa *= (xd - (2<<15)) / 6;
+	fa *= DIV6(xd - (2<<15));
 	fa >>= 15;
 	fa += gval(2) - gval(1) - gval(1) + gval0;
 	fa *= (xd - (1<<15)) >> 1;
@@ -131,7 +140,7 @@ void MV_Mix8BitMono( uint32_t position, uint32_t rate,
 		int s = MV_cubic8to16(src, position, rate);
 		int d = (*dest - 0x80) << 8;
 		
-		d += (s * MV_LeftVolume) / MV_MaxVolume;
+		d += DIV63(s * MV_LeftVolume);
 
 		if (d < -32768) *dest = 0;
 		else if (d > 32767) *dest = 255;
@@ -160,8 +169,8 @@ void MV_Mix8BitStereo( uint32_t position,
 		int dl = (dest[0] - 0x80) << 8;
 		int dr = (dest[MV_RightChannelOffset] - 0x80) << 8;
 		
-		dl += (MV_LeftVolume * s) / MV_MaxVolume;
-		dr += (MV_RightVolume * s) / MV_MaxVolume;
+		dl += DIV63(MV_LeftVolume * s);
+		dr += DIV63(MV_RightVolume * s);
 
 		if (dl < -32768) dest[0] = 0;
 		else if (dl > 32767) dest[0] = 255;
@@ -169,12 +178,12 @@ void MV_Mix8BitStereo( uint32_t position,
 
 		if (dr < -32768) dest[MV_RightChannelOffset] = 0;
 		else if (dr > 32767) dest[MV_RightChannelOffset] = 255;
-		else dest[MV_RightChannelOffset] = (dl >> 8) + 128;
-		
+		else dest[MV_RightChannelOffset] = (dr >> 8) + 128;
+
 		position += rate;
 		dest += MV_SampleSize;
 	}
-	
+
 	MV_MixPosition = position;
 	MV_MixDestination = (char *)dest;
 }
@@ -193,7 +202,7 @@ void MV_Mix16BitMono( uint32_t position,
 		int s = MV_cubic8to16(src, position, rate);
 		int d = dest[0];
 
-		d += (MV_LeftVolume * s) / MV_MaxVolume;
+		d += DIV63(MV_LeftVolume * s);
 
 		if (d < -32768) *dest = -32768;
 		else if (d >  32767) *dest =  32767;
@@ -222,8 +231,8 @@ void MV_Mix16BitStereo( uint32_t position,
 		int dl = dest[0];
 		int dr = dest[MV_RightChannelOffset/2];
 		
-		dl += (MV_LeftVolume * s) / MV_MaxVolume;
-		dr += (MV_RightVolume * s) / MV_MaxVolume;
+		dl += DIV63(MV_LeftVolume * s);
+		dr += DIV63(MV_RightVolume * s);
 		
 		if (dl < -32768) dest[0] = -32768;
 		else if (dl >  32767) dest[0] =  32767;
@@ -255,7 +264,7 @@ void MV_Mix8BitMono16( uint32_t position, uint32_t rate,
 		int s = MV_cubic16(src, position, rate);
 		int d = (*dest - 0x80) << 8;
 
-		d += (MV_LeftVolume * s) / MV_MaxVolume;
+		d += DIV63(MV_LeftVolume * s);
 
 		if (d < -32768) *dest = 0;
 		else if (d > 32767) *dest = 255;
@@ -284,8 +293,8 @@ void MV_Mix8BitStereo16( uint32_t position,
 		int dl = (dest[0] - 0x80) << 8;
 		int dr = (dest[MV_RightChannelOffset/2] - 0x80) << 8;
 		
-		dl += (MV_LeftVolume * s) / MV_MaxVolume;
-		dr += (MV_RightVolume * s) / MV_MaxVolume;
+		dl += DIV63(MV_LeftVolume * s);
+		dr += DIV63(MV_RightVolume * s);
 
 		if (dl < -32768) dest[0] = 0;
 		else if (dl > 32767) dest[0] = 255;
@@ -293,12 +302,12 @@ void MV_Mix8BitStereo16( uint32_t position,
 
 		if (dr < -32768) dest[MV_RightChannelOffset] = 0;
 		else if (dr > 32767) dest[MV_RightChannelOffset] = 255;
-		else dest[MV_RightChannelOffset] = (dl >> 8) + 128;
-		
+		else dest[MV_RightChannelOffset] = (dr >> 8) + 128;
+
 		position += rate;
 		dest += MV_SampleSize;
 	}
-	
+
 	MV_MixPosition = position;
 	MV_MixDestination = (char *)dest;
 }
@@ -317,7 +326,7 @@ void MV_Mix16BitMono16( uint32_t position,
 		int s = MV_cubic16(src, position, rate);
 		int d = *dest;
 		
-		d += (MV_LeftVolume * s) / MV_MaxVolume;
+		d += DIV63(MV_LeftVolume * s);
 		
 		if (d < -32768) *dest = -32768;
 		else if (d >  32767) *dest =  32767;
@@ -346,8 +355,8 @@ void MV_Mix16BitStereo16( uint32_t position,
 		int dl = dest[0];
 		int dr = dest[MV_RightChannelOffset/2];
 
-		dl += (MV_LeftVolume * s) / MV_MaxVolume;
-		dr += (MV_RightVolume * s) / MV_MaxVolume;
+		dl += DIV63(MV_LeftVolume * s);
+		dr += DIV63(MV_RightVolume * s);
 
 		if (dl < -32768) dest[0] = -32768;
 		else if (dl > 32767) dest[0] = 32767;
@@ -355,8 +364,8 @@ void MV_Mix16BitStereo16( uint32_t position,
 
 		if (dr < -32768) dest[MV_RightChannelOffset/2] = -32768;
 		else if (dr > 32767) dest[MV_RightChannelOffset/2] = 32767;
-		else dest[MV_RightChannelOffset/2] = dl;
-		
+		else dest[MV_RightChannelOffset/2] = dr;
+
 		position += rate;
 		dest += MV_SampleSize/2;
 	}
@@ -407,7 +416,7 @@ void MV_MixFPStereo8( uint32_t position,
 		
 		left = (double)MV_LeftVolume * (double)s / (double)MV_MaxVolume;
 		left = left / ((double)0x8000);
-		right = (double)(MV_RightVolume * s) / MV_MaxVolume;
+		right = (double)MV_RightVolume * (double)s / (double)MV_MaxVolume;
 		right = right / ((double)0x8000);
 		dest[0] += left;
 		dest[1] += right;
@@ -463,7 +472,7 @@ void MV_MixFPStereo16( uint32_t position,
 		
 		left = (double)MV_LeftVolume * (double)s / (double)MV_MaxVolume;
 		left = left / ((double)0x8000);
-		right = (double)(MV_RightVolume * s) / MV_MaxVolume;
+		right = (double)MV_RightVolume * (double)s / (double)MV_MaxVolume;
 		right = right / ((double)0x8000);
 		dest[0] += left;
 		dest[1] += right;

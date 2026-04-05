@@ -66,10 +66,6 @@ int  of_midi_get_volume(void);
  * 11 bytes each = 1925 bytes total).  Pass NULL to restore built-in bank. */
 void of_midi_load_bank(const uint8_t *bank);
 
-/* Get pointer to the built-in GM instrument bank (read-only, 1925 bytes).
- * Use as a base when applying partial instrument overrides. */
-const uint8_t *of_midi_builtin_bank(void);
-
 #ifdef __cplusplus
 }
 #endif

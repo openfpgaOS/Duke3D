@@ -472,6 +472,11 @@ int FX_StopSound
    )
 
    {
+#ifdef OPENFPGA
+   extern void d3d_sound_stop(int voice);
+   d3d_sound_stop(handle);
+   return( FX_Ok );
+#endif
    int status;
 
    status = MV_Kill( handle );
@@ -497,6 +502,11 @@ int FX_StopAllSounds
    )
 
    {
+#ifdef OPENFPGA
+   extern void d3d_sound_stop_all(void);
+   d3d_sound_stop_all();
+   return( FX_Ok );
+#endif
    int status;
 
    status = MV_KillAllVoices();

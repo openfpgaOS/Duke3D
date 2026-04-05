@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <time.h>
 
 /* Aligned source buffer in SDRAM (used as memcpy source) */
 static uint8_t src_buf[1024 * 1024] __attribute__((aligned(64)));

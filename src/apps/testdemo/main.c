@@ -5,6 +5,7 @@
  */
 
 #include "test.h"
+#include <unistd.h>
 
 int pass_count, fail_count;
 char __buf[80];

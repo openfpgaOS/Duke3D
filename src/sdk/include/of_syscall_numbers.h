@@ -27,6 +27,7 @@ extern "C" {
 #define OF_SYS_VIDEO_SET_PALETTE_BULK  0x1007
 #define OF_SYS_VIDEO_FLUSH_CACHE       0x1008
 #define OF_SYS_VIDEO_SET_COLOR_MODE    0x1009
+#define OF_SYS_VIDEO_SET_PALETTE_VGA4 0x100A
 
 /* Audio */
 #define OF_SYS_AUDIO_WRITE             0x1010
@@ -39,6 +40,7 @@ extern "C" {
 #define OF_SYS_INPUT_POLL              0x1020
 #define OF_SYS_INPUT_GET_STATE         0x1021
 #define OF_SYS_INPUT_SET_DEADZONE      0x1022
+#define OF_SYS_INPUT_POLL_P0           0x1023
 
 /* Save — handled internally by fclose() */
 
@@ -60,9 +62,15 @@ extern "C" {
 #define OF_SYS_NET_RECV                0x1069
 #define OF_SYS_NET_POLL                0x106A
 
+/* Terminal */
+#define OF_SYS_TERM_PUTCHAR            0x1070
+
 /* Timer (time/delay via POSIX clock_gettime/usleep) */
 #define OF_SYS_TIMER_SET_CALLBACK      0x1074
 #define OF_SYS_TIMER_STOP              0x1075
+#define OF_SYS_TIMER_GET_US            0x1076
+#define OF_SYS_TIMER_GET_MS            0x1077
+#define OF_SYS_TIMER_DELAY_US          0x1078
 
 /* File — handled internally by fread/fseek */
 
@@ -112,14 +120,16 @@ extern "C" {
 #define OF_SYS_MIXER_FREE_SAMPLES      0x10E0
 #define OF_SYS_MIXER_SET_RATE_RAW      0x10E1
 #define OF_SYS_MIXER_SET_VOICE_RAW     0x10E2
+#define OF_SYS_MIXER_SET_VOL_RATE      0x10E3
+#define OF_SYS_MIXER_POLL_ENDED        0x10E4
 
 /* Audio Codec */
-#define OF_SYS_CODEC_PARSE_VOC         0x10E3
-#define OF_SYS_CODEC_PARSE_WAV         0x10E4
+#define OF_SYS_CODEC_PARSE_VOC         0x10E5
+#define OF_SYS_CODEC_PARSE_WAV         0x10E6
 
 /* LZW Compression */
-#define OF_SYS_LZW_COMPRESS            0x10E5
-#define OF_SYS_LZW_UNCOMPRESS          0x10E6
+#define OF_SYS_LZW_COMPRESS            0x10E7
+#define OF_SYS_LZW_UNCOMPRESS          0x10E8
 
 /* Interact */
 #define OF_SYS_INTERACT_GET            0x10F0

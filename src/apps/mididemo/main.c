@@ -10,6 +10,7 @@
 
 #include "of.h"
 #include <stdio.h>
+#include <unistd.h>
 
 /* Maximum MIDI file size we support */
 #define MIDI_MAX_SIZE   (256 * 1024)

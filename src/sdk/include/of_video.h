@@ -68,6 +68,12 @@ static inline void of_video_palette_vga6(const uint8_t *vga_pal, int count) {
     of_video_palette_bulk(pal32, count);
 }
 
+/* Set a VGA 4-byte palette (BUILD/Quake/DOOM format: B6 G6 R6 pad per entry).
+ * Kernel converts 6-bit→8-bit directly — no userspace math needed. */
+static inline void of_video_palette_vga4(const uint8_t *bgra6, int count) {
+    __of_syscall2(OF_SYS_VIDEO_SET_PALETTE_VGA4, (long)bgra6, count);
+}
+
 static inline void of_video_flush(void) {
     __of_syscall0(OF_SYS_VIDEO_FLUSH_CACHE);
 }

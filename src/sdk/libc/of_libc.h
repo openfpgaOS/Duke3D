@@ -17,17 +17,13 @@
 #ifndef OF_LIBC_H
 #define OF_LIBC_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 #include <stddef.h>
 #include <stdarg.h>
 
 #define OF_LIBC_MAGIC   0x4F46434C  /* 'OFCL' */
 #define OF_LIBC_VERSION 1
-#define OF_LIBC_ADDR    0x103FF000
+#define OF_LIBC_ADDR    0x00007C00  /* BRAM — avoids D-cache pollution */
 
 struct of_libc_table {
     uint32_t magic;
@@ -269,10 +265,6 @@ struct of_libc_table {
 #define OF_LIBC_SLOT_READ           85
 #define OF_LIBC_SLOT_WRITE          86
 #define OF_LIBC_SLOT_LSEEK          87
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* OF_LIBC_H */
 

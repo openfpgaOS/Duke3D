@@ -1286,11 +1286,11 @@ static OF_FASTTEXT void wallscan(int32_t x1, int32_t x2,
         palookupoffse[0] = fpalookup+(getpalookup((int32_t)mulscale16(swal[x],globvis),globalshade)<<8);
 
         bufplce[0] = lwal[x] + globalxpanning;
-        
+
         if (bufplce[0] >= tileWidth)
         {
             if (xnice == 0)
-                bufplce[0] %= tileWidth;
+                { while (bufplce[0] >= tileWidth) bufplce[0] -= tileWidth; }
             else
                 bufplce[0] &= tileWidth;
         }
@@ -1305,7 +1305,7 @@ static OF_FASTTEXT void wallscan(int32_t x1, int32_t x2,
 
         vlineasm1(vince[0],palookupoffse[0],y2ve[0]-y1ve[0]-1,vplce[0],bufplce[0]+tiles[globalpicnum].data,x+frameoffset+ylookup[y1ve[0]]);
     }
-    
+
     for(; x<=x2-3; x+=4)
     {
         bad = 0;
@@ -1322,7 +1322,7 @@ static OF_FASTTEXT void wallscan(int32_t x1, int32_t x2,
 
             i = lwal[x+z] + globalxpanning;
             if (i >= tileWidth) {
-                if (xnice == 0) i %= tileWidth;
+                if (xnice == 0) { while (i >= tileWidth) i -= tileWidth; }
                 else i &= tileWidth;
             }
             if (ynice == 0)
@@ -1403,13 +1403,13 @@ static OF_FASTTEXT void wallscan(int32_t x1, int32_t x2,
         bufplce[0] = lwal[x] + globalxpanning;
         if (bufplce[0] >= tileWidth) {
             if (xnice == 0)
-                bufplce[0] %= tileWidth;
+                { while (bufplce[0] >= tileWidth) bufplce[0] -= tileWidth; }
             else
                 bufplce[0] &= tileWidth;
         }
-        
-        if (ynice == 0) bufplce[0]
-            *= tsizy;
+
+        if (ynice == 0)
+            bufplce[0] *= tsizy;
         else
             bufplce[0] <<= tsizy;
 
@@ -1476,7 +1476,7 @@ static OF_FASTTEXT void maskwallscan(int32_t x1, int32_t x2,
 
         bufplce[0] = lwal[x] + globalxpanning;
         if (bufplce[0] >= tileWidth) {
-            if (xnice == 0) bufplce[0] %= tileWidth;
+            if (xnice == 0) { while (bufplce[0] >= tileWidth) bufplce[0] -= tileWidth; }
             else bufplce[0] &= tileWidth;
         }
         if (ynice == 0)
@@ -1503,10 +1503,10 @@ static OF_FASTTEXT void maskwallscan(int32_t x1, int32_t x2,
 
             i = lwal[dax] + globalxpanning;
             if (i >= tileWidth) {
-                if (xnice == 0) i %= tileWidth;
+                if (xnice == 0) { while (i >= tileWidth) i -= tileWidth; }
                 else i &= tileWidth;
             }
-            
+
             if (ynice == 0)
                 i *= tileHeight;
             else
@@ -1568,7 +1568,7 @@ static OF_FASTTEXT void maskwallscan(int32_t x1, int32_t x2,
 
         bufplce[0] = lwal[x] + globalxpanning;
         if (bufplce[0] >= tileWidth) {
-            if (xnice == 0) bufplce[0] %= tileWidth;
+            if (xnice == 0) { while (bufplce[0] >= tileWidth) bufplce[0] -= tileWidth; }
             else bufplce[0] &= tileWidth;
         }
         if (ynice == 0)
@@ -3525,6 +3525,9 @@ static void loadtables(void)
             kread(fil,britable,1024);
             kclose(fil);
         }
+        else
+        {
+        }
         tablesloaded = 1;
     }
 }
@@ -3576,9 +3579,10 @@ static void loadpalette(void)
 
     if (paletteloaded != 0)
         return;
-    
-    if ((fil = TCkopen4load("palette.dat",0)) == -1)
+
+    if ((fil = TCkopen4load("palette.dat",0)) == -1) {
         return;
+    }
 
     kread(fil,palette,768);
     
@@ -3607,13 +3611,10 @@ static void loadpalette(void)
 
     kread(fil,palookup[globalpal],numpalookups<<8);
 
-
     /*kread(fil,transluc,65536);*/
     for (k = 0; k < (65536 / 4); k++)
         kread32(fil, ((int32_t *) transluc) + k);
 
-
-    
     kclose(fil);
 
     initfastcolorlookup(30L,59L,11L);

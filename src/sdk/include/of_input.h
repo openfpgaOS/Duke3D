@@ -55,6 +55,11 @@ static inline void of_input_poll(void) {
     __of_syscall2(OF_SYS_INPUT_GET_STATE, 1, (long)&__of_p1);
 }
 
+/* Single-player fast path: poll + get P0 in one syscall (saves 2 ecalls/frame) */
+static inline void of_input_poll_p0(void) {
+    __of_syscall1(OF_SYS_INPUT_POLL_P0, (long)&__of_p0);
+}
+
 static inline int of_btn(uint32_t mask) {
     return (__of_p0.buttons & mask) != 0;
 }

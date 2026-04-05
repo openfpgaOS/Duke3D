@@ -12,6 +12,8 @@
 #include "of.h"
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <time.h>
 
 #define WAV_SLOT_ID     3
 #define MAX_WAV_SIZE    (4 * 1024 * 1024)

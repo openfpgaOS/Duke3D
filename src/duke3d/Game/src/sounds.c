@@ -54,13 +54,18 @@ int32_t backflag,numenvsnds;
 
 void SoundStartup(void)
 {
+#ifdef OPENFPGA
+    /* Hardware mixer handles everything — skip Multivoc software mixer init.
+     * d3d_audio_init() is called separately from game.c startup. */
+    return;
+#endif
     int32 status;
 
     // if they chose None lets return
     if (FXDevice == SC_Unknown) return;
 
     status = FX_Init(FXDevice, NumVoices, NumChannels, NumBits, MixRate);
-	
+
     if (status != FX_Ok)
     {
         Error(EXIT_FAILURE, FX_ErrorString(FX_Error));
@@ -73,7 +78,7 @@ void SoundStartup(void)
     }
 
     status = FX_SetCallBack(TestCallBack);
-	
+
     if (status != FX_Ok)
     {
         Error(EXIT_FAILURE, FX_ErrorString(FX_Error));

@@ -12,7 +12,7 @@
 ENTRY(_start)
 
 MEMORY {
-    APP_BRAM (rwx) : ORIGIN = 0x00002000, LENGTH = 0x5E00
+    APP_BRAM (rwx) : ORIGIN = 0x00002000, LENGTH = 0x5A00  /* ends at 0x7C00, libc table above */
     SDRAM    (rwx) : ORIGIN = 0x10400000, LENGTH = 48M
 }
 

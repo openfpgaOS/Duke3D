@@ -49,13 +49,13 @@ static const char *save_slot_path(int slot) {
 
 OfSaveFile *save_fopen(int slot, const char *mode) {
     if (slot < 0 || slot >= D3D_MAXSAVES)
-        return (OfSaveFile *)0;
+        return NULL;
 
     int idx = -1;
     for (int i = 0; i < D3D_MAXSAVES; i++) {
         if (!save_pool_used[i]) { idx = i; break; }
     }
-    if (idx < 0) return (OfSaveFile *)0;
+    if (idx < 0) return NULL;
 
     OfSaveFile *sf = &save_pool[idx];
     sf->game_slot = slot;
@@ -70,20 +70,20 @@ OfSaveFile *save_fopen(int slot, const char *mode) {
         if (sf->writing)
             sf->fp = fopen(save_slot_path(slot), "wb");
         if (!sf->fp)
-            return (OfSaveFile *)0;
+            return NULL;
     }
 
     if (!sf->writing) {
         /* Read actual data size stored at offset 0 */
         uint32_t data_size = 0;
-        fseek(sf->fp, 0, 0);
-        fread(&data_size, 4, 1, sf->fp);
-        if (data_size > D3D_SAVE_HEADER && data_size <= D3D_SAVE_SIZE)
+        fseek(sf->fp, 0, SEEK_SET);
+        if (fread(&data_size, 4, 1, sf->fp) == 1 &&
+            data_size > D3D_SAVE_HEADER && data_size <= D3D_SAVE_SIZE)
             sf->size = data_size;
     }
 
     /* Position at data start */
-    fseek(sf->fp, D3D_SAVE_HEADER, 0);
+    fseek(sf->fp, D3D_SAVE_HEADER, SEEK_SET);
 
     save_pool_used[idx] = 1;
     return sf;
@@ -126,7 +126,7 @@ int save_fseek(OfSaveFile *sf, long offset, int whence) {
     if (new_off < 0) new_off = 0;
     if (new_off > (long)sf->size) new_off = (long)sf->size;
     sf->offset = (uint32_t)new_off;
-    fseek(sf->fp, sf->offset, 0);
+    fseek(sf->fp, sf->offset, SEEK_SET);
     return 0;
 }
 
@@ -136,12 +136,12 @@ void save_fclose(OfSaveFile *sf) {
     if (sf->writing) {
         /* Store actual data size at offset 0 */
         uint32_t data_size = sf->offset;
-        fseek(sf->fp, 0, 0);
+        fseek(sf->fp, 0, SEEK_SET);
         fwrite(&data_size, 4, 1, sf->fp);
 
         /* Write magic to mark slot valid */
         uint32_t magic = SAVE_MAGIC;
-        fseek(sf->fp, 16, 0);
+        fseek(sf->fp, 16, SEEK_SET);
         fwrite(&magic, 4, 1, sf->fp);
     }
 
@@ -161,7 +161,7 @@ int save_slot_valid(int slot) {
     uint32_t magic = 0;
     FILE *f = fopen(save_slot_path(slot), "rb");
     if (!f) return 0;
-    fseek(f, 16, 0);
+    fseek(f, 16, SEEK_SET);
     fread(&magic, 4, 1, f);
     fclose(f);
 

@@ -32,6 +32,8 @@
 
 #define OF_DISPLAY_W  320
 #define OF_DISPLAY_H  200
+#define OF_DISPLAY_HW_H 240
+#define OF_DISPLAY_BAR_H ((OF_DISPLAY_HW_H - OF_DISPLAY_H) / 2)  /* 20px letterbox */
 /* Variables required by the engine (declared extern in display.h / build.h) */
 int32_t xres, yres, bytesperline, imageSize, maxpages;
 uint8_t *frameplace;
@@ -40,8 +42,13 @@ uint8_t *screen, vesachecked;
 int32_t buffermode, origbuffermode, linearmode;
 uint8_t permanentupdate = 0, vgacompatible;
 
-/* The internal 320x200 framebuffer that BUILD draws into */
+/* Fallback framebuffer for pre-video-init and 2D editor drawing.
+ * Once video is up, BUILD renders directly into the HW back buffer. */
 static uint8_t of_framebuffer[OF_DISPLAY_W * OF_DISPLAY_H];
+
+/* Triple-buffer bar-clearing tracker: counts down from 3 so each
+ * of the 3 HW buffers gets its letterbox bars cleared exactly once. */
+static int bars_remaining = 3;
 
 /* Input state */
 static int32_t mouse_relative_x = 0;
@@ -54,11 +61,6 @@ static uint32_t prev_buttons = 0;
 
 /* Drawing helper */
 static uint8_t drawpixel_color = 0;
-
-/* Render timing */
-static int32_t last_render_ticks = 0;
-int32_t total_render_time = 1;
-int32_t total_rendered_frames = 0;
 
 /* Cached palette in 0x00RRGGBB format for of_video_palette_bulk */
 static uint32_t of_palette[256];
@@ -143,22 +145,6 @@ static void send_key(uint8_t scancode, uint8_t extended, int pressed)
     keyhandler();
 }
 
-static void stick_axis_key(int16_t value, int deadzone,
-                           uint8_t *held, uint8_t sc, uint8_t ext)
-{
-    int active = (value < -deadzone) || (value > deadzone);
-
-    /* For directional: positive = one direction, negative = opposite.
-       Here the caller should pass the specific axis check, so we just
-       treat 'active' as boolean. */
-    if (active && !(*held)) {
-        *held = 1;
-        send_key(sc, ext, 1);
-    } else if (!active && *held) {
-        *held = 0;
-        send_key(sc, ext, 0);
-    }
-}
 
 /* ======================================================================
  * VIDEO
@@ -183,6 +169,7 @@ static void init_new_res_vars(void)
     qsetmode = OF_DISPLAY_H;
     activepage = visualpage = 0;
 
+    /* Default to static buffer; retarget_frameplace() overrides once video is up */
     frameoffset = frameplace = of_framebuffer;
 
     if (screen != NULL) {
@@ -225,6 +212,22 @@ void *get_framebuffer(void)
     return of_framebuffer;
 }
 
+/* Point BUILD's rendering target at the given HW back buffer. */
+static void retarget_frameplace_at(uint8_t *dst)
+{
+    if (dst) {
+        uint8_t *render_base = dst + OF_DISPLAY_W * OF_DISPLAY_BAR_H;
+        frameplace = render_base;
+        extern int32_t viewoffset;
+        frameoffset = render_base + viewoffset;
+    }
+}
+
+static void retarget_frameplace(void)
+{
+    retarget_frameplace_at(of_video_surface());
+}
+
 static int video_initialized = 0;
 
 static void ensure_video_init(void) {
@@ -235,6 +238,9 @@ static void ensure_video_init(void) {
         of_video_palette_bulk(of_palette, 256);
         of_video_flip();
         of_video_clear(0);
+        /* Point BUILD at the HW back buffer from now on */
+        bars_remaining = 3;
+        retarget_frameplace();
     }
 }
 
@@ -250,7 +256,7 @@ void _platform_init(int argc, char **argv, const char *title, const char *iconNa
      * Video will init on first _nextpage() call. */
 
     /* Seed random from timer */
-    srand((unsigned int)clock_ms());
+    srand((unsigned int)of_time_ms());
 
     /* Zero out the internal framebuffer */
     memset(of_framebuffer, 0, sizeof(of_framebuffer));
@@ -258,39 +264,26 @@ void _platform_init(int argc, char **argv, const char *title, const char *iconNa
 
 void _nextpage(void)
 {
-    uint32_t ticks;
-
     ensure_video_init();
 
     _handle_events();
+    d3d_audio_pump();
 
-    /* openfpgaOS audio mixer */
-    {
-        d3d_audio_pump();
-    }
-
-    /* Wait for previous flip to finish before writing to surface */
-    of_video_sync();
-
-    /* Blit the 320x200 BUILD framebuffer into the 320x240 hardware surface,
-       centered vertically with a 20-pixel Y offset. */
-    {
+    /* BUILD already rendered into the HW back buffer (via frameplace).
+     * Clear letterbox bars only until all 3 triple-buffer slots are done. */
+    if (bars_remaining > 0) {
         uint8_t *dst = of_video_surface();
-        memset(dst, 0, OF_DISPLAY_W * 20);
-        memcpy(dst + OF_DISPLAY_W * 20, of_framebuffer, OF_DISPLAY_W * OF_DISPLAY_H);
-        memset(dst + OF_DISPLAY_W * (20 + OF_DISPLAY_H), 0, OF_DISPLAY_W * 20);
+        if (dst) {
+            memset(dst, 0, OF_DISPLAY_W * OF_DISPLAY_BAR_H);
+            memset(dst + OF_DISPLAY_W * (OF_DISPLAY_BAR_H + OF_DISPLAY_H), 0,
+                   OF_DISPLAY_W * OF_DISPLAY_BAR_H);
+        }
+        bars_remaining--;
     }
 
+    /* Queue this buffer for display, then retarget at the new back buffer */
     of_video_flip();
-
-    ticks = getticks();
-    total_render_time = (ticks - last_render_ticks);
-    if (total_render_time > 1000) {
-        total_rendered_frames = 0;
-        total_render_time = 1;
-        last_render_ticks = ticks;
-    }
-    total_rendered_frames++;
+    retarget_frameplace();
 }
 
 void VBE_setPalette(uint8_t *palettebuffer)
@@ -302,28 +295,17 @@ void VBE_setPalette(uint8_t *palettebuffer)
      *   byte 2: Red   (0-63)
      *   byte 3: Reserved
      *
-     * of_video_palette_vga6() expects sequential R,G,B triplets (6-bit).
-     * Repack from BUILD's BGRA layout to RGB triplets first.
+     * Convert to 0x00RRGGBB for of_video_palette_bulk().
      */
-    uint8_t rgb_triplets[256 * 3];
-    int i;
-
-    for (i = 0; i < 256; i++) {
-        rgb_triplets[i * 3 + 0] = palettebuffer[i * 4 + 2];  /* R */
-        rgb_triplets[i * 3 + 1] = palettebuffer[i * 4 + 1];  /* G */
-        rgb_triplets[i * 3 + 2] = palettebuffer[i * 4 + 0];  /* B */
-    }
-
-    /* Cache in 0x00RRGGBB format for VBE_getPalette reverse lookups */
-    for (i = 0; i < 256; i++) {
-        uint8_t r8 = (uint8_t)((rgb_triplets[i * 3 + 0] * 255 + 31) / 63);
-        uint8_t g8 = (uint8_t)((rgb_triplets[i * 3 + 1] * 255 + 31) / 63);
-        uint8_t b8 = (uint8_t)((rgb_triplets[i * 3 + 2] * 255 + 31) / 63);
+    for (int i = 0; i < 256; i++) {
+        uint8_t b8 = (uint8_t)((palettebuffer[i * 4 + 0] * 255 + 31) / 63);
+        uint8_t g8 = (uint8_t)((palettebuffer[i * 4 + 1] * 255 + 31) / 63);
+        uint8_t r8 = (uint8_t)((palettebuffer[i * 4 + 2] * 255 + 31) / 63);
         of_palette[i] = ((uint32_t)r8 << 16) | ((uint32_t)g8 << 8) | (uint32_t)b8;
     }
 
     if (video_initialized)
-        of_video_palette_vga6(rgb_triplets, 256);
+        of_video_palette_bulk(of_palette, 256);
 }
 
 void VBE_getPalette(int32_t start, int32_t num, uint8_t *palettebuffer)
@@ -348,13 +330,8 @@ void VBE_getPalette(int32_t start, int32_t num, uint8_t *palettebuffer)
 void VBE_presentPalette(void)
 {
     if (!video_initialized) return;
-    {
-        uint8_t *dst = of_video_surface();
-        memset(dst, 0, OF_DISPLAY_W * 20);
-        memcpy(dst + OF_DISPLAY_W * 20, of_framebuffer, OF_DISPLAY_W * OF_DISPLAY_H);
-        memset(dst + OF_DISPLAY_W * (20 + OF_DISPLAY_H), 0, OF_DISPLAY_W * 20);
-    }
     of_video_flip();
+    retarget_frameplace();
 }
 
 void getvalidvesamodes(void)
@@ -383,11 +360,21 @@ int32_t _setgamemode(int32_t daxdim, int32_t daydim)
     getvalidvesamodes();
 
     /* Always use 320x200 regardless of what was requested */
-    memset(of_framebuffer, 0, sizeof(of_framebuffer));
+    if (video_initialized) {
+        /* Clear the HW back buffer that BUILD is rendering into */
+        uint8_t *dst = of_video_surface();
+        if (dst) memset(dst, 0, OF_DISPLAY_W * OF_DISPLAY_HW_H);
+        bars_remaining = 3;
+    } else {
+        memset(of_framebuffer, 0, sizeof(of_framebuffer));
+    }
     init_new_res_vars();
 
+    /* Retarget BUILD at HW surface if video is initialized */
+    if (video_initialized)
+        retarget_frameplace();
+
     qsetmode = 200;
-    last_render_ticks = getticks();
 
     return 0;
 }
@@ -539,13 +526,9 @@ static void handle_events(void)
 
         if (rx > STICK_DEADZONE || rx < -STICK_DEADZONE)
             mouse_relative_x += rx / (32768 / STICK_MOUSE_SCALE);
-        else
-            mouse_relative_x = 0;
 
         if (ry > STICK_DEADZONE || ry < -STICK_DEADZONE)
             mouse_relative_y += ry / (32768 / STICK_MOUSE_SCALE);
-        else
-            mouse_relative_y = 0;
     }
 
     /* --- R2 as mouse left-button (alt fire / useful in menus) --- */
@@ -586,7 +569,7 @@ int inittimer(int tickspersecond)
 
     timerfreq = 1000;
     timerticspersec = tickspersecond;
-    t = (int64_t)clock_ms();
+    t = (int64_t)of_time_ms();
     timerlastsample = (int32_t)(t * timerticspersec / timerfreq);
 
     usertimercallback = NULL;
@@ -603,7 +586,7 @@ void uninittimer(void)
 
 void resettimer(void)
 {
-    int64_t t = (int64_t)clock_ms();
+    int64_t t = (int64_t)of_time_ms();
     timerlastsample = (int32_t)(t * timerticspersec / timerfreq);
 }
 
@@ -620,7 +603,7 @@ void sampletimer(void)
     /* Audio pump: MIDI is timer-driven (60Hz), voice completion polled here */
     d3d_audio_pump();
 
-    i = (int64_t)clock_ms();
+    i = (int64_t)of_time_ms();
     n = (int32_t)(i * timerticspersec / timerfreq) - timerlastsample;
 
     if (n > 0) {
@@ -636,8 +619,8 @@ void sampletimer(void)
 
 uint32_t getticks(void)
 {
-    if (!timerfreq) return clock_ms();
-    return (uint32_t)((int64_t)clock_ms() * 1000 / timerfreq);
+    if (!timerfreq) return of_time_ms();
+    return (uint32_t)((int64_t)of_time_ms() * 1000 / timerfreq);
 }
 
 int gettimerfreq(void)
@@ -693,12 +676,12 @@ void setcolor16(uint8_t col)
 void drawpixel16(int32_t offset)
 {
     if (offset >= 0 && offset < OF_DISPLAY_W * OF_DISPLAY_H)
-        of_framebuffer[offset] = drawpixel_color;
+        ((uint8_t *)frameplace)[offset] = drawpixel_color;
 }
 
 void fillscreen16(int32_t offset, int32_t color, int32_t blocksize)
 {
-    uint8_t *pixels = of_framebuffer;
+    uint8_t *pixels = (uint8_t *)frameplace;
     int32_t fb_size = OF_DISPLAY_W * OF_DISPLAY_H;
 
     if (!pageoffset) {
@@ -726,10 +709,11 @@ void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint
     int err = dx - dy;
     int x = (int)XStart;
     int y = (int)YStart;
+    uint8_t *fb = (uint8_t *)frameplace;
 
     while (1) {
         if (x >= 0 && x < OF_DISPLAY_W && y >= 0 && y < OF_DISPLAY_H)
-            of_framebuffer[y * OF_DISPLAY_W + x] = Color;
+            fb[y * OF_DISPLAY_W + x] = Color;
 
         if (x == (int)XEnd && y == (int)YEnd) break;
 
@@ -741,7 +725,7 @@ void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint
 
 void clear2dscreen(void)
 {
-    memset(of_framebuffer, 0, sizeof(of_framebuffer));
+    memset((void *)frameplace, 0, OF_DISPLAY_W * OF_DISPLAY_H);
 }
 
 void _updateScreenRect(int32_t x, int32_t y, int32_t w, int32_t h)

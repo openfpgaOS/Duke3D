@@ -9,6 +9,7 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 int main(void) {
     printf("\033[2J\033[H");

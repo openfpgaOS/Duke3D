@@ -23,9 +23,11 @@ uint8_t  *transluc = NULL;
 
 static OF_FASTDATA int transrev = 0;
 
+#define TRANSPARENT_COLOR 255
 
-#define shrd(a,b,c) (((b)<<(32-(c))) | ((a)>>(c)))
-#define shld(a,b,c) (((b)>>(32-(c))) | ((a)<<(c)))
+/* Shift-double macros: mask shift counts to avoid UB when c==0 or c>=32 */
+#define shrd(a,b,c) (((b)<<((32-(c))&0x1f)) | ((a)>>((c)&0x1f)))
+#define shld(a,b,c) (((b)>>((32-(c))&0x1f)) | ((a)<<((c)&0x1f)))
 
 /* ---------------  WALLS RENDERING METHOD (USED TO BE HIGHLY OPTIMIZED ASSEMBLY) ----------------------------*/
 extern int32_t asm1;
@@ -36,6 +38,7 @@ extern int32_t asm4;
 static OF_FASTDATA uint8_t machxbits_al;
 static OF_FASTDATA uint8_t bitsSetup;
 static OF_FASTDATA const uint8_t * textureSetup;
+/* Setup-only: not in BRAM (cold path) */
 void sethlinesizes(int32_t i1, int32_t _bits, const uint8_t * textureAddress)
 {
     machxbits_al = i1;
@@ -45,17 +48,18 @@ void sethlinesizes(int32_t i1, int32_t _bits, const uint8_t * textureAddress)
 
 //FCS:   Draw ceiling/floors
 //Draw a line from destination in the framebuffer to framebuffer-numPixels
-OF_FASTTEXT void hlineasm4(int32_t numPixels, int32_t shade, uint32_t i4, uint32_t i5, uint8_t *dest){
+OF_FASTTEXT void hlineasm4(int32_t numPixels, int32_t shade, uint32_t i4, uint32_t i5, uint8_t * restrict dest){
 
-    int32_t shifter = ((256-machxbits_al) & 0x1f);
+    const int32_t shifter = ((256-machxbits_al) & 0x1f);
+    const uint8_t * restrict texture = textureSetup;
+    const uint8_t bits = bitsSetup;
+    const int32_t local_asm1 = asm1;
+    const intptr_t local_asm2 = asm2;
     uint32_t source;
-    
-    const uint8_t * texture = textureSetup;
-    uint8_t bits = bitsSetup;
-    
+
     shade = shade & 0xffffff00;
     numPixels++;
-    
+
 	if (!RENDER_DRAW_CEILING_AND_FLOOR)
 		return;
 
@@ -69,14 +73,14 @@ OF_FASTTEXT void hlineasm4(int32_t numPixels, int32_t shade, uint32_t i4, uint32
 		if (pixelsAllowed-- > 0)
 #endif
 			*dest = globalpalwritten[shade|source];
-        
+
 	    dest--;
-        
-	    i5 -= asm1;
-	    i4 -= asm2;
-        
+
+	    i5 -= local_asm1;
+	    i4 -= local_asm2;
+
 	    numPixels--;
-		
+
     }
 }
 
@@ -223,9 +227,10 @@ OF_FASTTEXT int32_t prevlineasm1(int32_t i1, const uint8_t* palette, int32_t i3,
 
 
 //FCS: This is used to draw wall border vertical lines
-OF_FASTTEXT int32_t vlineasm1(int32_t vince, const uint8_t* palookupoffse, int32_t numPixels, int32_t vplce, const uint8_t* texture, uint8_t* dest)
+OF_FASTTEXT int32_t vlineasm1(int32_t vince, const uint8_t * restrict palookupoffse, int32_t numPixels, int32_t vplce, const uint8_t * restrict texture, uint8_t * restrict dest)
 {
-    uint32_t temp;
+    const uint8_t local_shift = mach3_al;
+    const int32_t local_bpl = bytesperline;
 
     if (!RENDER_DRAW_WALL_BORDERS)
 		return vplce;
@@ -233,43 +238,40 @@ OF_FASTTEXT int32_t vlineasm1(int32_t vince, const uint8_t* palookupoffse, int32
     numPixels++;
     while (numPixels)
     {
-	    temp = ((uint32_t)vplce) >> mach3_al;
-        
+	    uint32_t temp = ((uint32_t)vplce) >> local_shift;
 	    temp = texture[temp];
 
 #if RENDER_LIMIT_PIXELS
 		if (pixelsAllowed-- > 0)
 #endif
 			*dest = palookupoffse[temp];
-	    
+
 		vplce += vince;
-	    dest += bytesperline;
+	    dest += local_bpl;
 	    numPixels--;
     }
     return vplce;
 } 
 
 
-OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t *texture, int32_t numPixels, int32_t i4, const uint8_t  *source, uint8_t  *dest)
+OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t * restrict texture, int32_t numPixels, int32_t i4, const uint8_t * restrict source, uint8_t * restrict dest)
 {
-    uint8_t shiftValue = (globalshiftval & 0x1f);
-    
+    const uint8_t shiftValue = (globalshiftval & 0x1f);
+    const int32_t local_bpl = bytesperline;
+    const int local_transrev = transrev;
+
 	numPixels++;
 	while (numPixels)
 	{
-		uint32_t temp = i4;
-		temp >>= shiftValue;
+		uint32_t temp = ((uint32_t)i4) >> shiftValue;
 		temp = source[temp];
 
-	    //255 is the index for transparent color index. Skip drawing this pixel. 
-		if (temp != 255)
+		if (temp != TRANSPARENT_COLOR)
 		{
-			uint16_t colorIndex;
-            
-			colorIndex = texture[temp];
+			uint16_t colorIndex = texture[temp];
 			colorIndex |= ((*dest)<<8);
-            
-			if (transrev) 
+
+			if (local_transrev)
 				colorIndex = ((colorIndex>>8)|(colorIndex<<8));
 
 #if RENDER_LIMIT_PIXELS
@@ -277,20 +279,19 @@ OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t *texture, int32_t numPi
 #endif
 				*dest = transluc[colorIndex];
 		}
-        
+
 		i4 += i1;
-        
-        //We are drawing a column ?!
-		dest += bytesperline;
+		dest += local_bpl;
 		numPixels--;
 	}
 	return i4;
-} /* tvlineasm1 */
+}
 
 
 static OF_FASTDATA uint8_t  tran2shr;
 static OF_FASTDATA const uint8_t* tran2pal_ebx;
 static OF_FASTDATA const uint8_t* tran2pal_ecx;
+/* Setup-only: not in BRAM (cold path) */
 void setuptvlineasm2(int32_t i1, const uint8_t* i2, const uint8_t* i3)
 {
 	tran2shr = (i1&0x1f);
@@ -302,55 +303,57 @@ void setuptvlineasm2(int32_t i1, const uint8_t* i2, const uint8_t* i3)
 OF_FASTTEXT void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4, uint32_t i5, uintptr_t i6)
 {
 	uint32_t ebp = i1;
-	uint32_t tran2inca = i2;
-	uint32_t tran2incb = asm1;
-	uintptr_t tran2bufa = i3;
-	uintptr_t tran2bufb = i4;
-	uintptr_t tran2edi = asm2;
-	uintptr_t tran2edi1 = asm2 + 1;
+	const uint32_t tran2inca = i2;
+	const uint32_t tran2incb = asm1;
+	const uintptr_t tran2bufa = i3;
+	const uintptr_t tran2bufb = i4;
+	const uintptr_t tran2edi = asm2;
+	const uintptr_t tran2edi1 = asm2 + 1;
+	const int32_t local_bpl = bytesperline;
+	const int local_transrev = transrev;
 
 	i6 -= asm2;
 
+	uintptr_t prev_i6;
 	do {
-		
+		prev_i6 = i6;
+
 		i1 = i5 >> tran2shr;
 		i2 = ebp >> tran2shr;
 		i5 += tran2inca;
 		ebp += tran2incb;
-		i3 = ((uint8_t  *)tran2bufa)[i1];
-		i4 = ((uint8_t  *)tran2bufb)[i2];
-		if (i3 == 255) { // skipdraw1
-			if (i4 != 255) { // skipdraw3
-				uint16_t val;
-				val = tran2pal_ecx[i4];
-				val |= (((uint8_t  *)i6)[tran2edi1]<<8);
+		i3 = ((uint8_t *)tran2bufa)[i1];
+		i4 = ((uint8_t *)tran2bufb)[i2];
+		if (i3 == TRANSPARENT_COLOR) {
+			if (i4 != TRANSPARENT_COLOR) {
+				uint16_t val = tran2pal_ecx[i4];
+				val |= (((uint8_t *)i6)[tran2edi1]<<8);
 
-				if (transrev) 
+				if (local_transrev)
 					val = ((val>>8)|(val<<8));
 
 #if RENDER_LIMIT_PIXELS
 				if (pixelsAllowed-- > 0)
 #endif
-					((uint8_t  *)i6)[tran2edi1] = transluc[val];
+					((uint8_t *)i6)[tran2edi1] = transluc[val];
 			}
-		} else if (i4 == 255) { // skipdraw2
-			uint16_t val;
-			val = tran2pal_ebx[i3];
-			val |= (((uint8_t  *)i6)[tran2edi]<<8);
+		} else if (i4 == TRANSPARENT_COLOR) {
+			uint16_t val = tran2pal_ebx[i3];
+			val |= (((uint8_t *)i6)[tran2edi]<<8);
 
-			if (transrev) 
-                val = ((val>>8)|(val<<8));
+			if (local_transrev)
+				val = ((val>>8)|(val<<8));
 
 #if RENDER_LIMIT_PIXELS
 			if (pixelsAllowed-- > 0)
 #endif
-				((uint8_t  *)i6)[tran2edi] = transluc[val];
+				((uint8_t *)i6)[tran2edi] = transluc[val];
 		} else {
-			uint16_t l = ((uint8_t  *)i6)[tran2edi]<<8;
-			uint16_t r = ((uint8_t  *)i6)[tran2edi1]<<8;
+			uint16_t l = ((uint8_t *)i6)[tran2edi]<<8;
+			uint16_t r = ((uint8_t *)i6)[tran2edi1]<<8;
 			l |= tran2pal_ebx[i3];
 			r |= tran2pal_ecx[i4];
-			if (transrev) {
+			if (local_transrev) {
 				l = ((l>>8)|(l<<8));
 				r = ((r>>8)|(r<<8));
 			}
@@ -358,15 +361,15 @@ OF_FASTTEXT void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4
 			if (pixelsAllowed-- > 0)
 #endif
 			{
-				((uint8_t  *)i6)[tran2edi] = transluc[l];
-				((uint8_t  *)i6)[tran2edi1] =transluc[r];
+				((uint8_t *)i6)[tran2edi] = transluc[l];
+				((uint8_t *)i6)[tran2edi1] = transluc[r];
 #if RENDER_LIMIT_PIXELS
 				pixelsAllowed--;
 #endif
 			}
 		}
-		i6 += bytesperline;
-	} while (i6 > i6 - bytesperline);
+		i6 += local_bpl;
+	} while (i6 > prev_i6);  /* original x86 used carry flag from add; detect unsigned wrap */
 	asm1 = i5;
 	asm2 = ebp;
 } 
@@ -374,16 +377,17 @@ OF_FASTTEXT void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4
 
 
 static OF_FASTDATA uint8_t  machmv;
-OF_FASTTEXT int32_t mvlineasm1(int32_t vince, const uint8_t* palookupoffse, int32_t i3, int32_t vplce, const uint8_t* texture, uint8_t  *dest)
+OF_FASTTEXT int32_t mvlineasm1(int32_t vince, const uint8_t * restrict palookupoffse, int32_t i3, int32_t vplce, const uint8_t * restrict texture, uint8_t * restrict dest)
 {
-    uint32_t temp;
+    const uint8_t local_shift = machmv;
+    const int32_t local_bpl = bytesperline;
 
     for(;i3>=0;i3--)
     {
-		temp = ((uint32_t)vplce) >> machmv;
+		uint32_t temp = ((uint32_t)vplce) >> local_shift;
 	    temp = texture[temp];
 
-	    if (temp != 255) 
+	    if (temp != TRANSPARENT_COLOR)
 		{
 #if RENDER_LIMIT_PIXELS
 			if (pixelsAllowed-- > 0)
@@ -392,32 +396,33 @@ OF_FASTTEXT int32_t mvlineasm1(int32_t vince, const uint8_t* palookupoffse, int3
 		}
 
 	    vplce += vince;
-	    dest += bytesperline;
+	    dest += local_bpl;
     }
     return vplce;
 }
 
 
+/* Setup-only: not in BRAM (cold path) */
 void setupvlineasm(int32_t i1)
 {
     mach3_al = (i1&0x1f);
 }
 
-//FCS This is used to fill the inside of a wall (so it draws VERTICAL column, always).
-OF_FASTTEXT void vlineasm4(int32_t columnIndex, uint8_t* framebuffer)
+OF_FASTTEXT void vlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
 {
 	if (!RENDER_DRAW_WALL_INSIDE)
 		return;
 
+	const uint8_t local_shift = mach3_al;
+	const int32_t local_bpl = bytesperline;
 	int i;
-	uint32_t temp;
-    uint32_t index = 0;
-    uint32_t length = ylookup[columnIndex];
+	uint32_t index = 0;
+	const uint32_t length = ylookup[columnIndex];
 
 	do {
 		for (i = 0; i < 4; i++)
 		{
-			temp = ((uint32_t)vplce[i]) >> mach3_al;
+			uint32_t temp = ((uint32_t)vplce[i]) >> local_shift;
 			temp = (((uint8_t*)(bufplce[i]))[temp]);
 
 #if RENDER_LIMIT_PIXELS
@@ -427,23 +432,24 @@ OF_FASTTEXT void vlineasm4(int32_t columnIndex, uint8_t* framebuffer)
 
 			vplce[i] += vince[i];
 		}
-		index += bytesperline;
+		index += local_bpl;
 	} while (index < length);
 }
 
-
+/* Setup-only: not in BRAM (cold path) */
 void setupmvlineasm(int32_t i1)
 {
     //Only keep 5 first bits
     machmv = (i1&0x1f);
 }
 
-OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t* framebuffer)
+OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
 {
+    const uint8_t local_shift = machmv;
+    const int32_t local_bpl = bytesperline;
     int i;
-    uint32_t temp;
 	uint32_t index = 0;
-	uint32_t length = ylookup[columnIndex];
+	const uint32_t length = ylookup[columnIndex];
 
     do {
 
@@ -454,10 +460,9 @@ OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t* framebuffer)
 
         for (i = 0; i < 4; i++)
         {
-			
-	      temp = ((uint32_t)vplce[i]) >> machmv;
+	      uint32_t temp = ((uint32_t)vplce[i]) >> local_shift;
 	      temp = (((uint8_t *)(bufplce[i]))[temp]);
-	      if (temp != 255)
+	      if (temp != TRANSPARENT_COLOR)
 		  {
 #if RENDER_LIMIT_PIXELS
 			  if (pixelsAllowed-- > 0)
@@ -466,7 +471,7 @@ OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t* framebuffer)
 		  }
 	      vplce[i] += vince[i];
         }
-        index += bytesperline;
+        index += local_bpl;
 
     } while (index < length);
 } 
@@ -480,6 +485,7 @@ OF_FASTDATA uint32_t tsmach_eax1;
 OF_FASTDATA uint32_t adder;
 OF_FASTDATA uint32_t tsmach_eax3;
 OF_FASTDATA uint32_t tsmach_ecx;
+/* Setup-only: not in BRAM (cold path) */
 void tsetupspritevline(const uint8_t * palette, int32_t i2, int32_t i3, int32_t i4, int32_t i5)
 {
 	tspal = palette;
@@ -492,38 +498,38 @@ void tsetupspritevline(const uint8_t * palette, int32_t i2, int32_t i3, int32_t 
 /*
  FCS: Draw a sprite vertical line of pixels.
  */
-OF_FASTTEXT void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t i4, const uint8_t  * texture, uint8_t  * dest)
+OF_FASTTEXT void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t i4, const uint8_t * restrict texture, uint8_t * restrict dest)
 {
-    uint8_t colorIndex;
-    
+    const int32_t local_bpl = bytesperline;
+    const int local_transrev = transrev;
+
 	while (numPixels)
 	{
 		numPixels--;
-        
+
 		if (numPixels != 0)
 		{
-			
+			uint8_t colorIndex;
+
 			i4 += tsmach_ecx;
-            
-			if (i4 < (i4 - tsmach_ecx)) 
+
+			if (i4 < (i4 - tsmach_ecx))
                 adder = tsmach_eax3;
-            
+
 			colorIndex = *texture;
-            
+
 			i2 += tsmach_eax1;
-			if (i2 < (i2 - tsmach_eax1)) 
+			if (i2 < (i2 - tsmach_eax1))
                 texture++;
-            
+
 			texture += adder;
-			
-            //255 is the index of the transparent color: Do not draw it.
-			if (colorIndex != 255)
+
+			if (colorIndex != TRANSPARENT_COLOR)
 			{
-				uint16_t val;
-				val = tspal[colorIndex];
+				uint16_t val = tspal[colorIndex];
 				val |= (*dest)<<8;
 
-				if (transrev) 
+				if (local_transrev)
 					val = ((val>>8)|(val<<8));
 
 				colorIndex = transluc[val];
@@ -533,18 +539,12 @@ OF_FASTTEXT void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t 
 #endif
 					*dest = colorIndex;
 			}
-            
-            //Move down one pixel on the framebuffer
-			dest += bytesperline;
-		}
 
-		
+			dest += local_bpl;
+		}
 	}
 } 
 /* END---------------  SPRITE RENDERING METHOD (USED TO BE HIGHLY OPTIMIZED ASSEMBLY) ----------------------------*/
-
-
-
 
 
 
@@ -589,40 +589,42 @@ void mhline(uint8_t  * texture, int32_t i2, int32_t numPixels, int32_t i4, int32
 
 static OF_FASTDATA uint8_t  mshift_al = 26;
 static OF_FASTDATA uint8_t  mshift_bl = 6;
-OF_FASTTEXT void mhlineskipmodify( uint32_t i2, int32_t numPixels, int32_t i5, uint8_t* dest)
+OF_FASTTEXT void mhlineskipmodify( uint32_t i2, int32_t numPixels, int32_t i5, uint8_t * restrict dest)
 {
-    uint32_t ebx;
-    int32_t colorIndex;
-    
+    const uint8_t local_shift_al = mshift_al;
+    const uint8_t local_shift_bl = mshift_bl;
+    const uint8_t * restrict local_texture = textureData;
+    const uint8_t * restrict local_pal = mmach_asm3;
+    const int32_t local_asm1 = mmach_asm1;
+    const int32_t local_asm2 = mmach_asm2;
+
     while (numPixels >= 0)
     {
-	    ebx = i2 >> mshift_al;
-	    ebx = shld (ebx, (uint32_t)i5, mshift_bl);
-	    colorIndex = textureData[ebx];
+	    uint32_t ebx = i2 >> local_shift_al;
+	    ebx = shld(ebx, (uint32_t)i5, local_shift_bl);
+	    int32_t colorIndex = local_texture[ebx];
 
-        //Skip transparent color.
-		if ((colorIndex&0xff) != 0xff){
+		if ((colorIndex&0xff) != TRANSPARENT_COLOR){
 #if RENDER_LIMIT_PIXELS
             if (pixelsAllowed-- > 0)
 #endif
-				*dest = mmach_asm3[colorIndex];
+				*dest = local_pal[colorIndex];
         }
-	    i2 += mmach_asm1;
-	    i5 += mmach_asm2;
+	    i2 += local_asm1;
+	    i5 += local_asm2;
 	    dest++;
 	    numPixels--;
-
-		
     }
 }
 
 
+/* Setup-only: not in BRAM (cold path) */
 void msethlineshift(int32_t i1, int32_t i2)
 {
     i1 = 256-i1;
     mshift_al = (i1&0x1f);
     mshift_bl = (i2&0x1f);
-} /* msethlineshift */
+}
 
 
 static OF_FASTDATA uint8_t * tmach_eax;
@@ -641,21 +643,28 @@ void thline(uint8_t  * i1, int32_t i2, int32_t i3, int32_t i4, int32_t i5, uint8
 
 static OF_FASTDATA uint8_t  tshift_al = 26;
 static OF_FASTDATA uint8_t  tshift_bl = 6;
-OF_FASTTEXT void thlineskipmodify(int32_t i1, uint32_t i2, uint32_t i3, int32_t i4, int32_t i5, uint8_t * i6)
+OF_FASTTEXT void thlineskipmodify(int32_t i1, uint32_t i2, uint32_t i3, int32_t i4, int32_t i5, uint8_t * restrict i6)
 {
-    uint32_t ebx;
+    const uint8_t local_shift_al = tshift_al;
+    const uint8_t local_shift_bl = tshift_bl;
+    const uint8_t * restrict local_tex = tmach_eax;
+    const uint8_t * restrict local_pal = tmach_asm3;
+    const int32_t local_asm1 = tmach_asm1;
+    const int32_t local_asm2 = tmach_asm2;
+    const int local_transrev = transrev;
     int counter = (i3>>16);
+
     while (counter >= 0)
     {
-	    ebx = i2 >> tshift_al;
-	    ebx = shld (ebx, (uint32_t)i5, tshift_bl);
-	    i1 = tmach_eax[ebx];
-	    if ((i1&0xff) != 0xff)
+	    uint32_t ebx = i2 >> local_shift_al;
+	    ebx = shld(ebx, (uint32_t)i5, local_shift_bl);
+	    i1 = local_tex[ebx];
+	    if ((i1&0xff) != TRANSPARENT_COLOR)
 	    {
-		    uint16_t val = tmach_asm3[i1];
+		    uint16_t val = local_pal[i1];
 		    val |= (*i6)<<8;
 
-		    if (transrev) 
+		    if (local_transrev)
 				val = ((val>>8)|(val<<8));
 
 #if RENDER_LIMIT_PIXELS
@@ -664,16 +673,15 @@ OF_FASTTEXT void thlineskipmodify(int32_t i1, uint32_t i2, uint32_t i3, int32_t 
 			 *i6 = transluc[val];
 	    }
 
-	    i2 += tmach_asm1;
-	    i5 += tmach_asm2;
+	    i2 += local_asm1;
+	    i5 += local_asm2;
 	    i6++;
 	    counter--;
-
-		
     }
 } 
 
 
+/* Setup-only: not in BRAM (cold path) */
 void tsethlineshift(int32_t i1, int32_t i2)
 {
     i1 = 256-i1;
@@ -691,6 +699,7 @@ static OF_FASTDATA uint8_t  slopemach_ah1;
 static OF_FASTDATA uint8_t  slopemach_ah2;
 static OF_FASTDATA float asm2_f;
 typedef union { unsigned int i; float f; } bitwisef2i;
+/* Setup-only: not in BRAM (cold path) */
 void setupslopevlin(int32_t i1, intptr_t i2, int32_t i3)
 {
     bitwisef2i c;

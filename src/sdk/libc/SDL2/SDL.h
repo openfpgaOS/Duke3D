@@ -24,6 +24,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>
+#include <unistd.h>
 
 /* ======================================================================
  * Version / Constants
@@ -621,7 +623,8 @@ SDL_GameControllerGetStringForButton(SDL_GameControllerButton b) {
  * Timer
  * ====================================================================== */
 
-static inline uint32_t SDL_GetTicks(void) { return clock_ms(); }
+extern uint32_t of_time_ms(void);
+static inline uint32_t SDL_GetTicks(void) { return of_time_ms(); }
 static inline void SDL_Delay(uint32_t ms) { usleep(ms * 1000); }
 
 /* ======================================================================

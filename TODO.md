@@ -97,9 +97,9 @@ Total platform-specific code: ~1,800 lines across 8 files, plus ~200 lines of
   `tshift_*`, `slopemach_*`, `asm2_f`, `transrev`
 
 ### Usage
-- .app_fasttext: 17,126 bytes (16.7KB) — code
-- .app_fastdata: 8,304 bytes (8.1KB) — data
-- Total: 25,430 bytes (48% of 51KB BRAM)
+- .app_fasttext: 17,186 bytes (16.8KB) — code
+- .app_fastdata: 112 bytes — data
+- Total: 17,298 bytes (33% of 51KB BRAM)
 
 ---
 

@@ -133,6 +133,18 @@ static inline void of_mixer_set_voice_raw(int voice, uint32_t rate_fp16,
     __of_syscall4(OF_SYS_MIXER_SET_VOICE_RAW, voice, (long)rate_fp16, vol_l, vol_r);
 }
 
+/* Set volume ramp speed. 0=instant, 1=fast (~5ms full sweep),
+ * higher values = slower ramp. Default is 1 after of_mixer_play. */
+static inline void of_mixer_set_vol_rate(int voice, int rate) {
+    __of_syscall2(OF_SYS_MIXER_SET_VOL_RATE, voice, rate);
+}
+
+/* Poll for ended voices. Returns bitmask of voices that finished
+ * since last poll. Clears hardware IRQ bits. */
+static inline uint32_t of_mixer_poll_ended(void) {
+    return (uint32_t)__of_syscall0(OF_SYS_MIXER_POLL_ENDED);
+}
+
 /* Allocate sample memory from kernel-managed pool.
  * Returns pointer to write sample data into, or NULL if full.
  * Pass the returned pointer to of_mixer_play(). */
@@ -196,6 +208,10 @@ static inline void of_mixer_set_voice_raw(int voice, uint32_t rate_fp16,
                                           int vol_l, int vol_r) {
     (void)voice; (void)rate_fp16; (void)vol_l; (void)vol_r;
 }
+static inline void of_mixer_set_vol_rate(int voice, int rate) {
+    (void)voice; (void)rate;
+}
+static inline uint32_t of_mixer_poll_ended(void) { return 0; }
 static inline void *of_mixer_alloc_samples(size_t size) { return malloc(size); }
 static inline void of_mixer_free_samples(void) { /* no-op on PC */ }
 

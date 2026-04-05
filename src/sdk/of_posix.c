@@ -17,6 +17,9 @@
 
 #define JT ((const struct of_libc_table *)OF_LIBC_ADDR)
 
+/* Matches struct stat in libc_include/sys/stat.h */
+struct _of_stat { uint32_t st_size; uint32_t st_mode; uint32_t st_mtime; };
+
 /* ======================================================================
  * POSIX I/O -- routed through musl via jump table
  * musl handles _llseek on riscv32 correctly.
@@ -26,7 +29,7 @@ int open(const char *path, int flags, ...) { return JT->open(path, flags); }
 int close(int fd)                          { return JT->close(fd); }
 int read(int fd, void *buf, unsigned int count)        { return JT->read(fd, buf, count); }
 int write(int fd, const void *buf, unsigned int count)  { return JT->write(fd, buf, count); }
-long long lseek(int fd, long long offset, int whence) { return JT->lseek(fd, offset, whence); }
+long lseek(int fd, long offset, int whence) { return JT->lseek(fd, offset, whence); }
 
 /* ======================================================================
  * Libc linkable symbols -- forwarding to jump table
@@ -114,7 +117,49 @@ int snprintf(char *buf, unsigned int sz, const char *fmt, ...) {
 int getchar(void)              { return -1; }
 char *strerror(int n)          { (void)n; return "error"; }
 int unlink(const char *p)      { (void)p; return -1; }
-int mkdir(const char *p, int m){ (void)p; (void)m; return -1; }
+
+/* access: try to open the file; if it succeeds, it exists */
+int access(const char *path, int mode) {
+    (void)mode;
+    int fd = JT->open(path, 0);
+    if (fd < 0) return -1;
+    JT->close(fd);
+    return 0;
+}
+
+/* exit/abort handled in stdlib.h via ecall(93) → kernel switches to terminal FB */
+int mkdir(const char *p, int m){ (void)p; (void)m; return 0; }
+
+/* stat/fstat: use lseek to determine file size.
+ * No ecall — uses the JT functions which are known working. */
+int stat(const char *path, struct _of_stat *buf) {
+    int fd = JT->open(path, 0);
+    if (fd < 0) return -1;
+    /* Save pos, seek end, restore — all through musl's lseek */
+    long long sz = JT->lseek(fd, 0, 2);  /* SEEK_END */
+    JT->close(fd);
+    if (buf) {
+        buf->st_size = (sz > 0) ? (unsigned int)sz : 0;
+        buf->st_mode = 0100644;
+        buf->st_mtime = 0;
+    }
+    return 0;
+}
+
+int fstat(int fd, struct _of_stat *buf) {
+    if (fd < 0) return -1;
+    /* For fstat, save current position, seek to end, restore */
+    long long pos = JT->lseek(fd, 0, 1);  /* SEEK_CUR */
+    long long sz  = JT->lseek(fd, 0, 2);  /* SEEK_END */
+    if (pos >= 0)
+        JT->lseek(fd, pos, 0);            /* SEEK_SET restore */
+    if (buf) {
+        buf->st_size = (sz > 0) ? (unsigned int)sz : 0;
+        buf->st_mode = 0100644;
+        buf->st_mtime = 0;
+    }
+    return 0;
+}
 void *alloca(unsigned int sz)  { return __builtin_alloca(sz); }
 int min(int a, int b)          { return a < b ? a : b; }
 int max(int a, int b)          { return a > b ? a : b; }
@@ -127,6 +172,9 @@ int abs(int x)                 { return x < 0 ? -x : x; }
 #include "of_syscall.h"
 #include "of_syscall_numbers.h"
 
+void of_print(const char *s) {
+    while (*s) __of_syscall1(OF_SYS_TERM_PUTCHAR, *s++);
+}
 
 unsigned int of_time_us(void) {
     return (unsigned int)__of_syscall0(OF_SYS_TIMER_GET_US);
@@ -134,4 +182,39 @@ unsigned int of_time_us(void) {
 
 unsigned int of_time_ms(void) {
     return (unsigned int)__of_syscall0(OF_SYS_TIMER_GET_MS);
+}
+
+/* ======================================================================
+ * POSIX time functions — ecall to kernel clock_gettime/nanosleep
+ * ====================================================================== */
+
+struct timespec { unsigned int tv_sec; long tv_nsec; };
+
+int clock_gettime(int clk_id, struct timespec *tp) {
+    unsigned int us = (unsigned int)__of_syscall0(OF_SYS_TIMER_GET_US);
+    if (tp) {
+        tp->tv_sec  = us / 1000000;
+        tp->tv_nsec = (us % 1000000) * 1000;
+    }
+    (void)clk_id;
+    return 0;
+}
+
+int clock_nanosleep(int clk_id, int flags, const struct timespec *req,
+                    struct timespec *rem) {
+    (void)clk_id; (void)flags; (void)rem;
+    if (!req) return -1;
+    unsigned int us = (unsigned int)(req->tv_sec * 1000000 + req->tv_nsec / 1000);
+    __of_syscall1(OF_SYS_TIMER_DELAY_US, us);
+    return 0;
+}
+
+unsigned int usleep(unsigned int us) {
+    __of_syscall1(OF_SYS_TIMER_DELAY_US, us);
+    return 0;
+}
+
+unsigned int sleep(unsigned int sec) {
+    __of_syscall1(OF_SYS_TIMER_DELAY_US, sec * 1000000);
+    return 0;
 }

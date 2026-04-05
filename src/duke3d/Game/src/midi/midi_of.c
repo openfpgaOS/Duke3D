@@ -24,7 +24,7 @@ static int  midi_volume = 255;       /* 0-255, maps to of_midi 0-255 */
 static int  midi_looping = 0;
 
 /* Buffer for loaded MIDI data (largest Duke3D MIDI is ~60KB) */
-#define MIDI_BUF_SIZE (128 * 1024)
+#define MIDI_BUF_SIZE (64 * 1024)
 static uint8_t midi_buffer[MIDI_BUF_SIZE];
 static uint32_t midi_buffer_len = 0;
 
@@ -226,12 +226,11 @@ void MUSIC_RegisterTimbreBank(uint8_t *timbres)
     memcpy(converted_bank, of_midi_builtin_bank(),
            175 * OF_MIDI_INST_SIZE);
 
-    /* Parse TMB records: each is 13 bytes */
-    /* The TMB file from loadtmb() has known length in tmb_bank,
-     * but we don't receive the length here. Scan until we hit
-     * an invalid instrument number or exhaust 8000 bytes. */
+    /* Parse TMB records: each is 13 bytes.
+     * Scan until we hit an invalid instrument number or exhaust the bank. */
+    #define TMB_BANK_MAX_SIZE 8000
     uint8_t *p = timbres;
-    uint8_t *end = timbres + 8000;  /* tmb_bank is 8000 bytes max */
+    uint8_t *end = timbres + TMB_BANK_MAX_SIZE;
 
     while (p + 13 <= end) {
         int inst_num = p[0];

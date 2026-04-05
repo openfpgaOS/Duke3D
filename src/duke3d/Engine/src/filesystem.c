@@ -109,7 +109,9 @@ int32_t initgroupfile(const char  *filename)
 	archive->fileDescriptor = open(filename,O_BINARY|O_RDONLY,S_IREAD);
 
     if (archive->fileDescriptor < 0){
-        while(1) {}
+        printf("initgroupfile: open(\"%s\") failed (fd=%d)\n",
+               filename, archive->fileDescriptor);
+        return -1;
     }
 
     read(archive->fileDescriptor, buf, 16);
@@ -119,7 +121,11 @@ int32_t initgroupfile(const char  *filename)
         (buf[3] != 'S') || (buf[4] != 'i') || (buf[5] != 'l') ||
         (buf[6] != 'v') || (buf[7] != 'e') || (buf[8] != 'r') ||
         (buf[9] != 'm') || (buf[10] != 'a') || (buf[11] != 'n')){
-        while(1) {}
+        printf("initgroupfile: bad GRP magic in \"%s\" "
+               "(got %02x %02x %02x %02x ...)\n",
+               filename, buf[0], buf[1], buf[2], buf[3]);
+        close(archive->fileDescriptor);
+        return -1;
     }
 
     // Read numFiles safely (byte-by-byte to avoid alignment issues)

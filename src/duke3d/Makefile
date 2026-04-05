@@ -59,7 +59,13 @@ SDK_DIR = ../sdk
 CFLAGS += -DOPENFPGA -DUNIX
 CFLAGS += -IEngine/src -IGame/src -IGame/src/audiolib -I.
 CFLAGS += -fno-strict-aliasing -fcommon
-CFLAGS += -std=gnu11 -w -Wno-error -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-function-declaration
+CFLAGS += -std=gnu11 -Wno-error -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-function-declaration
+CFLAGS += -Wno-unused-parameter -Wno-sign-compare -Wno-unused-variable -Wno-missing-field-initializers
+CFLAGS += -Wno-implicit-fallthrough -Wno-misleading-indentation -Wno-pointer-sign
+CFLAGS += -Wno-unused-but-set-variable -Wno-tautological-compare -Wno-char-subscripts
+CFLAGS += -Wno-address -Wno-array-bounds -Wno-aggressive-loop-optimizations
+CFLAGS += -Wno-discarded-qualifiers -Wno-unused-function -Wno-array-parameter
+CFLAGS += -Wno-maybe-uninitialized -Wno-empty-body
 
 # ── SDK build rules ──────────────────────────────────────────────
 include $(SDK_DIR)/sdk.mk
