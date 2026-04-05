@@ -6,6 +6,8 @@ void test_mixer(void) {
 
     /* Init mixer: 4 voices, 48kHz output */
     of_mixer_init(4, 48000);
+    of_mixer_stop_all();
+    of_mixer_poll_ended();  /* drain stale ended flags from previous run */
     test_pass("init");
 
     /* Generate a short 16-bit signed mono PCM tone (~50ms at 11025Hz) */
@@ -26,8 +28,11 @@ void test_mixer(void) {
     int voice = of_mixer_play((const uint8_t *)sample_buf, MIX_TONE_LEN, 11025, 0, 128);
     ASSERT("play", voice >= 0);
 
-    /* Wait for playback to finish (~50ms tone) */
-    usleep(100 * 1000);
+    /* Wait for playback to finish (~50ms tone) + pump to process */
+    for (int i = 0; i < 10; i++) {
+        of_mixer_pump();
+        usleep(15 * 1000);
+    }
 
     /* Check voice ended via poll_ended */
     uint32_t ended = of_mixer_poll_ended();
