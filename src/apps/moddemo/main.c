@@ -257,7 +257,7 @@ static void play_note(int ch, mod_note_t *n) {
              * but 8-bit support is in the new FPGA. */
             c->voice = of_mixer_play((const uint8_t *)mod.sample_data[si],
                                      s->length, AMIGA_CLOCK / (n->period * 2),
-                                     0, c->volume * 4);
+                                     0, c->volume * 255 / 64);
 
             if (c->voice >= 0) {
                 /* Set up loop if sample has one */
