@@ -267,6 +267,10 @@ static void play_note(int ch, mod_note_t *n) {
 
                 /* Apply channel pan */
                 of_mixer_set_pan(c->voice, c->pan);
+
+                /* Hardware volume ramp — smooths volume changes
+                 * and note on/off transitions at 48kHz */
+                of_mixer_set_vol_rate(c->voice, 8);
             }
         }
     } else if (n->period > 0 && n->effect == 0x3) {
