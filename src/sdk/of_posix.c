@@ -210,3 +210,74 @@ unsigned int sleep(unsigned int sec) {
     __of_syscall1(OF_SYS_TIMER_DELAY_US, sec * 1000000);
     return 0;
 }
+
+/* ======================================================================
+ * Directory operations — opendir/readdir/closedir via Linux syscalls
+ * ====================================================================== */
+
+#include <dirent.h>
+
+/* Linux RISC-V syscall numbers */
+#define _SYS_openat      56
+#define _SYS_close        57
+#define _SYS_getdents64   61
+
+/* O_RDONLY | O_DIRECTORY on riscv-linux */
+#define _O_DIRECTORY 0200000
+
+/* Linux getdents64 on-disk record layout */
+struct linux_dirent64 {
+    uint64_t       d_ino;
+    int64_t        d_off;
+    unsigned short d_reclen;
+    unsigned char  d_type;
+    char           d_name[];
+};
+
+static DIR __dir_buf;  /* single static DIR (no malloc needed) */
+
+DIR *opendir(const char *name) {
+    /* SYS_openat(AT_FDCWD, path, O_RDONLY|O_DIRECTORY, 0) */
+    int fd = (int)__of_syscall4(_SYS_openat, -100, (long)name, _O_DIRECTORY, 0);
+    if (fd < 0) return 0;
+    __dir_buf.__fd = fd;
+    __dir_buf.__buf_pos = 0;
+    __dir_buf.__buf_len = 0;
+    return &__dir_buf;
+}
+
+static struct dirent __de_buf;
+
+struct dirent *readdir(DIR *dirp) {
+    if (!dirp) return 0;
+
+    /* Refill buffer if exhausted */
+    if (dirp->__buf_pos >= dirp->__buf_len) {
+        long n = __of_syscall3(_SYS_getdents64, dirp->__fd,
+                               (long)dirp->__buf, sizeof(dirp->__buf));
+        if (n <= 0) return 0;
+        dirp->__buf_len = (int)n;
+        dirp->__buf_pos = 0;
+    }
+
+    /* Parse linux_dirent64 from buffer */
+    struct linux_dirent64 *lde =
+        (struct linux_dirent64 *)(dirp->__buf + dirp->__buf_pos);
+    dirp->__buf_pos += lde->d_reclen;
+
+    /* Copy to our dirent */
+    __de_buf.d_ino = (unsigned long)lde->d_ino;
+    int i = 0;
+    while (lde->d_name[i] && i < 255) {
+        __de_buf.d_name[i] = lde->d_name[i];
+        i++;
+    }
+    __de_buf.d_name[i] = '\0';
+    __de_buf.d_namlen = (unsigned short)i;
+    return &__de_buf;
+}
+
+int closedir(DIR *dirp) {
+    if (!dirp) return -1;
+    return (int)__of_syscall1(_SYS_close, dirp->__fd);
+}
