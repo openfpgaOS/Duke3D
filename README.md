@@ -169,7 +169,7 @@ CXXFLAGS = -std=c++17
 Test on your computer with SDL2:
 
 ```bash
-make pc
+make test
 ./app_pc
 ```
 
@@ -716,7 +716,7 @@ make core --target mister              # future: MiSTer
 | `make debug` | Build, push via UART, stream console |
 | `make copy` | Copy to Pocket SD card |
 | `make package` | Package core into a ZIP |
-| `make pc` | Build SDL2 desktop version |
+| `make test` | Test on desktop (SDL2) |
 | `make clean` | Remove build artifacts |
 
 ### From the demos directory (`src/apps/`)

@@ -64,7 +64,7 @@ Auto-detects the SD card, copies the openfpgaOS runtime + your app, and creates 
 If you have SDL2 installed:
 
 ```bash
-make pc
+make test
 ./app_pc
 ```
 
@@ -116,7 +116,7 @@ From `src/mygame/`:
 | `make debug` | Build, push via UART, stream console |
 | `make copy` | Copy to Pocket SD card |
 | `make package` | Create distributable ZIP |
-| `make pc` | Build SDL2 desktop version |
+| `make test` | Test on desktop (SDL2) |
 | `make clean` | Remove build artifacts |
 
 ## instance.json

@@ -81,7 +81,7 @@ cat > "$APP_DIR/Makefile" << 'MKEOF'
 #   make debug       Build, push via UART, stream console
 #   make copy     Copy to hardware (auto-detects SD card)
 #   make package    Create distributable ZIP
-#   make pc         Build for desktop (SDL2)
+#   make test       Test on desktop (SDL2)
 #   make clean      Remove build artifacts
 #
 
@@ -132,12 +132,12 @@ copy: all
 package: all
 	@$(ROOT)/scripts/package.sh $(APP)
 
-pc: app_pc
+test: app_pc
 
 clean: sdk-clean
 	rm -rf $(OUT)
 
-.PHONY: all release debug copy package pc clean
+.PHONY: all release debug copy package test clean
 MKEOF
 
 # Fill in placeholders
@@ -151,7 +151,7 @@ cat > "$APP_DIR/main.c" << 'CEOF'
  *
  * Build:   make
  * Copy:  make copy
- * PC test: make pc
+ * Test: make test
  */
 
 #include "of.h"
@@ -199,6 +199,6 @@ echo
 echo "  cd src/$APP_LOWER"
 echo "  make              # build"
 echo "  make copy       # copy to Pocket SD card"
-echo "  make pc           # test on desktop (SDL2)"
+echo "  make test          # test on desktop (SDL2)"
 echo
 echo "Edit main.c to start building your app."
