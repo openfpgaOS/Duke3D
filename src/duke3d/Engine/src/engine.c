@@ -3513,11 +3513,11 @@ static void loadtables(void)
 
         if ((fil = TCkopen4load("tables.dat",0)) != -1)
         {
-            for (i = 0; i < 2048; i++)
-                kread16(fil,&sintable[i]);
+            /* Bulk reads — RISC-V is little-endian, no byte swap needed.
+             * Avoids 2688 individual bridge round-trips. */
+            kread(fil, sintable, 2048 * sizeof(short));
 
-            for (i = 0; i < 640; i++)
-                kread16(fil,&radarang[i]);
+            kread(fil, radarang, 640 * sizeof(short));
 
             for(i=0; i<640; i++) radarang[1279-i] = -radarang[i];
             kread(fil,textfont,1024);
@@ -3611,9 +3611,9 @@ static void loadpalette(void)
 
     kread(fil,palookup[globalpal],numpalookups<<8);
 
-    /*kread(fil,transluc,65536);*/
-    for (k = 0; k < (65536 / 4); k++)
-        kread32(fil, ((int32_t *) transluc) + k);
+    /* Bulk read — RISC-V is little-endian so no byte swap needed.
+     * Avoids 16384 individual bridge round-trips. */
+    kread(fil, transluc, 65536);
 
     kclose(fil);
 

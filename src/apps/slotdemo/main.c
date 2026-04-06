@@ -31,6 +31,7 @@ int main(void) {
         if (stat(e->d_name, &st) == 0)
             sz = (long)st.st_size;
         printf("  slot %d: %-12s %7ld B\n", slot, e->d_name, sz);
+
         count++;
     }
     closedir(d);

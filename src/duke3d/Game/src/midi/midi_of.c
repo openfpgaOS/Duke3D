@@ -222,10 +222,19 @@ void MUSIC_RegisterTimbreBank(uint8_t *timbres)
     if (!timbres || !midi_initialized)
         return;
 
-    /* Use the kernel's built-in GM bank as-is.  We can't read it back
-     * to merge TMB overrides (no of_midi_builtin_bank() yet), but the
-     * built-in bank is a good match — TMB patches are minor tweaks. */
-    of_midi_load_bank(NULL);
+    /* Start from built-in GM bank, overlay Duke3D TMB patches */
+    memcpy(converted_bank, of_midi_builtin_bank(), 175 * OF_MIDI_INST_SIZE);
+
+    uint8_t *p = timbres;
+    uint8_t *end = timbres + 8000;
+    while (p + 13 <= end) {
+        int inst = p[0];
+        if (inst >= 175) break;
+        memcpy(&converted_bank[inst * OF_MIDI_INST_SIZE], &p[1], OF_MIDI_INST_SIZE);
+        p += 13;
+    }
+
+    of_midi_load_bank(converted_bank);
 }
 
 /* ---- PlayMusic: load MIDI from GRP and play ------------------------ */
@@ -235,8 +244,11 @@ void PlayMusic(char *fileName)
     if (!midi_initialized)
         return;
 
-    /* Stop any currently playing song */
+    /* Stop any currently playing song and re-apply TMB bank
+     * (of_midi_stop/play may reset to built-in bank) */
     of_midi_stop();
+    if (converted_bank[0] != 0)
+        of_midi_load_bank(converted_bank);
 
     /* Load MIDI file from GRP */
     short fp = TCkopen4load(fileName, 0);

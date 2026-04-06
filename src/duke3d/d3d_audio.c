@@ -122,14 +122,14 @@ void d3d_audio_init(void)
     memset(decoded, 0, sizeof(decoded));
     audio_initialized = 1;
 
-    /* Start timer for MIDI + voice completion polling */
-    of_timer_set_callback(audio_timer_tick, AUDIO_TICK_HZ);
+    /* Don't use timer interrupt — it can fire during bridge syscalls
+     * and corrupt state.  MIDI + voice completion are polled from
+     * d3d_audio_pump() which runs every frame via sampletimer/nextpage. */
 }
 
 void d3d_audio_shutdown(void)
 {
     if (!audio_initialized) return;
-    of_timer_stop();
     of_mixer_stop_all();
     audio_initialized = 0;
 }
@@ -163,13 +163,21 @@ static int ensure_decoded(int num)
     if (rc < 0 || result.pcm == NULL || result.pcm_len == 0)
         return 0;
 
-    /* Allocate sample memory via kernel and copy decoded PCM */
-    uint32_t byte_len = result.pcm_len * sizeof(int16_t);
+    /* Allocate 16-bit sample memory and convert if needed */
+    uint32_t sample_count = result.pcm_len;
+    uint32_t byte_len = sample_count * sizeof(int16_t);
     int16_t *cram_ptr = (int16_t *)of_mixer_alloc_samples(byte_len);
     if (cram_ptr == NULL)
         return 0;
 
-    memcpy(cram_ptr, result.pcm, byte_len);
+    if (result.bits_per_sample == 8) {
+        /* Convert 8-bit unsigned → 16-bit signed */
+        const uint8_t *src = result.pcm;
+        for (uint32_t i = 0; i < sample_count; i++)
+            cram_ptr[i] = (int16_t)((src[i] - 128) << 8);
+    } else {
+        memcpy(cram_ptr, result.pcm, byte_len);
+    }
 
     decoded[num].pcm = cram_ptr;
     decoded[num].sample_count = result.pcm_len;
@@ -195,7 +203,7 @@ int d3d_sound_play(int num, int priority, int volume)
     int voice = of_mixer_play((const uint8_t *)decoded[num].pcm,
                               decoded[num].sample_count,
                               decoded[num].sample_rate,
-                              priority, volume / 2);
+                              priority, volume);
 
     if (voice >= 0)
         track_voice(voice, num, 0);
@@ -289,11 +297,13 @@ void d3d_audio_pump(void)
 {
     if (!audio_initialized) return;
 
-    /* Process timer-driven work */
-    if (pump_pending) {
-        pump_pending = 0;
-        of_midi_pump();
-    }
+    /* Pump MIDI multiple times to flush pending events — at low FPS
+     * events back up between frames causing note bunching.
+     * of_midi_pump uses internal timestamps so extra calls are safe. */
+    of_midi_pump();
+    of_midi_pump();
+    of_midi_pump();
+    of_midi_pump();
 
     /* Single register read: bitmask of voices that finished since last poll */
     uint32_t ended = of_mixer_poll_ended();

@@ -161,7 +161,7 @@ static void init_new_res_vars(void)
     xdim = xres = OF_DISPLAY_W;
     ydim = yres = OF_DISPLAY_H;
 
-    numpages = 1;
+    numpages = 3;  /* triple-buffered — perms must redraw into all 3 buffers */
     bytesperline = OF_DISPLAY_W;
     vesachecked = 1;
     vgacompatible = 1;
@@ -234,7 +234,7 @@ static void ensure_video_init(void) {
     if (!video_initialized) {
         video_initialized = 1;
         of_video_init();
-        of_video_set_display_mode(OF_DISPLAY_OVERLAY);
+        of_video_set_display_mode(OF_DISPLAY_FRAMEBUFFER);
         of_video_clear(0);
         of_video_palette_bulk(of_palette, 256);
         of_video_flip();

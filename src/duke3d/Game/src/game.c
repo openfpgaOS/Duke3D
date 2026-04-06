@@ -7560,10 +7560,12 @@ void Logo(void)
 			palto(0,0,0,i,true);
 
 	    totalclock = 0;
-	    printf("[Logo] animation loop\n");
+	    printf("[Logo] animation loop tc=%d\n", (int)totalclock);
 		//Animate screen (Duke picture wiht "DUKE" "NUKEM 3D" coming from far away and hitting the screen"
+	    { int _dbg = 0;
 	    while(totalclock < (860+120) && !KB_KeyWaiting())
 	    {
+	        if((_dbg++ & 63) == 0) printf("[anim] f=%d tc=%d\n", _dbg, (int)totalclock);
 	        rotatesprite(0,0,65536L,0,BETASCREEN,0,0,2+8+16+64,0,0,xdim-1,ydim-1);
 	
 	        if( totalclock > 120 && totalclock < (120+60) )
@@ -7618,6 +7620,7 @@ void Logo(void)
 	        getpackets();
 	        nextpage();
 	    }
+	    } /* end _dbg scope */
 		// FIX_00077: Menu goes directly to the "NEW GAME" sub-menu when starting new game (Turrican)
 		KB_FlushKeyboardQueue();
 		printf("[Logo] cinema done\n");
