@@ -27,7 +27,7 @@ BUILD_DIR ?= .
 OBJ_DIR   ?= $(BUILD_DIR)
 
 # ── C compiler flags ─────────────────────────────────────────────
-SDK_CFLAGS  = -march=$(ARCH) -mabi=$(ABI) -O2 -Wall -Wextra
+SDK_CFLAGS  = -march=$(ARCH) -mabi=$(ABI) -O2 -Wall -Wextra -fdiagnostics-color=always
 SDK_CFLAGS += -ffreestanding -nostdlib -nostartfiles
 SDK_CFLAGS += -ffunction-sections -fdata-sections
 SDK_CFLAGS += -fno-builtin
