@@ -1042,3 +1042,7 @@ void of_midi_load_bank(const uint8_t *bank) {
     for (int i = 0; i < OPL_CHANNELS; i++)
         M.opl_inst[i] = 0;
 }
+
+const uint8_t *of_midi_builtin_bank(void) {
+    return gm_bank;
+}

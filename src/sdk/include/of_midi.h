@@ -66,6 +66,14 @@ int  of_midi_get_volume(void);
  * 11 bytes each = 1925 bytes total).  Pass NULL to restore built-in bank. */
 void of_midi_load_bank(const uint8_t *bank);
 
+/* Get a pointer to the built-in GM instrument bank (1925 bytes, read-only).
+ * Use to merge custom patches (e.g. Duke3D TMB) over the default bank:
+ *   uint8_t merged[1925];
+ *   memcpy(merged, of_midi_builtin_bank(), 1925);
+ *   // overlay TMB patches into merged[]
+ *   of_midi_load_bank(merged); */
+const uint8_t *of_midi_builtin_bank(void);
+
 #ifdef __cplusplus
 }
 #endif
