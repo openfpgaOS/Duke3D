@@ -4,7 +4,6 @@ void test_saves(void) {
     section_start("Saves");
 
     /* Use slot 9 (last slot) to avoid clobbering real save data */
-    int slot = 9;
 
     /* Erase slot: write 256 bytes of 0xFF */
     {

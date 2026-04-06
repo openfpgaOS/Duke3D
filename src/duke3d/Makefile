@@ -63,6 +63,7 @@ OUT       = $(ROOT)/build/$(APP)
 RUNTIME   = $(ROOT)/runtime
 
 # ── Extra flags for BUILD engine ─────────────────────────────────
+CFLAGS += -O3
 CFLAGS += -DOPENFPGA -DUNIX
 CFLAGS += -IEngine/src -IGame/src -IGame/src/audiolib -I.
 CFLAGS += -fno-strict-aliasing -fcommon
@@ -78,9 +79,6 @@ CFLAGS += -Wno-maybe-uninitialized -Wno-empty-body
 .DEFAULT_GOAL := all
 
 include $(SDK_DIR)/sdk.mk
-
-$(CRT_DIR)/start.o: $(CRT_DIR)/start.S
-	$(AS) $(ASFLAGS) -c -o $@ $<
 
 all: $(OBJ_DIR)/app.elf release
 	@$(SIZE) $<

@@ -94,8 +94,8 @@ unsigned int rays = 0, prim_rays = 0;
 
 
 int main(int argc, char **argv) {
-	unsigned long rend_time, start_time;
-	static char str[256];
+	unsigned long start_time;
+	(void)argc; (void)argv;
 
 	xres = 320;
 	yres = 240;
@@ -115,9 +115,9 @@ int main(int argc, char **argv) {
     printf("rendering...\n");
 	create_scene();
 
-	start_time = clock_ms(); //get_millisec();
+	start_time = clock_ms();
 	render(xres, yres, 1);
-	rend_time = clock_ms() - start_time;
+	(void)start_time;
 
 	//memcpy(back_buffer->pixels, front_buffer->pixels, xres * yres * sizeof(uint16_t));
     //of_video_flip();
@@ -159,6 +159,7 @@ int main(int argc, char **argv) {
 
 /* render a frame of xsz/ysz dimensions into the provided framebuffer */
 void render(int xsz, int ysz, int samples) {
+	(void)samples;
 	int i, j, k, x, y;
 	uint16_t *fb16;
 	char *wbuf;
@@ -377,6 +378,7 @@ struct ray get_primary_ray(int x, int y, int sample) {
 
 
 struct vec3 get_sample_pos(int x, int y, int sample) {
+	(void)sample;
 	struct vec3 pt;
 	/*float xsz = 2.0, ysz = xres / aspect;*/
 	static float sf = 0.0;
@@ -506,6 +508,7 @@ void create_scene(void) {
 
 
 void renderbuf(int xsz, int ysz, uint16_t *fb, int samples) {
+	(void)samples;
 	int i, j, k, x, y;
 	uint16_t *fb16;
 	char *wbuf;

@@ -18,9 +18,6 @@ SRCS_CXX = $(wildcard *.cpp)
 
 include $(SDK_DIR)/sdk.mk
 
-$(CRT_DIR)/start.o: $(CRT_DIR)/start.S
-	$(AS) $(ASFLAGS) -c -o $@ $<
-
 all: $(OBJ_DIR)/app.elf
 	@$(SIZE) $<
 

@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-static int __of_errno;
+static int __attribute__((unused)) __of_errno;
 #define errno __of_errno
 
 #define ENOENT  2

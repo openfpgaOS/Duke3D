@@ -209,7 +209,7 @@ static int SCRIPT_getnexttoken (char  *buffer, char * token, int start)
 		return start;
 	}
 
-	while (iterator < 128 && !isspace (buffer[iterator]))
+	while (iterator < 128 && (iterator - start) < 127 && !isspace (buffer[iterator]))
 	{
 		token[iterator-start] = buffer[iterator];
 		iterator++;

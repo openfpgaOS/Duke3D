@@ -52,7 +52,7 @@ ALL_CXXFLAGS = $(SDK_CXXFLAGS) $(CXXFLAGS)
 # ── Linker / assembler flags ─────────────────────────────────────
 SDK_LDFLAGS  = -march=$(ARCH) -mabi=$(ABI)
 SDK_LDFLAGS += -nostdlib -nostartfiles -static
-SDK_LDFLAGS += -T $(APP_LD) -Wl,--gc-sections
+SDK_LDFLAGS += -T $(APP_LD) -Wl,--gc-sections -Wl,--no-warn-rwx-segments
 
 LDFLAGS ?=
 ALL_LDFLAGS = $(SDK_LDFLAGS) $(LDFLAGS)
