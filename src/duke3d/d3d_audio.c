@@ -34,9 +34,10 @@ static int audio_initialized = 0;
  * Per-sound cached decode: raw PCM in CRAM1
  * ================================================================ */
 typedef struct {
-    int16_t *pcm;           /* CRAM1 pointer to decoded 16-bit signed PCM */
+    uint8_t *pcm;           /* CRAM1 pointer to decoded PCM */
     uint32_t sample_count;
     uint32_t sample_rate;
+    int      is_16bit;      /* 1 = 16-bit signed, 0 = 8-bit signed */
 } decoded_sound_t;
 
 static decoded_sound_t decoded[NUM_SOUNDS];
@@ -122,9 +123,13 @@ void d3d_audio_init(void)
     memset(decoded, 0, sizeof(decoded));
     audio_initialized = 1;
 
-    /* Don't use timer interrupt — it can fire during bridge syscalls
-     * and corrupt state.  MIDI + voice completion are polled from
-     * d3d_audio_pump() which runs every frame via sampletimer/nextpage. */
+    /* No timer interrupt — pump from game loop like mididemo.
+     * Timer ISR hangs when it fires during blocking of_video_flip. */
+
+    /* Set up volume groups: SFX and music independently controllable */
+    of_mixer_set_group_volume(OF_MIXER_GROUP_SFX, 255);
+    of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, 255);
+    of_mixer_set_master_volume(255);
 }
 
 void d3d_audio_shutdown(void)
@@ -163,25 +168,28 @@ static int ensure_decoded(int num)
     if (rc < 0 || result.pcm == NULL || result.pcm_len == 0)
         return 0;
 
-    /* Allocate 16-bit sample memory and convert if needed */
+    /* Allocate sample memory in native format — keep 8-bit as 8-bit
+     * to halve CRAM1 usage (Duke SFX are all 8-bit unsigned VOC). */
     uint32_t sample_count = result.pcm_len;
-    uint32_t byte_len = sample_count * sizeof(int16_t);
-    int16_t *cram_ptr = (int16_t *)of_mixer_alloc_samples(byte_len);
+    int is_16bit = (result.bits_per_sample == 16);
+    uint32_t byte_len = is_16bit ? sample_count * 2 : sample_count;
+    uint8_t *cram_ptr = (uint8_t *)of_mixer_alloc_samples(byte_len);
     if (cram_ptr == NULL)
         return 0;
 
-    if (result.bits_per_sample == 8) {
-        /* Convert 8-bit unsigned → 16-bit signed */
+    if (is_16bit) {
+        memcpy(cram_ptr, result.pcm, byte_len);
+    } else {
+        /* Convert 8-bit unsigned → 8-bit signed (just subtract 128) */
         const uint8_t *src = result.pcm;
         for (uint32_t i = 0; i < sample_count; i++)
-            cram_ptr[i] = (int16_t)((src[i] - 128) << 8);
-    } else {
-        memcpy(cram_ptr, result.pcm, byte_len);
+            cram_ptr[i] = src[i] - 128;
     }
 
     decoded[num].pcm = cram_ptr;
-    decoded[num].sample_count = result.pcm_len;
+    decoded[num].sample_count = sample_count;
     decoded[num].sample_rate = result.sample_rate;
+    decoded[num].is_16bit = is_16bit;
 
     /* Keep Sound[num].ptr alive — pan3dsound and other engine code
      * checks ptr != NULL to avoid re-loading from GRP every frame. */
@@ -200,13 +208,26 @@ int d3d_sound_play(int num, int priority, int volume)
     if (!ensure_decoded(num))
         return -1;
 
-    int voice = of_mixer_play((const uint8_t *)decoded[num].pcm,
+    /* Boost SFX volume (clamp to 255) */
+    int vol = volume * 2;
+    if (vol > 255) vol = 255;
+
+    int voice;
+    if (decoded[num].is_16bit)
+        voice = of_mixer_play(decoded[num].pcm,
                               decoded[num].sample_count,
                               decoded[num].sample_rate,
-                              priority, volume);
+                              priority, vol);
+    else
+        voice = of_mixer_play_8bit(decoded[num].pcm,
+                                   decoded[num].sample_count,
+                                   decoded[num].sample_rate,
+                                   priority, vol);
 
-    if (voice >= 0)
+    if (voice >= 0) {
+        of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
         track_voice(voice, num, 0);
+    }
 
     return voice;
 }
@@ -228,13 +249,21 @@ int d3d_sound_play_3d(int num, int priority, int angle, int distance)
 
     /* Start voice at center volume, then set L/R immediately */
     int avg = (vol_l + vol_r) >> 1;
-    int voice = of_mixer_play((const uint8_t *)decoded[num].pcm,
+    int voice;
+    if (decoded[num].is_16bit)
+        voice = of_mixer_play(decoded[num].pcm,
                               decoded[num].sample_count,
                               decoded[num].sample_rate,
                               priority, avg);
+    else
+        voice = of_mixer_play_8bit(decoded[num].pcm,
+                                   decoded[num].sample_count,
+                                   decoded[num].sample_rate,
+                                   priority, avg);
 
     if (voice >= 0) {
         of_mixer_set_vol_lr(voice, vol_l, vol_r);
+        of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
         track_voice(voice, num, 0);
     }
 
@@ -283,6 +312,19 @@ void d3d_sound_set_volume(int voice, int volume)
     of_mixer_set_volume(voice, volume);
 }
 
+void d3d_sound_set_sfx_volume(int volume)
+{
+    if (!audio_initialized) return;
+    of_mixer_set_group_volume(OF_MIXER_GROUP_SFX, volume & 0xFF);
+}
+
+void d3d_sound_set_music_volume(int volume)
+{
+    if (!audio_initialized) return;
+    of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, volume & 0xFF);
+    of_midi_set_volume(volume & 0xFF);
+}
+
 void d3d_sound_set_owned(int voice)
 {
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
@@ -297,12 +339,8 @@ void d3d_audio_pump(void)
 {
     if (!audio_initialized) return;
 
-    /* Pump MIDI multiple times to flush pending events — at low FPS
-     * events back up between frames causing note bunching.
-     * of_midi_pump uses internal timestamps so extra calls are safe. */
-    of_midi_pump();
-    of_midi_pump();
-    of_midi_pump();
+    /* Pump MIDI every call — of_midi_pump uses internal timestamps,
+     * processes all events up to "now". Called from sampletimer + nextpage. */
     of_midi_pump();
 
     /* Single register read: bitmask of voices that finished since last poll */

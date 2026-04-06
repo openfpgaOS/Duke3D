@@ -8,7 +8,9 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include "of_midi.h"
+#include "of_audio.h"
 #include "../audiolib/music.h"
 
 /* GRP file system functions (BUILD engine) */
@@ -51,6 +53,7 @@ int MUSIC_Init(int SoundCard, int Address)
     if (!midi_initialized) {
         of_midi_init();
         midi_initialized = 1;
+
     }
     return MUSIC_Ok;
 }
@@ -225,12 +228,42 @@ void MUSIC_RegisterTimbreBank(uint8_t *timbres)
     /* Start from built-in GM bank, overlay Duke3D TMB patches */
     memcpy(converted_bank, of_midi_builtin_bank(), 175 * OF_MIDI_INST_SIZE);
 
+    /* TMB format (bytes 1-11 of each 13-byte record):
+     *   [0] Mod Char, [1] Car Char, [2] Mod KSL, [3] Car KSL,
+     *   [4] Mod AD,   [5] Car AD,   [6] Mod SR,  [7] Car SR,
+     *   [8] Mod WS,   [9] Car WS,   [10] FB/CNT
+     *
+     * of_midi bank format (11 bytes per instrument):
+     *   [0] FB/CNT,
+     *   [1] Mod Char, [2] Mod KSL, [3] Mod AD, [4] Mod SR, [5] Mod WS,
+     *   [6] Car Char, [7] Car KSL, [8] Car AD, [9] Car SR, [10] Car WS */
+    int tmb_count = 0;
     uint8_t *p = timbres;
     uint8_t *end = timbres + 8000;
     while (p + 13 <= end) {
         int inst = p[0];
         if (inst >= 175) break;
-        memcpy(&converted_bank[inst * OF_MIDI_INST_SIZE], &p[1], OF_MIDI_INST_SIZE);
+        const uint8_t *t = &p[1];
+        uint8_t *d = &converted_bank[inst * OF_MIDI_INST_SIZE];
+        /* TMB per-operator: Char(0x20), AD(0x60), SR(0x80), WS(0xE0), KSL_TL(0x40)
+         * of_midi per-operator: Char(0x20), KSL_TL(0x40), AD(0x60), SR(0x80), WS(0xE0)
+         * TMB: [ModChar ModAD ModSR ModWS ModKSL] [CarChar CarAD CarSR CarWS CarKSL] FB
+         * Mask WS to 3 bits — TMB has dirty upper bits real OPL ignores. */
+        d[0]  = t[10];          /* FB/CNT */
+        d[1]  = t[0];           /* Mod Char */
+        d[2]  = t[4];           /* Mod KSL_TL */
+        d[3]  = t[1];           /* Mod AD */
+        d[4]  = t[2];           /* Mod SR */
+        d[5]  = t[3] & 0x07;   /* Mod WS */
+        d[6]  = t[5];           /* Car Char */
+        d[7]  = t[9];           /* Car KSL_TL */
+        d[8]  = t[6];           /* Car AD */
+        d[9]  = t[7];           /* Car SR */
+        d[10] = t[8] & 0x07;   /* Car WS */
+        if (tmb_count < 5)
+            printf("[bank] #%d: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                   inst, d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7],d[8],d[9],d[10]);
+        tmb_count++;
         p += 13;
     }
 

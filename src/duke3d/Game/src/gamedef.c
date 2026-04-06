@@ -1530,8 +1530,21 @@ uint8_t parsecommand(int readfromGRP)
 
 void passone(int readfromGRP)
 {
+#ifdef OPENFPGA
+    extern void of_progress(int pct);
+    int last_pct = 10;
+#endif
 
-    while( parsecommand(readfromGRP) == 0 );
+    while( parsecommand(readfromGRP) == 0 )
+    {
+#ifdef OPENFPGA
+        /* Update progress bar based on parse position (10% → 48%) */
+        if (last_used_size > 0) {
+            int pct = 10 + (int)((textptr - last_used_text) * 38L / last_used_size);
+            if (pct > last_pct + 2) { last_pct = pct; of_progress(pct); }
+        }
+#endif
+    }
 
     if( (error+warning) > 12)
         puts(  "  * ERROR! Too many warnings or errors.");
@@ -1627,6 +1640,10 @@ void loadefs(char  *filenam, char  *mptr, int readfromGRP)
     line_number = 1;
     total_lines = 0;
 
+#ifdef OPENFPGA
+    extern void of_progress(int pct);
+    of_progress(10);
+#endif
     passone(readfromGRP); //Tokenize
     *script = encodescriptptr(scriptptr);
 

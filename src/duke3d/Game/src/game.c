@@ -2007,6 +2007,14 @@ void coolgaugetext(short snum)
 
     if (pus) { pus = 0; u = 0xffffffff; } else u = 0;
 
+#ifdef OPENFPGA
+    /* Triple-buffered: force full status bar redraw every 4 frames
+     * so all 3 buffers get updated without perm system overhead. */
+    { static int sbar_counter = 4;  /* start at 4 to force immediate first redraw */
+      if (++sbar_counter >= 4) { sbar_counter = 0; u = 0xffffffff; }
+    }
+#endif
+
     if (sbar.frag[myconnectindex] != p->frag) { sbar.frag[myconnectindex] = p->frag; u |= 32768; }
     if (sbar.got_access != p->got_access) { sbar.got_access = p->got_access; u |= 16384; }
     if (sbar.last_extra != p->last_extra) { sbar.last_extra = p->last_extra; u |= 1; }
@@ -7486,19 +7494,15 @@ void Logo(void)
     ready2send = 0;
 
     KB_FlushKeyboardQueue();
-    printf("[Logo] setview\n");
 
     setview(0,0,xdim-1,ydim-1);
     clearview(0L);
-    printf("[Logo] palto black\n");
     palto(0,0,0,63,false);
 
     flushperms();
-    printf("[Logo] first nextpage\n");
     nextpage();
 
     MUSIC_StopSong();
-    printf("[Logo] VOLUMEONE=%d showcinema=%d\n", VOLUMEONE, ud.showcinematics);
 
 	if(ud.showcinematics && numplayers < 2)
 	{
@@ -7508,7 +7512,6 @@ void Logo(void)
 		    if(!KB_KeyWaiting() && nomorelogohack == 0)
 		    {
 		        getpackets();
-		        printf("[Logo] playanm logo.anm\n");
 		        playanm("logo.anm",5);
 		        palto(0,0,0,63,false);
 		        KB_FlushKeyboardQueue();
@@ -7519,16 +7522,13 @@ void Logo(void)
 		}
 
 		//MIDI start here
-		printf("[Logo] playmusic\n");
 		playmusic(&env_music_fn[0][0]);
-		
-		printf("[Logo] DREALMS fade\n");
+
 		//"REALITY IS OUR GAME" Screen
 	    for(i=0;i<64;i+=7)
 			palto(0,0,0,i,true);
 	    ps[myconnectindex].palette = drealms;
 	    palto(0,0,0,63,false);
-	    printf("[Logo] DREALMS sprite\n");
 	    rotatesprite(0,0,65536L,0,DREALMS,0,0,2+8+16+64, 0,0,xdim-1,ydim-1);
 	    nextpage();
 		for(i=63;i>0;i-=7) 
@@ -7536,7 +7536,6 @@ void Logo(void)
         
         
         
-	    printf("[Logo] DREALMS wait\n");
 	    totalclock = 0;
 	    while( totalclock < (120*7) && !KB_KeyWaiting() )
 	        getpackets();
@@ -7551,21 +7550,16 @@ void Logo(void)
 	    nextpage();
 	    ps[myconnectindex].palette = titlepal;
 	    flushperms();
-	    printf("[Logo] BETASCREEN sprite\n");
 	    rotatesprite(0,0,65536L,0,BETASCREEN,0,0,2+8+16+64,0,0,xdim-1,ydim-1);
 	    KB_FlushKeyboardQueue();
 	    nextpage();
-	    printf("[Logo] BETASCREEN fade-in\n");
 	    for(i=63;i>0;i-=7)
 			palto(0,0,0,i,true);
 
 	    totalclock = 0;
-	    printf("[Logo] animation loop tc=%d\n", (int)totalclock);
 		//Animate screen (Duke picture wiht "DUKE" "NUKEM 3D" coming from far away and hitting the screen"
-	    { int _dbg = 0;
 	    while(totalclock < (860+120) && !KB_KeyWaiting())
 	    {
-	        if((_dbg++ & 63) == 0) printf("[anim] f=%d tc=%d\n", _dbg, (int)totalclock);
 	        rotatesprite(0,0,65536L,0,BETASCREEN,0,0,2+8+16+64,0,0,xdim-1,ydim-1);
 	
 	        if( totalclock > 120 && totalclock < (120+60) )
@@ -7620,10 +7614,8 @@ void Logo(void)
 	        getpackets();
 	        nextpage();
 	    }
-	    } /* end _dbg scope */
 		// FIX_00077: Menu goes directly to the "NEW GAME" sub-menu when starting new game (Turrican)
 		KB_FlushKeyboardQueue();
-		printf("[Logo] cinema done\n");
 	}
 	else if(numplayers > 1)
     {
@@ -7647,7 +7639,6 @@ void Logo(void)
 		playmusic(&env_music_fn[0][0]);
 	}
 
-    printf("[Logo] waitforeverybody\n");
     waitforeverybody();
 
     flushperms();
@@ -7661,7 +7652,6 @@ void Logo(void)
 
     palto(0,0,0,0,false);
     clearview(0L);
-    printf("[Logo] done\n");
 }
 
 static uint8_t tmb_bank[8000];  /* must persist — of_midi_load_bank stores a pointer */
@@ -7795,11 +7785,12 @@ void Startup(void)
    NumChannels = 1;
    NumBits = 8;
    MixRate = 11025;
-   of_progress(5);
+   of_progress(2);
 #else
    CONFIG_GetSetupFilename();
    CONFIG_ReadSetup();
 #endif
+   of_progress(3);
    compilecons();
 
 #ifdef AUSTRALIA
@@ -7810,27 +7801,27 @@ void Startup(void)
    if(CommandMusicToggleOff) MusicToggle = 0;
 
 #ifdef OPENFPGA
-   of_progress(15);
+   of_progress(50);
 #endif
 
    CONTROL_Startup( ControllerType, &GetTime, TICRATE );
 #ifdef OPENFPGA
-   of_progress(20);
+   of_progress(55);
 #endif
    initengine();
 #ifdef OPENFPGA
-   of_progress(30);
+   of_progress(65);
 #endif
    inittimer(TICRATE);
-   /* loadpics updates progress 35%→75% per art file inside tiles.c */
+   /* loadpics updates progress 70%→90% per art file inside tiles.c */
    loadpics("tiles000.art", "\0");
 #ifdef OPENFPGA
-   of_progress(80);
+   of_progress(90);
 #endif
 
    readsavenames();
 #ifdef OPENFPGA
-   of_progress(85);
+   of_progress(92);
 #endif
 
    tiles[MIRROR].dim.width = tiles[MIRROR].dim.height = 0;
@@ -7846,16 +7837,13 @@ void Startup(void)
    ps[myconnectindex].palette = (uint8_t  *) &palette[0];
    SetupGameButtons();
 #ifdef OPENFPGA
-   of_progress(90);
+   of_progress(95);
 #endif
 
    if(networkmode == 255)
        networkmode = 1;
 
    SoundStartup();
-#ifdef OPENFPGA
-   of_progress(95);
-#endif
    MusicStartup();
 #ifdef OPENFPGA
    of_progress(100);
@@ -8596,13 +8584,24 @@ int main(int argc,char  **argv)
         else
             i = 65536;
 
+#ifdef OPENFPGA
+        { static int _pf = 0; uint32_t _t0, _t1, _t2, _t3;
+          extern unsigned int of_time_us(void);
+          _t0 = of_time_us();
+#endif
         displayrooms(screenpeek,i);
+#ifdef OPENFPGA
+          _t1 = of_time_us();
+#endif
         displayrest(i);
+#ifdef OPENFPGA
+          _t2 = of_time_us();
+#endif
 
         if(ps[myconnectindex].gm&MODE_DEMO)
             goto MAIN_LOOP_RESTART;
 
-        if(debug_on) 
+        if(debug_on)
 			caches();
 
         checksync();
@@ -8612,6 +8611,16 @@ int main(int argc,char  **argv)
             	rotatesprite((320-50)<<16,9<<16,65536L,0,BETAVERSION,0,0,2+8+16+128,0,0,xdim-1,ydim-1);
 
         nextpage();
+#ifdef OPENFPGA
+          _t3 = of_time_us();
+          if ((++_pf & 63) == 0) {
+              extern uint32_t np_input_us, np_flip_us, np_audio_us;
+              printf("[perf] rooms=%u rest=%u flip=%u(in=%u fl=%u au=%u) total=%u us\n",
+                     _t1-_t0, _t2-_t1, _t3-_t2,
+                     np_input_us, np_flip_us, np_audio_us, _t3-_t0);
+          }
+        }
+#endif
     }
 
     gameexit(" ");

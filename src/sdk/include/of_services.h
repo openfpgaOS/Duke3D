@@ -109,6 +109,15 @@ struct of_services_table {
     void      (*mixer_retrigger)(int voice, const uint8_t *pcm_s16,
                                  uint32_t sample_count, uint32_t sample_rate,
                                  int volume);
+    int       (*mixer_play_8bit)(const uint8_t *pcm_s8, uint32_t sample_count,
+                                 uint32_t sample_rate, int priority, int volume);
+    void      (*mixer_set_group)(int voice, int group);
+    void      (*mixer_set_group_volume)(int group, int volume);
+    void      (*mixer_set_master_volume)(int volume);
+    int       (*audio_stream_open)(int sample_rate);
+    int       (*audio_stream_write)(const int16_t *samples, int count);
+    int       (*audio_stream_ready)(void);
+    void      (*audio_stream_close)(void);
 };
 
 #ifndef OF_PC

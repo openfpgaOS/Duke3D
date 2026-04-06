@@ -261,10 +261,10 @@ int loadpics(char  *filename, char * gamedir)
             numtilefiles++;
 
 #ifdef OPENFPGA
-            /* Update progress bar: art loading spans 35%→75% */
+            /* Update progress bar: art loading spans 65%→90% */
             {
                 extern void of_progress(int);
-                of_progress(35 + (numtilefiles * 40) / 20);
+                of_progress(65 + (numtilefiles * 25) / 20);
             }
 #endif
 

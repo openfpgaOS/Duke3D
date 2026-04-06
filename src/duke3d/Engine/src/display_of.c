@@ -161,7 +161,7 @@ static void init_new_res_vars(void)
     xdim = xres = OF_DISPLAY_W;
     ydim = yres = OF_DISPLAY_H;
 
-    numpages = 3;  /* triple-buffered — perms must redraw into all 3 buffers */
+    numpages = 1;  /* perm overhead handled by periodic forced redraws instead */
     bytesperline = OF_DISPLAY_W;
     vesachecked = 1;
     vgacompatible = 1;
@@ -234,10 +234,11 @@ static void ensure_video_init(void) {
     if (!video_initialized) {
         video_initialized = 1;
         of_video_init();
-        of_video_set_display_mode(OF_DISPLAY_FRAMEBUFFER);
-        of_video_clear(0);
+        of_video_set_display_mode(OF_DISPLAY_OVERLAY);
         of_video_palette_bulk(of_palette, 256);
-        of_video_flip();
+        /* Clear all 3 triple-buffer frames */
+        of_video_clear(0); of_video_flip();
+        of_video_clear(0); of_video_flip();
         of_video_clear(0);
         /* Point BUILD at the HW back buffer from now on */
         bars_remaining = 3;
@@ -263,12 +264,15 @@ void _platform_init(int argc, char **argv, const char *title, const char *iconNa
     memset(of_framebuffer, 0, sizeof(of_framebuffer));
 }
 
+uint32_t np_input_us, np_flip_us, np_audio_us;
+
 void _nextpage(void)
 {
     ensure_video_init();
 
+    uint32_t _a = of_time_us();
     _handle_events();
-    d3d_audio_pump();
+    uint32_t _b = of_time_us();
 
     /* BUILD already rendered into the HW back buffer (via frameplace).
      * Clear letterbox bars only until all 3 triple-buffer slots are done. */
@@ -284,6 +288,14 @@ void _nextpage(void)
 
     of_video_flip();
     retarget_frameplace();
+    uint32_t _c = of_time_us();
+
+    d3d_audio_pump();
+    uint32_t _d = of_time_us();
+
+    np_input_us = _b - _a;
+    np_flip_us  = _c - _b;
+    np_audio_us = _d - _c;
 }
 
 void VBE_setPalette(uint8_t *palettebuffer)

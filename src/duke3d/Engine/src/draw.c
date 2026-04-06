@@ -100,7 +100,7 @@ void setuprhlineasm4(int32_t i1, int32_t i2, int32_t i3, const uint8_t* i4, int3
 } 
 
 
-void rhlineasm4(int32_t i1, const uint8_t* texture, int32_t i3, uint32_t i4, uint32_t i5, uint8_t* dest)
+OF_FASTTEXT void rhlineasm4(int32_t i1, const uint8_t* texture, int32_t i3, uint32_t i4, uint32_t i5, uint8_t* dest)
 {
     uint32_t ebp = 0;
     int32_t numPixels;
@@ -149,7 +149,7 @@ void setuprmhlineasm4(int32_t i1, int32_t i2, int32_t i3, const uint8_t* i4, int
 
 
 //FCS: ????
-void rmhlineasm4(int32_t i1, const uint8_t* shade, int32_t colorIndex, int32_t i4, int32_t i5, uint8_t* dest)
+OF_FASTTEXT void rmhlineasm4(int32_t i1, const uint8_t* shade, int32_t colorIndex, int32_t i4, int32_t i5, uint8_t* dest)
 {
     uint32_t ebp = 0;
     int32_t numPixels;
@@ -251,7 +251,7 @@ OF_FASTTEXT int32_t vlineasm1(int32_t vince, const uint8_t * restrict palookupof
 	    numPixels--;
     }
     return vplce;
-} 
+}
 
 
 OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t * restrict texture, int32_t numPixels, int32_t i4, const uint8_t * restrict source, uint8_t * restrict dest)
