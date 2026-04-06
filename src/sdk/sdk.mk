@@ -38,7 +38,7 @@ CFLAGS ?=
 ALL_CFLAGS = $(SDK_CFLAGS) $(CFLAGS)
 
 # ── C++ compiler flags ───────────────────────────────────────────
-SDK_CXXFLAGS  = -march=$(ARCH) -mabi=$(ABI) -O2 -Wall -Wextra
+SDK_CXXFLAGS  = -march=$(ARCH) -mabi=$(ABI) -O2 -Wall -Wextra -fdiagnostics-color=always
 SDK_CXXFLAGS += -ffreestanding -nostdlib -nostartfiles
 SDK_CXXFLAGS += -ffunction-sections -fdata-sections
 SDK_CXXFLAGS += -fno-builtin
