@@ -48,6 +48,11 @@ static inline int of_mixer_play(const uint8_t *pcm_s16, uint32_t sample_count,
     return OF_SVC->mixer_play(pcm_s16, sample_count, sample_rate, priority, volume);
 }
 
+static inline int of_mixer_play_8bit(const uint8_t *pcm_s8, uint32_t sample_count,
+                                     uint32_t sample_rate, int priority, int volume) {
+    return OF_SVC->mixer_play_8bit(pcm_s8, sample_count, sample_rate, priority, volume);
+}
+
 static inline void of_mixer_retrigger(int voice, const uint8_t *pcm_s16,
                                       uint32_t sample_count, uint32_t sample_rate,
                                       int volume) {
@@ -134,6 +139,26 @@ static inline void of_mixer_set_end_callback(void (*cb)(uint32_t ended_mask)) {
     OF_SVC->mixer_set_end_callback(cb);
 }
 
+/* Volume groups: assign voices to groups, control group and master volume.
+ * Groups: OF_MIXER_GROUP_SFX (0), OF_MIXER_GROUP_MUSIC (1),
+ *         OF_MIXER_GROUP_VOICE (2), OF_MIXER_GROUP_AUX (3). */
+#define OF_MIXER_GROUP_SFX   0
+#define OF_MIXER_GROUP_MUSIC 1
+#define OF_MIXER_GROUP_VOICE 2
+#define OF_MIXER_GROUP_AUX   3
+
+static inline void of_mixer_set_group(int voice, int group) {
+    OF_SVC->mixer_set_group(voice, group);
+}
+
+static inline void of_mixer_set_group_volume(int group, int volume) {
+    OF_SVC->mixer_set_group_volume(group, volume);
+}
+
+static inline void of_mixer_set_master_volume(int volume) {
+    OF_SVC->mixer_set_master_volume(volume);
+}
+
 #else /* OF_PC */
 
 #include <stdlib.h>
@@ -144,6 +169,12 @@ static inline void of_mixer_init(int max_voices, int output_rate) {
 static inline int of_mixer_play(const uint8_t *pcm_s16, uint32_t sample_count,
                                 uint32_t sample_rate, int priority, int volume) {
     (void)pcm_s16; (void)sample_count; (void)sample_rate;
+    (void)priority; (void)volume;
+    return -1;
+}
+static inline int of_mixer_play_8bit(const uint8_t *pcm_s8, uint32_t sample_count,
+                                     uint32_t sample_rate, int priority, int volume) {
+    (void)pcm_s8; (void)sample_count; (void)sample_rate;
     (void)priority; (void)volume;
     return -1;
 }
@@ -190,6 +221,15 @@ static inline void of_mixer_set_vol_rate(int voice, int rate) {
 static inline uint32_t of_mixer_poll_ended(void) { return 0; }
 static inline void *of_mixer_alloc_samples(size_t size) { return malloc(size); }
 static inline void of_mixer_free_samples(void) { /* no-op on PC */ }
+static inline void of_mixer_set_group(int voice, int group) {
+    (void)voice; (void)group;
+}
+static inline void of_mixer_set_group_volume(int group, int volume) {
+    (void)group; (void)volume;
+}
+static inline void of_mixer_set_master_volume(int volume) {
+    (void)volume;
+}
 
 #endif /* OF_PC */
 
