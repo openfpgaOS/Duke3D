@@ -8,9 +8,7 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <stdio.h>
 #include "of_midi.h"
-#include "of_audio.h"
 #include "../audiolib/music.h"
 
 /* GRP file system functions (BUILD engine) */
@@ -53,7 +51,6 @@ int MUSIC_Init(int SoundCard, int Address)
     if (!midi_initialized) {
         of_midi_init();
         midi_initialized = 1;
-
     }
     return MUSIC_Ok;
 }
@@ -137,10 +134,6 @@ int MUSIC_PlaySong(char *songData, int loopflag)
 
     of_midi_stop();
     of_midi_set_volume(midi_volume);
-
-    /* Force WSE on both banks right before play — paranoid check */
-    of_audio_opl_write(0x01, 0x20);
-    of_audio_opl_write(0x101, 0x20);
 
     int rc = of_midi_play((const uint8_t *)songData, midi_buffer_len, loopflag);
     if (rc != OF_MIDI_OK)

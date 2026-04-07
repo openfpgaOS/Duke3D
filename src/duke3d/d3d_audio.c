@@ -125,11 +125,6 @@ void d3d_audio_init(void)
 
     /* No timer interrupt — pump from game loop like mididemo.
      * Timer ISR hangs when it fires during blocking of_video_flip. */
-
-    /* Set up volume groups: SFX and music independently controllable */
-    of_mixer_set_group_volume(OF_MIXER_GROUP_SFX, 255);
-    of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, 255);
-    of_mixer_set_master_volume(255);
 }
 
 void d3d_audio_shutdown(void)
@@ -168,28 +163,33 @@ static int ensure_decoded(int num)
     if (rc < 0 || result.pcm == NULL || result.pcm_len == 0)
         return 0;
 
-    /* Allocate sample memory in native format — keep 8-bit as 8-bit
-     * to halve CRAM1 usage (Duke SFX are all 8-bit unsigned VOC). */
+    /* Always convert to 16-bit signed for playback.
+     * 8-bit hardware path exists but hasn't been validated on device yet.
+     * TODO: switch to of_mixer_play_8bit once 8-bit mode is tested. */
     uint32_t sample_count = result.pcm_len;
-    int is_16bit = (result.bits_per_sample == 16);
-    uint32_t byte_len = is_16bit ? sample_count * 2 : sample_count;
-    uint8_t *cram_ptr = (uint8_t *)of_mixer_alloc_samples(byte_len);
+    uint32_t byte_len = sample_count * sizeof(int16_t);
+    int16_t *cram_ptr = (int16_t *)of_mixer_alloc_samples(byte_len);
     if (cram_ptr == NULL)
         return 0;
 
-    if (is_16bit) {
-        memcpy(cram_ptr, result.pcm, byte_len);
-    } else {
-        /* Convert 8-bit unsigned → 8-bit signed (just subtract 128) */
+    if (result.bits_per_sample == 8) {
         const uint8_t *src = result.pcm;
         for (uint32_t i = 0; i < sample_count; i++)
-            cram_ptr[i] = src[i] - 128;
+            cram_ptr[i] = (int16_t)((src[i] - 128) << 8);
+    } else {
+        memcpy(cram_ptr, result.pcm, byte_len);
     }
 
-    decoded[num].pcm = cram_ptr;
+    /* Full D-cache eviction — the "uncached" 0x39 CRAM1 alias is not
+     * reliably uncached (PMA not fully enforced on VexiiRiscv), and
+     * range-based cbo.clean doesn't find lines cached under the alias.
+     * Conflict eviction forces all dirty lines out regardless of address. */
+    OF_SVC->cache_flush();
+
+    decoded[num].pcm = (uint8_t *)cram_ptr;
     decoded[num].sample_count = sample_count;
     decoded[num].sample_rate = result.sample_rate;
-    decoded[num].is_16bit = is_16bit;
+    decoded[num].is_16bit = 1;  /* always 16-bit for now */
 
     /* Keep Sound[num].ptr alive — pan3dsound and other engine code
      * checks ptr != NULL to avoid re-loading from GRP every frame. */
@@ -212,20 +212,12 @@ int d3d_sound_play(int num, int priority, int volume)
     int vol = volume * 2;
     if (vol > 255) vol = 255;
 
-    int voice;
-    if (decoded[num].is_16bit)
-        voice = of_mixer_play(decoded[num].pcm,
+    int voice = of_mixer_play(decoded[num].pcm,
                               decoded[num].sample_count,
                               decoded[num].sample_rate,
                               priority, vol);
-    else
-        voice = of_mixer_play_8bit(decoded[num].pcm,
-                                   decoded[num].sample_count,
-                                   decoded[num].sample_rate,
-                                   priority, vol);
 
     if (voice >= 0) {
-        of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
         track_voice(voice, num, 0);
     }
 
@@ -249,21 +241,13 @@ int d3d_sound_play_3d(int num, int priority, int angle, int distance)
 
     /* Start voice at center volume, then set L/R immediately */
     int avg = (vol_l + vol_r) >> 1;
-    int voice;
-    if (decoded[num].is_16bit)
-        voice = of_mixer_play(decoded[num].pcm,
+    int voice = of_mixer_play(decoded[num].pcm,
                               decoded[num].sample_count,
                               decoded[num].sample_rate,
                               priority, avg);
-    else
-        voice = of_mixer_play_8bit(decoded[num].pcm,
-                                   decoded[num].sample_count,
-                                   decoded[num].sample_rate,
-                                   priority, avg);
 
     if (voice >= 0) {
         of_mixer_set_vol_lr(voice, vol_l, vol_r);
-        of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
         track_voice(voice, num, 0);
     }
 
@@ -310,19 +294,6 @@ void d3d_sound_set_volume(int voice, int volume)
     if (!audio_initialized) return;
     if (voice < 0) return;
     of_mixer_set_volume(voice, volume);
-}
-
-void d3d_sound_set_sfx_volume(int volume)
-{
-    if (!audio_initialized) return;
-    of_mixer_set_group_volume(OF_MIXER_GROUP_SFX, volume & 0xFF);
-}
-
-void d3d_sound_set_music_volume(int volume)
-{
-    if (!audio_initialized) return;
-    of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, volume & 0xFF);
-    of_midi_set_volume(volume & 0xFF);
 }
 
 void d3d_sound_set_owned(int voice)
