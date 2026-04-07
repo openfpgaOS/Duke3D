@@ -3,7 +3,7 @@
 # This file is SDK-owned. Do not edit — it gets replaced on SDK updates.
 # Customize your build in Makefile instead.
 #
-# SDK version: 4
+# SDK version: 5
 #
 
 # ── Toolchain (auto-detect) ───────────────────────────────────────
@@ -67,11 +67,9 @@ CRT_POSIX  = $(SDK_DIR)/of_posix.o
 CRT_MIDI   = $(SDK_DIR)/of_midi.o
 CRT_CXXABI = $(SDK_DIR)/of_cxxabi.o
 
-# Pre-built CRT objects — never rebuild (they use SDK-specific flags)
-$(CRT_START): ;
-$(CRT_POSIX): ;
-$(CRT_MIDI): ;
-$(CRT_CXXABI): ;
+# CRT objects are rebuilt from their sources (sdk/*.c, sdk/*.cpp, crt/*.S).
+# Rules are defined below after the pattern rules so they pick up the right flags.
+# $(CRT_START) is built from start.S via the $(CRT_DIR)/%.o: %.S pattern rule.
 
 SRCS_CXX ?=
 APP_C_OBJS   = $(patsubst %.c,$(OBJ_DIR)/%.o,$(filter %.c,$(SRCS)))
@@ -101,6 +99,16 @@ $(OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(ALL_CXXFLAGS) -c -o $@ $<
 
+# ── CRT object rules (rebuilt in-place from sdk/ sources) ───────
+$(CRT_POSIX): $(SDK_DIR)/of_posix.c
+	$(CC) $(ALL_CFLAGS) -c -o $@ $<
+
+$(CRT_MIDI): $(SDK_DIR)/of_midi.c
+	$(CC) $(ALL_CFLAGS) -c -o $@ $<
+
+$(CRT_CXXABI): $(SDK_DIR)/of_cxxabi.cpp
+	$(CXX) $(ALL_CXXFLAGS) -c -o $@ $<
+
 # ── PC build (SDL2) ──────────────────────────────────────────────
 PC_CC ?= cc
 SDL_CFLAGS := $(shell sdl2-config --cflags 2>/dev/null || pkg-config --cflags sdl2 2>/dev/null)
@@ -111,7 +119,8 @@ app_pc: $(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(SDK_DIR)/include/of.h
 		$(SRCS) $(SDK_DIR)/pc/of_sdl2.c \
 		$(SDL_CFLAGS) $(SDL_LIBS) -lm -o $@
 
-# ── Shared clean rule (preserves pre-built CRT objects) ─────────
+# ── Shared clean rule ────────────────────────────────────────────
 sdk-clean:
 	rm -f $(APP_OBJS) $(BUILD_DIR)/app.elf app_pc
+	rm -f $(CRT_POSIX) $(CRT_MIDI) $(CRT_CXXABI) $(CRT_START)
 	@if [ "$(OBJ_DIR)" != "." ] && [ -d "$(OBJ_DIR)" ]; then rm -rf "$(OBJ_DIR)"; fi
