@@ -35,41 +35,52 @@ extern "C" {
 #include "of_syscall.h"
 #include "of_syscall_numbers.h"
 
+/* Per the kernel convention in syscall_dispatch (kernel/syscall.c),
+ * vendor calls returning a negative int land in sbiret.error and
+ * sbiret.value is zeroed; non-negative results land in sbiret.value.
+ * The wrappers must surface the error first or callers see 0 instead
+ * of -1 on failure (e.g. of_net_send when DISCONNECTED). */
+static inline int __of_net_ret(struct of_sbiret r) {
+    return r.error ? (int)r.error : (int)r.value;
+}
+
 static inline int of_net_host_start(void) {
-    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_HOST_START).value;
+    return __of_net_ret(of_ecall0(OF_EID_NET, OF_NET_FID_HOST_START));
 }
 static inline int of_net_join(void) {
-    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_JOIN).value;
+    return __of_net_ret(of_ecall0(OF_EID_NET, OF_NET_FID_JOIN));
 }
 static inline void of_net_stop(void) {
     of_ecall0(OF_EID_NET, OF_NET_FID_STOP);
 }
 static inline int of_net_status(void) {
-    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_STATUS).value;
+    return __of_net_ret(of_ecall0(OF_EID_NET, OF_NET_FID_STATUS));
 }
 static inline int of_net_client_count(void) {
-    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_CLIENT_COUNT).value;
+    return __of_net_ret(of_ecall0(OF_EID_NET, OF_NET_FID_CLIENT_COUNT));
 }
 static inline int of_net_send_to(int client, const void *data, size_t len) {
-    return (int)of_ecall3(OF_EID_NET, OF_NET_FID_SEND_TO,
-                          client, (long)data, len).value;
+    return __of_net_ret(of_ecall3(OF_EID_NET, OF_NET_FID_SEND_TO,
+                                  client, (long)data, len));
 }
 static inline int of_net_recv_from(int client, void *data, size_t len) {
-    return (int)of_ecall3(OF_EID_NET, OF_NET_FID_RECV_FROM,
-                          client, (long)data, len).value;
+    return __of_net_ret(of_ecall3(OF_EID_NET, OF_NET_FID_RECV_FROM,
+                                  client, (long)data, len));
 }
 static inline int of_net_broadcast(const void *data, size_t len) {
-    return (int)of_ecall2(OF_EID_NET, OF_NET_FID_BROADCAST,
-                          (long)data, len).value;
+    return __of_net_ret(of_ecall2(OF_EID_NET, OF_NET_FID_BROADCAST,
+                                  (long)data, len));
 }
 static inline int of_net_send(const void *data, size_t len) {
-    return (int)of_ecall2(OF_EID_NET, OF_NET_FID_SEND, (long)data, len).value;
+    return __of_net_ret(of_ecall2(OF_EID_NET, OF_NET_FID_SEND,
+                                  (long)data, len));
 }
 static inline int of_net_recv(void *data, size_t len) {
-    return (int)of_ecall2(OF_EID_NET, OF_NET_FID_RECV, (long)data, len).value;
+    return __of_net_ret(of_ecall2(OF_EID_NET, OF_NET_FID_RECV,
+                                  (long)data, len));
 }
 static inline int of_net_poll(void) {
-    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_POLL).value;
+    return __of_net_ret(of_ecall0(OF_EID_NET, OF_NET_FID_POLL));
 }
 
 #else /* OF_PC */

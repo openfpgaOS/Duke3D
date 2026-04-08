@@ -110,6 +110,17 @@ LIBS = -Wl,--start-group -lc -lm -lgcc -Wl,--end-group
 OF_MIDI_SRC   = $(SDK_DIR)/of_midi.c
 OF_CXXABI_SRC = $(SDK_DIR)/of_cxxabi.cpp
 
+# ── Mandatory SDK runtime ────────────────────────────────────────────
+# of_init.c installs SDK-wide defaults (e.g. unbuffered stdout) via a
+# constructor that runs before main. It is auto-linked into every app
+# so individual Makefiles never need to mention it.
+OF_INIT_SRC = $(SDK_DIR)/of_init.c
+OF_INIT_OBJ = $(OBJ_DIR)/of_init.o
+
+$(OF_INIT_OBJ): $(OF_INIT_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(ALL_CFLAGS) -c -o $@ $<
+
 # ── Sources / objects ────────────────────────────────────────────────
 SRCS_CXX ?=
 APP_C_OBJS   = $(patsubst %.c,$(OBJ_DIR)/%.o,$(filter %.c,$(SRCS)))
@@ -117,9 +128,12 @@ APP_CXX_OBJS = $(patsubst %.cpp,$(OBJ_DIR)/%.o,$(filter %.cpp,$(SRCS_CXX)))
 APP_OBJS     = $(APP_C_OBJS) $(APP_CXX_OBJS)
 
 # ── Pocket build ─────────────────────────────────────────────────────
-$(BUILD_DIR)/app.elf: $(APP_OBJS) $(APP_LD) $(CRT_OBJS)
+# OF_INIT_OBJ is linked alongside the app objects so its constructor
+# (in .init_array, KEEP'd by app.ld) is picked up by the linker even
+# under --gc-sections.
+$(BUILD_DIR)/app.elf: $(APP_OBJS) $(OF_INIT_OBJ) $(APP_LD) $(CRT_OBJS)
 	@mkdir -p $(dir $@)
-	$(LD) $(ALL_LDFLAGS) -o $@ $(CRT_OBJS) $(APP_OBJS) $(LIBS)
+	$(LD) $(ALL_LDFLAGS) -o $@ $(CRT_OBJS) $(APP_OBJS) $(OF_INIT_OBJ) $(LIBS)
 
 $(OBJ_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -134,9 +148,9 @@ PC_CC ?= cc
 SDL_CFLAGS := $(shell sdl2-config --cflags 2>/dev/null || pkg-config --cflags sdl2 2>/dev/null)
 SDL_LIBS   := $(shell sdl2-config --libs 2>/dev/null || pkg-config --libs sdl2 2>/dev/null)
 
-app_pc: $(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(SDK_DIR)/include/of.h
+app_pc: $(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(OF_INIT_SRC) $(SDK_DIR)/include/of.h
 	$(PC_CC) -DOF_PC -I$(SDK_DIR)/include -I. -O2 -Wall -Wextra \
-		$(SRCS) $(SDK_DIR)/pc/of_sdl2.c \
+		$(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(OF_INIT_SRC) \
 		$(SDL_CFLAGS) $(SDL_LIBS) -lm -o $@
 
 # ── Clean ────────────────────────────────────────────────────────────
