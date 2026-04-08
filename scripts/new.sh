@@ -1,15 +1,22 @@
 #!/bin/bash
 #
-# openfpgaOS SDK — Create New App
+# openfpgaOS SDK — Scaffold a new app
 #
-# Scaffolds a new app with its own Makefile, stub source, and instance JSON.
-# Core configs (data.json, audio.json, etc.) are SDK-owned — your app only
-# maintains an instance.json that maps filenames to data slots.
+# Two scaffold flavors:
 #
-# Usage:
-#   ./scripts/new.sh mygame                  Create src/mygame/
-#   ./scripts/new.sh mygame --target pocket  Target platform (default: pocket)
-#   Called by scripts/customize.sh (make core)
+#   Custom core (default)
+#     ./scripts/new.sh mygame
+#     → src/mygame/ with its own standalone Makefile that drives a
+#       full custom openFPGA core (own dist/, own Core ID, own ZIP).
+#       Called by scripts/customize.sh (make core).
+#
+#   SDK app
+#     ./scripts/new.sh --sdk-app mydemo
+#     → src/apps/mydemo/ with a thin Makefile that includes ../app.mk
+#       and gets bundled into the shared SDK demo core.
+#       Called by `cd src/apps && make new APP=mydemo`.
+#
+# Both flavors take an optional --target (default: pocket).
 #
 
 set -e
@@ -28,26 +35,39 @@ fail() { echo -e "  ${RED}x${RESET} $1"; exit 1; }
 # ── Parse args ───────────────────────────────────────────────────────
 APP=""
 TARGET="pocket"
+KIND="custom-core"   # or "sdk-app"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --sdk-app)   KIND="sdk-app"; shift ;;
         --target|-t) TARGET="$2"; shift 2 ;;
         --help|-h)
-            echo "Usage: $0 <app_name> [--target pocket|mister]"
-            echo "Creates src/<app_name>/ with Makefile, main.c, and instance.json."
+            echo "Usage: $0 [--sdk-app] <app_name> [--target pocket|mister]"
+            echo ""
+            echo "  Default (custom core)"
+            echo "    Creates src/<app_name>/ with a standalone Makefile that"
+            echo "    drives a full openFPGA custom core."
+            echo ""
+            echo "  --sdk-app"
+            echo "    Creates src/apps/<app_name>/ with a thin Makefile that"
+            echo "    plugs into the SDK demo core."
             exit 0 ;;
         -*) echo "Unknown option: $1"; exit 1 ;;
         *)  APP="$1"; shift ;;
     esac
 done
 
-[[ -z "$APP" ]] && { echo "Usage: $0 <app_name> [--target pocket|mister]"; exit 1; }
+[[ -z "$APP" ]] && { echo "Usage: $0 [--sdk-app] <app_name> [--target pocket|mister]"; exit 1; }
 
 # Sanitize: lowercase, no spaces
 APP_LOWER=$(echo "$APP" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_]//g')
 [[ -z "$APP_LOWER" ]] && fail "Invalid app name: $APP"
 
-APP_DIR="$SDK_ROOT/src/$APP_LOWER"
+if [[ "$KIND" == "sdk-app" ]]; then
+    APP_DIR="$SDK_ROOT/src/apps/$APP_LOWER"
+else
+    APP_DIR="$SDK_ROOT/src/$APP_LOWER"
+fi
 
 # ── Validate target platform ────────────────────────────────────────
 if [[ ! -d "$PLATFORMS_DIR/$TARGET" ]]; then
@@ -63,24 +83,57 @@ TEMPLATES="$PLATFORMS_DIR/$TARGET/templates"
 
 # ── Check if app already exists ──────────────────────────────────────
 if [[ -d "$APP_DIR" ]]; then
-    fail "Directory already exists: src/$APP_LOWER/"
+    if [[ "$KIND" == "sdk-app" ]]; then
+        fail "Directory already exists: src/apps/$APP_LOWER/"
+    else
+        fail "Directory already exists: src/$APP_LOWER/"
+    fi
 fi
 
-echo -e "${CYAN}Creating app: $APP_LOWER${RESET} (target: $TARGET)"
+if [[ "$KIND" == "sdk-app" ]]; then
+    echo -e "${CYAN}Creating SDK app: $APP_LOWER${RESET} (target: $TARGET)"
+else
+    echo -e "${CYAN}Creating custom core: $APP_LOWER${RESET} (target: $TARGET)"
+fi
 echo
 
 # ── Create app directory ─────────────────────────────────────────────
 mkdir -p "$APP_DIR"
 
-# ── Generate Makefile ──────────────────────────────────────────��─────
-cat > "$APP_DIR/Makefile" << 'MKEOF'
-# {{APP_DISPLAY}} — openfpgaOS App
+# ── Generate Makefile ────────────────────────────────────────────────
+if [[ "$KIND" == "sdk-app" ]]; then
+    # SDK app: thin wrapper that includes ../app.mk. The shared
+    # src/apps/Makefile already handles building, packaging, and
+    # release assembly for every SDK app at once.
+    cat > "$APP_DIR/Makefile" << 'MKEOF'
+# {{APP_DISPLAY}} — openfpgaOS SDK app
+#
+# This is an SDK app, bundled into the shared SDK demo core. The
+# parent src/apps/Makefile builds and packages every SDK app together;
+# build/sdk/ is the resulting deployable.
+#
+# Per-app overrides go above the include line, e.g.:
+#   SRCS = $(wildcard *.c) $(SDK_DIR)/of_midi.c
+
+SDK_DIR = ../../sdk
+SRCS    = $(wildcard *.c)
+
+include ../app.mk
+MKEOF
+else
+    # Custom core: full standalone Makefile that drives its own
+    # dist/<app>/, its own build/<app>/, and its own ZIP.
+    cat > "$APP_DIR/Makefile" << 'MKEOF'
+# {{APP_DISPLAY}} — openfpgaOS custom core
+#
+# This Makefile builds a CUSTOM CORE: a standalone openFPGA core
+# wrapping a single app. It owns its own dist/, build/, and ZIP.
 #
 # Targets:
-#   make              Build app
+#   make              Build the custom core
 #   make debug        Build, push via UART, stream console
-#   make copy         Copy to Pocket SD card
-#   make package      Create distributable ZIP
+#   make copy         Copy this custom core to Pocket SD
+#   make package      Package this custom core into a ZIP
 #   make test         Test on desktop (SDL2)
 #   make clean        Remove build artifacts
 #
@@ -139,6 +192,7 @@ clean: sdk-clean
 
 .PHONY: all release debug copy package test clean
 MKEOF
+fi
 
 # Fill in placeholders
 sed -i "s/{{APP}}/$APP_LOWER/g; s/{{APP_DISPLAY}}/$APP/g; s/{{TARGET}}/$TARGET/g" "$APP_DIR/Makefile"
@@ -194,11 +248,21 @@ ok "main.c"
 
 # ── Summary ──────────────────────────────────────────────────────────
 echo
-echo -e "${GREEN}Done!${RESET} Your app is at: src/$APP_LOWER/"
-echo
-echo "  cd src/$APP_LOWER"
-echo "  make              # build"
-echo "  make copy       # copy to Pocket SD card"
-echo "  make test          # test on desktop (SDL2)"
-echo
-echo "Edit main.c to start building your app."
+if [[ "$KIND" == "sdk-app" ]]; then
+    echo -e "${GREEN}Done!${RESET} SDK app at: src/apps/$APP_LOWER/"
+    echo
+    echo "  cd src/apps/$APP_LOWER"
+    echo "  make              # build this SDK app"
+    echo "  cd .. && make     # rebuild SDK demo core (build/sdk/)"
+    echo
+    echo "Edit src/apps/$APP_LOWER/main.c to start building your SDK app."
+else
+    echo -e "${GREEN}Done!${RESET} Custom core at: src/$APP_LOWER/"
+    echo
+    echo "  cd src/$APP_LOWER"
+    echo "  make              # build the custom core"
+    echo "  make copy         # copy this custom core to Pocket SD"
+    echo "  make test         # test on desktop (SDL2)"
+    echo
+    echo "Edit src/$APP_LOWER/main.c to start building your custom core."
+fi

@@ -1,12 +1,20 @@
-# openfpgaOS SDK — Demo Apps
+# openfpgaOS SDK — SDK apps
 #
-# Build, copy, and package the bundled demo apps.
+# This Makefile drives the "SDK app" build path: every app under
+# src/apps/<name>/ is compiled and bundled into the shared SDK demo
+# core (dist/sdk/ → build/sdk/), which packages to a single ZIP.
+#
+# For the other path — a CUSTOM CORE that ships its own standalone
+# openFPGA core wrapping a single app — use `make core` from the
+# SDK root instead.
 #
 # Targets:
-#   make                  Build all demos → build/sdk/
-#   make new APP=demo     Create a new demo app
-#   make copy           Copy build/sdk/ to SD card
-#   make package          Package build/sdk/ as ZIP
+#   make                  Build every SDK app → build/sdk/
+#   make new APP=demo     Scaffold a new SDK app under src/apps/demo/
+#   make debug APP=demo   Push a single SDK app's ELF over UART
+#   make test APP=demo    Build a single SDK app for desktop (SDL2)
+#   make copy             Copy build/sdk/ to the Pocket SD card
+#   make package          Package build/sdk/ as a single ZIP
 #   make clean            Remove build artifacts
 #
 
@@ -17,13 +25,14 @@ CORE_ID   = ThinkElastic.openfpgaOS
 PLATFORM  = openfpgaos
 BUILD     = $(SDK_ROOT)/build/sdk
 
+# Discover SDK apps: every src/apps/<name>/ that has its own Makefile.
 APPS = $(sort $(patsubst %/,%,$(dir $(wildcard */Makefile))))
 
 all: build-apps release
 
 build-apps:
 	@for app in $(APPS); do \
-		echo "Building $$app..."; \
+		echo "Building SDK app: $$app..."; \
 		$(MAKE) -C $$app || exit 1; \
 	done
 
@@ -49,11 +58,20 @@ release:
 
 new:
 	@test -n "$(APP)" || { echo "Usage: make new APP=myapp"; exit 1; }
-	@$(SDK_ROOT)/scripts/new.sh "$(APP)"
-	@if [ -d "$(SDK_ROOT)/src/$(APP)" ] && [ ! -d "$(APP)" ]; then \
-		mv "$(SDK_ROOT)/src/$(APP)" "./$(APP)"; \
-		echo "Moved to src/apps/$(APP)/"; \
-	fi
+	@$(SDK_ROOT)/scripts/new.sh --sdk-app "$(APP)"
+
+# Single-app debug / test. Both delegate to the per-app Makefile so
+# they pick up that app's exact SRCS / CFLAGS, including the special
+# cases like mididemo (pulls of_midi.c) and cxxdemo (C++ ABI shim).
+debug:
+	@test -n "$(APP)" || { echo "Usage: make debug APP=<sdk-app>"; exit 1; }
+	@test -d "$(APP)" || { echo "No such SDK app: src/apps/$(APP)"; exit 1; }
+	$(MAKE) -C $(APP) debug
+
+test:
+	@test -n "$(APP)" || { echo "Usage: make test APP=<sdk-app>"; exit 1; }
+	@test -d "$(APP)" || { echo "No such SDK app: src/apps/$(APP)"; exit 1; }
+	$(MAKE) -C $(APP) test
 
 copy: all
 	@$(SDK_ROOT)/scripts/copy.sh
@@ -67,4 +85,4 @@ clean:
 	done
 	rm -rf $(BUILD)
 
-.PHONY: all build-apps release new copy package clean
+.PHONY: all build-apps release new debug test copy package clean

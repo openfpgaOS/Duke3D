@@ -1,9 +1,13 @@
 #!/bin/bash
 #
-# openfpgaOS SDK — Create Your App
+# openfpgaOS SDK — Scaffold a custom core
 #
-# Sets up everything you need: source directory with a self-contained
-# Makefile, stub code, instance JSON, and standalone core identity.
+# Creates a CUSTOM CORE: a standalone openFPGA core wrapping a single
+# app, with its own dist/<name>/, its own Core ID, and its own ZIP. The
+# scaffold lives at src/<name>/ and uses scripts/new.sh under the hood.
+#
+# For the other path — an SDK APP bundled into the shared SDK demo
+# core — use `cd src/apps && make new APP=<name>` instead.
 #
 # Usage:
 #   ./scripts/customize.sh                 Interactive mode (prompts)
@@ -86,10 +90,10 @@ ask() {
 
 # ── Interactive mode ────────────────────────────────────────────────
 if [[ $BATCH -eq 0 ]]; then
-    echo -e "${CYAN}=== openfpgaOS — Create Your App ===${RESET}"
+    echo -e "${CYAN}=== openfpgaOS — Scaffold a custom core ===${RESET}"
     echo
 
-    NAME=$(ask "App name" "$NAME")
+    NAME=$(ask "Custom core name" "$NAME")
     [[ -z "$NAME" ]] && { echo "Name is required."; exit 1; }
 
     default_short=$(derive_short "$NAME")
@@ -198,12 +202,12 @@ fi
 
 # ── Done ────────────────────────────────────────────────────────────
 echo
-echo -e "${GREEN}Your app is ready!${RESET}"
+echo -e "${GREEN}Custom core ready!${RESET}"
 echo
 echo "  cd src/$SNAME"
-echo "  make              # build"
-echo "  make copy         # copy to Pocket SD card"
+echo "  make              # build the custom core"
+echo "  make copy         # copy this custom core to Pocket SD"
 echo "  make test         # test on desktop (SDL2)"
-echo "  make package      # package for distribution"
+echo "  make package      # package this custom core into a ZIP"
 echo
-echo "Edit src/$SNAME/main.c to start building your app."
+echo "Edit src/$SNAME/main.c to start building your custom core."

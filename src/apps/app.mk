@@ -1,8 +1,12 @@
-# openfpgaOS SDK — Per-App Build Rules
+# openfpgaOS SDK — Per SDK app build rules
 #
-# Included by each demo app's Makefile.
-# Intermediates: .obj/sdk/<name>/
-# Final ELF copied to build/sdk/ by the parent Makefile's release step.
+# Included by each src/apps/<name>/Makefile. Drives the SDK app build
+# path: intermediate objects under .obj/sdk/<name>/, final ELF picked
+# up by src/apps/Makefile's release step and dropped into build/sdk/.
+#
+# For the custom-core path (a standalone openFPGA core wrapping a
+# single app under src/<name>/) see scripts/customize.sh and the
+# Makefile that script generates.
 #
 
 SDK_DIR   = ../../sdk
@@ -23,6 +27,14 @@ include $(SDK_DIR)/sdk.mk
 all: $(OBJ_DIR)/app.elf
 	@$(SIZE) $<
 
+# UART push of this single SDK app's ELF (no SDK release/assembly step
+# needed — the bare app.elf is what the loader expects).
+debug: $(OBJ_DIR)/app.elf
+	@$(ROOT)/scripts/debug.sh $(OBJ_DIR)/app.elf
+
+# Desktop test build via SDL2 — sdk.mk already provides the app_pc rule.
+test: app_pc
+
 clean: sdk-clean
 
-.PHONY: all clean
+.PHONY: all debug test clean

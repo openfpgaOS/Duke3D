@@ -236,26 +236,48 @@ void of_video_flush(void) {
 }
 
 /* ======================================================================
+ * Timer
+ *
+ * of_timer.h declares of_time_us / of_time_ms as plain externs in the
+ * OF_PC build (no inline syscalls). The PC backend implements them
+ * here on top of SDL_GetPerformanceCounter / SDL_GetTicks. Both are
+ * monotonic and free-running, matching the on-target semantics.
+ * ====================================================================== */
+
+unsigned int of_time_us(void) {
+    static Uint64 freq;
+    if (!freq) freq = SDL_GetPerformanceFrequency();
+    Uint64 ticks = SDL_GetPerformanceCounter();
+    /* Scale to microseconds. Wraps in ~71 minutes (uint32 us), same
+     * cadence as the hardware free-running timer. */
+    return (unsigned int)((ticks * 1000000ULL) / freq);
+}
+
+unsigned int of_time_ms(void) {
+    return (unsigned int)SDL_GetTicks();
+}
+
+/* ======================================================================
  * Input
  * ====================================================================== */
 
 /* SDL scancode -> button mask mapping */
 static uint32_t key_to_btn(SDL_Scancode sc) {
     switch (sc) {
-        case SDL_SCANCODE_UP:     return BTN_UP;
-        case SDL_SCANCODE_DOWN:   return BTN_DOWN;
-        case SDL_SCANCODE_LEFT:   return BTN_LEFT;
-        case SDL_SCANCODE_RIGHT:  return BTN_RIGHT;
-        case SDL_SCANCODE_Z:      return BTN_A;
-        case SDL_SCANCODE_X:      return BTN_B;
-        case SDL_SCANCODE_A:      return BTN_X;
-        case SDL_SCANCODE_S:      return BTN_Y;
-        case SDL_SCANCODE_Q:      return BTN_L1;
-        case SDL_SCANCODE_W:      return BTN_R1;
-        case SDL_SCANCODE_1:      return BTN_L2;
-        case SDL_SCANCODE_2:      return BTN_R2;
-        case SDL_SCANCODE_RSHIFT: return BTN_SELECT;
-        case SDL_SCANCODE_RETURN: return BTN_START;
+        case SDL_SCANCODE_UP:     return OF_BTN_UP;
+        case SDL_SCANCODE_DOWN:   return OF_BTN_DOWN;
+        case SDL_SCANCODE_LEFT:   return OF_BTN_LEFT;
+        case SDL_SCANCODE_RIGHT:  return OF_BTN_RIGHT;
+        case SDL_SCANCODE_Z:      return OF_BTN_A;
+        case SDL_SCANCODE_X:      return OF_BTN_B;
+        case SDL_SCANCODE_A:      return OF_BTN_X;
+        case SDL_SCANCODE_S:      return OF_BTN_Y;
+        case SDL_SCANCODE_Q:      return OF_BTN_L1;
+        case SDL_SCANCODE_W:      return OF_BTN_R1;
+        case SDL_SCANCODE_1:      return OF_BTN_L2;
+        case SDL_SCANCODE_2:      return OF_BTN_R2;
+        case SDL_SCANCODE_RSHIFT: return OF_BTN_SELECT;
+        case SDL_SCANCODE_RETURN: return OF_BTN_START;
         default: return 0;
     }
 }
@@ -282,18 +304,18 @@ void of_input_poll(void) {
             int p = 0;
             uint32_t mask = 0;
             switch (ev.cbutton.button) {
-                case SDL_CONTROLLER_BUTTON_DPAD_UP:    mask = BTN_UP; break;
-                case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  mask = BTN_DOWN; break;
-                case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  mask = BTN_LEFT; break;
-                case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: mask = BTN_RIGHT; break;
-                case SDL_CONTROLLER_BUTTON_A:          mask = BTN_A; break;
-                case SDL_CONTROLLER_BUTTON_B:          mask = BTN_B; break;
-                case SDL_CONTROLLER_BUTTON_X:          mask = BTN_X; break;
-                case SDL_CONTROLLER_BUTTON_Y:          mask = BTN_Y; break;
-                case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  mask = BTN_L1; break;
-                case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: mask = BTN_R1; break;
-                case SDL_CONTROLLER_BUTTON_BACK:       mask = BTN_SELECT; break;
-                case SDL_CONTROLLER_BUTTON_START:      mask = BTN_START; break;
+                case SDL_CONTROLLER_BUTTON_DPAD_UP:    mask = OF_BTN_UP; break;
+                case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  mask = OF_BTN_DOWN; break;
+                case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  mask = OF_BTN_LEFT; break;
+                case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: mask = OF_BTN_RIGHT; break;
+                case SDL_CONTROLLER_BUTTON_A:          mask = OF_BTN_A; break;
+                case SDL_CONTROLLER_BUTTON_B:          mask = OF_BTN_B; break;
+                case SDL_CONTROLLER_BUTTON_X:          mask = OF_BTN_X; break;
+                case SDL_CONTROLLER_BUTTON_Y:          mask = OF_BTN_Y; break;
+                case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  mask = OF_BTN_L1; break;
+                case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: mask = OF_BTN_R1; break;
+                case SDL_CONTROLLER_BUTTON_BACK:       mask = OF_BTN_SELECT; break;
+                case SDL_CONTROLLER_BUTTON_START:      mask = OF_BTN_START; break;
                 default: break;
             }
             if (ev.type == SDL_CONTROLLERBUTTONDOWN)
