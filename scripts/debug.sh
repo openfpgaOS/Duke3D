@@ -17,6 +17,18 @@ SDK_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PHDPD="$SDK_DIR/src/tools/phdp/phdpd"
 PHDP="$SDK_DIR/src/tools/phdp/phdp"
 
+# ── Build host tools on demand ─────────────────────────────────────
+# Neither the root `make debug` target nor the per-app debug rules
+# depend on the phdp tools, so this script must make sure they exist
+# before trying to invoke them.
+if [ ! -x "$PHDPD" ] || [ ! -x "$PHDP" ]; then
+    echo -e "\033[92mBuilding phdp tools...\033[0m"
+    if ! make -C "$SDK_DIR/src/tools/phdp" >/dev/null; then
+        echo -e "\033[91mFailed to build phdp tools\033[0m"
+        exit 1
+    fi
+fi
+
 GREEN='\033[92m'
 RED='\033[91m'
 RESET='\033[0m'
