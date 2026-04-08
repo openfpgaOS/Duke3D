@@ -21,7 +21,8 @@
 #include "of_syscall_numbers.h"
 
 /* Start a non-blocking file read from a data slot.
- * dest must be in CRAM1 (direct DMA target).
+ * dest must point into a DMA-target region (the kernel rejects
+ * destinations outside the platform's bridge-addressable window).
  * callback(token, result) fires when DMA completes: result=0 success, <0 error.
  * Only one async read in flight at a time (bridge limitation).
  * Returns token >= 0 on success, < 0 if busy or error. */

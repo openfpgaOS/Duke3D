@@ -23,6 +23,10 @@ extern "C" {
 #include <stdint.h>
 #include <string.h>
 
+#ifndef OF_PC
+#include "of_caps.h"
+#endif
+
 /* ================================================================
  * Constants
  * ================================================================ */
@@ -127,8 +131,15 @@ typedef struct {
 
 #ifndef OF_PC
 
-#define OF_GPU_BASE             0x4A000000
-#define OF_GPU_REG(off)         (*(volatile uint32_t *)(OF_GPU_BASE + (off)))
+/* GPU MMIO base. The kernel reports the per-target address via the
+ * of_capabilities descriptor; of_gpu_init() reads it once and caches
+ * it in _gpu_base, so the GPU register macros below dereference a
+ * file-static variable instead of a hardcoded immediate. This is what
+ * lets the same SDK app .elf run on a target whose GPU window sits
+ * at a different CPU address. */
+static uint32_t _gpu_base;
+
+#define OF_GPU_REG(off)         (*(volatile uint32_t *)(_gpu_base + (off)))
 
 #define GPU_CTRL                OF_GPU_REG(0x00)  /* W: bit0=enable, bit1=soft_reset, bit2=ring_reset */
 #define GPU_RING_WRPTR          OF_GPU_REG(0x04)  /* W: CPU write pointer (byte offset) — kicks GPU */
@@ -195,6 +206,13 @@ static inline void _gpu_cmd_header(uint8_t cmd, uint32_t payload_words) {
  * ================================================================ */
 
 static inline void of_gpu_init(void) {
+    /* Resolve the GPU MMIO base from the runtime caps descriptor.
+     * Must be called after main() (or after the SDK constructors run)
+     * so _of_caps_ptr is populated. Apps that try to drive the GPU
+     * before of_gpu_init() will dereference a NULL _gpu_base and
+     * fault clearly. */
+    _gpu_base = of_get_caps()->gpu_base;
+
     _gpu_wrptr = 0;
     _gpu_fence_next = 1;
     GPU_CTRL = 4;               /* ring_reset: clear wr_addr + wrptr + rdptr */

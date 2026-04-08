@@ -5,9 +5,9 @@
  * launching the application. Apps read it to discover the platform,
  * available hardware, memory layout, and OS services.
  *
- * This replaces hardcoded addresses (FB0_BASE, CRAM1 sample pool, etc.)
- * and enables the same app binary to run on different targets (Pocket,
- * MiSTer) and core variants (full, lite, 3d).
+ * This replaces hardcoded addresses (framebuffer base, sample pool,
+ * GPU MMIO window, ...) and enables the same app binary to run on
+ * different targets (Pocket, MiSTer) and core variants (full, lite, 3d).
  *
  *   const struct of_capabilities *caps = of_get_caps();
  *   if (of_has_feature(OF_HW_MIXER))
@@ -24,8 +24,11 @@ extern "C" {
 #include <stdint.h>
 
 #define OF_CAPS_MAGIC   0x43415053  /* 'CAPS' */
-#define OF_CAPS_VERSION 1
-#define OF_CAPS_ADDR    0x00007800  /* BRAM — fast access, no D-cache pollution */
+#define OF_CAPS_VERSION 2
+/* The of_capabilities pointer is delivered to apps via the AT_OF_CAPS
+ * auxv tag set up by the kernel ELF loader (see of_app_abi.h). Apps
+ * never need to know where the struct lives -- they just call
+ * of_get_caps() below. */
 
 /* Platform IDs */
 #define OF_PLATFORM_POCKET    1
@@ -67,7 +70,7 @@ struct of_capabilities {
     uint32_t fb_width;          /* Framebuffer width in pixels */
     uint32_t fb_height;         /* Framebuffer height in pixels */
     uint32_t fb_stride;         /* Bytes per row */
-    uint32_t sample_base;       /* Audio sample pool base (CRAM1) */
+    uint32_t sample_base;       /* Audio sample pool base address */
     uint32_t sample_size;       /* Audio sample pool size in bytes */
 
     /* Hardware features */
@@ -84,13 +87,26 @@ struct of_capabilities {
     /* OS info */
     uint32_t os_version;        /* Packed: major.minor.patch */
     uint32_t cpu_freq_hz;       /* CPU clock frequency */
-    uint32_t services_table;    /* Address of OS services table (0 = none) */
+    uint32_t services_table;    /* Address of OS services table (0 = none).
+                                 * Legacy: new apps get the same pointer
+                                 * via the AT_OF_SVC auxv tag. */
+
+    /* Memory bases for inline accessors that need to translate
+     * pointers without hardcoding target addresses. Added in v2. */
+    uint32_t sdram_base;            /* CPU base of cached SDRAM */
+    uint32_t sdram_uncached_base;   /* CPU base of D-cache-bypass alias */
+    uint32_t gpu_base;              /* GPU MMIO window base (0 = no GPU) */
 };
 
 #ifndef OF_PC
 
+/* Populated by of_init.c's constructor from the AT_OF_CAPS auxv tag.
+ * Apps must not read this directly -- use of_get_caps() so the
+ * indirection can change without breaking the API. */
+extern const struct of_capabilities *_of_caps_ptr;
+
 static inline const struct of_capabilities *of_get_caps(void) {
-    return (const struct of_capabilities *)OF_CAPS_ADDR;
+    return _of_caps_ptr;
 }
 
 static inline int of_has_feature(uint32_t feature) {

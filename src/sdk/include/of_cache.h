@@ -14,6 +14,7 @@ extern "C" {
 
 #ifndef OF_PC
 
+#include "of_caps.h"
 #include "of_services.h"
 
 /* Flush D-cache for the draw buffer (same as of_video_flush). */
@@ -30,15 +31,17 @@ static inline void of_cache_invalidate_icache(void) {
 /* ── Uncached memory access ────────────────────────────────────────
  * Bypass the D-cache for random byte reads/writes (e.g. reading
  * sample data, framebuffer peek, DMA buffers).
- * Platform-specific: each target defines its own uncached alias. */
-
-#define OF_SDRAM_BASE       0x10000000
-#define OF_SDRAM_UNCACHED   0x50000000
+ *
+ * The SDRAM base + uncached-alias base come from the caps descriptor
+ * the kernel hands the app at startup, so this header has no compiled-
+ * in target addresses. The two loads are cheap (cached struct, single
+ * line) and well below DMA setup overhead. */
 
 /* Convert a cached SDRAM pointer to its uncached alias */
 static inline volatile void *of_uncached(const void *ptr) {
+    const struct of_capabilities *c = of_get_caps();
     return (volatile void *)((uint32_t)(uintptr_t)ptr
-                             - OF_SDRAM_BASE + OF_SDRAM_UNCACHED);
+                             - c->sdram_base + c->sdram_uncached_base);
 }
 
 /* Read/write single bytes without polluting the D-cache */

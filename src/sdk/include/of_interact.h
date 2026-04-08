@@ -2,10 +2,14 @@
  * of_interact.h -- Platform menu/settings API
  *
  * Read option values set by the platform menu (Pocket menu button,
- * MiSTer OSD, etc.). Variables are defined in dist/interact.json.
+ * MiSTer OSD, etc.). Variables are defined in dist/interact.json
+ * and surfaced to the app via the of_interact_get() ecall below.
  *
- * Each variable occupies 4 bytes. Use OF_INTERACT_ADDR(n) to compute
- * the bridge address for interact.json.
+ * Apps only need to know the variable index (0..OF_INTERACT_MAX_VARS-1).
+ * The bridge address that interact.json points each variable at is a
+ * Pocket-specific authoring detail; it lives in the per-target schema
+ * helper (e.g. targets/pocket/include/pocket_interact_addrs.h) and is
+ * intentionally NOT part of the SDK API.
  */
 
 #ifndef OF_INTERACT_H
@@ -18,11 +22,6 @@ extern "C" {
 #include <stdint.h>
 
 #define OF_INTERACT_MAX_VARS    64
-
-/* Bridge address for interact.json authoring.
- * Use in interact.json: "address": "0x03FExxxx" */
-#define OF_INTERACT_BRIDGE_BASE 0x03FE0000
-#define OF_INTERACT_ADDR(n)     (OF_INTERACT_BRIDGE_BASE + (n) * 4)
 
 /* Read an interact variable by index (0-63).
  * Returns the 32-bit value set by the platform menu. */

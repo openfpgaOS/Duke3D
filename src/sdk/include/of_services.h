@@ -4,11 +4,11 @@
  * Direct function pointer table for OS services. Apps call through
  * this table instead of ecall, saving ~50 cycles per call.
  *
- * The table lives at 0x7A00 in BRAM. The kernel populates it before
- * launching the app. Old apps compiled against the ecall-based SDK
- * still work unchanged.
+ * The table address is delivered to apps via the AT_OF_SVC auxv tag
+ * set up by the kernel ELF loader (see of_app_abi.h). of_init.c's
+ * constructor stashes the pointer in _of_svc_ptr before main() runs;
+ * apps just use the OF_SVC macro:
  *
- *   #define OF_SVC ((const struct of_services_table *)0x7A00)
  *   uint8_t *fb = OF_SVC->video_get_surface();
  */
 
@@ -24,7 +24,6 @@ extern "C" {
 
 #define OF_SVC_MAGIC    0x4F535643  /* 'OSVC' */
 #define OF_SVC_VERSION  1
-#define OF_SVC_ADDR     0x00007A00  /* BRAM */
 
 /* Forward declare input state struct */
 struct of_input_state;
@@ -124,7 +123,12 @@ struct of_services_table {
 
 #ifndef OF_PC
 
-#define OF_SVC ((const struct of_services_table *)OF_SVC_ADDR)
+/* Populated by of_init.c's constructor from the AT_OF_SVC auxv tag.
+ * Apps must not read this directly -- use the OF_SVC macro so the
+ * indirection can change without breaking the API. */
+extern const struct of_services_table *_of_svc_ptr;
+
+#define OF_SVC (_of_svc_ptr)
 
 #endif /* OF_PC */
 
