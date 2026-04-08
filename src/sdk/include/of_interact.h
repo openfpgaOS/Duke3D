@@ -32,7 +32,8 @@ extern "C" {
 #include "of_syscall_numbers.h"
 
 static inline uint32_t of_interact_get(int index) {
-    return (uint32_t)__of_syscall1(OF_SYS_INTERACT_GET, index);
+    return (uint32_t)of_ecall1(OF_EID_INTERACT,
+                               OF_INTERACT_FID_GET, index).value;
 }
 
 #else /* OF_PC */

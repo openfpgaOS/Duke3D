@@ -1,8 +1,36 @@
 /*
- * of_syscall_numbers.h -- Canonical syscall numbers for openfpgaOS
+ * of_syscall_numbers.h -- openfpgaOS SBI Extension/Function IDs
  *
- * Single source of truth for all openfpgaOS HAL syscall numbers.
- * Used by both the kernel (syscall dispatch) and the API (user-side).
+ * Single source of truth for the openfpgaOS vendor-extension namespace
+ * of the RISC-V SBI calling convention. See of_syscall.h for the ABI
+ * spec and docs/syscall-abi.md for the long-form rationale.
+ *
+ * ============================================================================
+ * EID layout
+ * ============================================================================
+ *
+ *   0x00000000 .. 0x000001FF   Linux RISC-V syscalls (musl POSIX)
+ *   0x00000200 .. 0x0FFFFFFF   Reserved (do not use)
+ *   0x10000000 .. 0x2FFFFFFF   Reserved for future standard SBI extensions
+ *   0xC0DE0000 .. 0xC0DE00FF   openfpgaOS vendor extensions  <-- this file
+ *
+ * The 0xC0DE0000 prefix has the high bit set, putting it unambiguously
+ * in the SBI vendor range and well above any plausible Linux syscall
+ * number expansion.
+ *
+ * EIDs are append-only: never reuse a retired EID, never insert a new
+ * EID in the middle of the list.
+ *
+ * ============================================================================
+ * FID layout
+ * ============================================================================
+ *
+ * Each subsystem has its own enum of function IDs, starting at 0 and
+ * growing append-only. There is no shared FID namespace -- a FID is
+ * only meaningful in combination with its EID.
+ *
+ * Reserve no slots for "future use" -- just append. Linux did this and
+ * it works fine; reserved gaps invariably get reused incorrectly.
  */
 
 #ifndef OF_SYSCALL_NUMBERS_H
@@ -12,136 +40,198 @@
 extern "C" {
 #endif
 
-/* ======================================================================
- * Canonical syscall numbers (OF_SYS_* prefix)
- * ====================================================================== */
+/* ============================================================================
+ * Vendor extension base
+ * ============================================================================ */
 
-/* Video */
-#define OF_SYS_VIDEO_INIT              0x1000
-#define OF_SYS_VIDEO_FLIP              0x1001
-#define OF_SYS_VIDEO_WAIT_FLIP         0x1002
-#define OF_SYS_VIDEO_SET_PALETTE       0x1003
-#define OF_SYS_VIDEO_GET_SURFACE       0x1004
-#define OF_SYS_VIDEO_SET_DISPLAY_MODE  0x1005
-#define OF_SYS_VIDEO_CLEAR             0x1006
-#define OF_SYS_VIDEO_SET_PALETTE_BULK  0x1007
-#define OF_SYS_VIDEO_FLUSH_CACHE       0x1008
-#define OF_SYS_VIDEO_SET_COLOR_MODE    0x1009
-#define OF_SYS_VIDEO_SET_PALETTE_VGA4 0x100A
-#define OF_SYS_VIDEO_VSYNC             0x100B
-#define OF_SYS_VIDEO_SET_VSYNC_CALLBACK 0x100C
+#define OF_EID_BASE_VALUE   0xC0DE0000u
 
-/* Audio */
-#define OF_SYS_AUDIO_WRITE             0x1010
-#define OF_SYS_AUDIO_GET_FREE          0x1011
-#define OF_SYS_OPL_WRITE               0x1012
-#define OF_SYS_OPL_RESET               0x1013
-#define OF_SYS_AUDIO_INIT              0x1014
+/* Test whether an EID belongs to the openfpgaOS vendor range. */
+#define OF_EID_IS_VENDOR(eid) \
+    (((unsigned long)(eid) & 0xFFFFFF00u) == OF_EID_BASE_VALUE)
 
-/* Input */
-#define OF_SYS_INPUT_POLL              0x1020
-#define OF_SYS_INPUT_GET_STATE         0x1021
-#define OF_SYS_INPUT_SET_DEADZONE      0x1022
-#define OF_SYS_INPUT_POLL_P0           0x1023
+/* ============================================================================
+ * Extension IDs (EIDs)
+ *
+ * Append-only. Numbered sequentially within the vendor base. Each EID
+ * gets its own enum of FIDs below.
+ * ============================================================================ */
 
-/* Save — handled internally by fclose() */
+#define OF_EID_BASE         (OF_EID_BASE_VALUE + 0x00)  /* version, caps    */
+#define OF_EID_VIDEO        (OF_EID_BASE_VALUE + 0x01)
+#define OF_EID_AUDIO        (OF_EID_BASE_VALUE + 0x02)
+#define OF_EID_INPUT        (OF_EID_BASE_VALUE + 0x03)
+#define OF_EID_ANALOGIZER   (OF_EID_BASE_VALUE + 0x04)
+#define OF_EID_NET          (OF_EID_BASE_VALUE + 0x05)
+#define OF_EID_TIMER        (OF_EID_BASE_VALUE + 0x06)
+#define OF_EID_TILE         (OF_EID_BASE_VALUE + 0x07)
+#define OF_EID_SPRITE       (OF_EID_BASE_VALUE + 0x08)
+#define OF_EID_MEMORY       (OF_EID_BASE_VALUE + 0x09)
+#define OF_EID_MIXER        (OF_EID_BASE_VALUE + 0x0A)
+#define OF_EID_CODEC        (OF_EID_BASE_VALUE + 0x0B)
+#define OF_EID_LZW          (OF_EID_BASE_VALUE + 0x0C)
+#define OF_EID_INTERACT     (OF_EID_BASE_VALUE + 0x0D)
+#define OF_EID_FILE         (OF_EID_BASE_VALUE + 0x0E)
 
-/* Analogizer */
-#define OF_SYS_ANALOGIZER_GET_STATE    0x1040
-#define OF_SYS_ANALOGIZER_IS_ENABLED   0x1041
+/* ============================================================================
+ * Function IDs (FIDs) -- one enum per subsystem.
+ *
+ * APPEND ONLY. Never reorder, renumber, or delete entries -- old binaries
+ * still call by FID number. If a function is retired, leave the slot
+ * occupied with an unused enumerator (or a `_RESERVED_N` placeholder)
+ * and add the replacement at the next free slot.
+ * ============================================================================ */
 
+/* -- OF_EID_BASE -- */
+enum of_base_fid {
+    OF_BASE_FID_GET_VERSION = 0,
+};
 
-/* Networking (replaces Link cable) */
-#define OF_SYS_NET_HOST_START          0x1060
-#define OF_SYS_NET_JOIN                0x1061
-#define OF_SYS_NET_STOP                0x1062
-#define OF_SYS_NET_STATUS              0x1063
-#define OF_SYS_NET_CLIENT_COUNT        0x1064
-#define OF_SYS_NET_SEND_TO             0x1065
-#define OF_SYS_NET_RECV_FROM           0x1066
-#define OF_SYS_NET_BROADCAST           0x1067
-#define OF_SYS_NET_SEND                0x1068
-#define OF_SYS_NET_RECV                0x1069
-#define OF_SYS_NET_POLL                0x106A
+/* -- OF_EID_VIDEO -- */
+enum of_video_fid {
+    OF_VIDEO_FID_INIT                = 0,
+    OF_VIDEO_FID_FLIP                = 1,
+    OF_VIDEO_FID_WAIT_FLIP           = 2,
+    OF_VIDEO_FID_SET_PALETTE         = 3,
+    OF_VIDEO_FID_GET_SURFACE         = 4,
+    OF_VIDEO_FID_SET_DISPLAY_MODE    = 5,
+    OF_VIDEO_FID_CLEAR               = 6,
+    OF_VIDEO_FID_SET_PALETTE_BULK    = 7,
+    OF_VIDEO_FID_FLUSH_CACHE         = 8,
+    OF_VIDEO_FID_SET_COLOR_MODE      = 9,
+    OF_VIDEO_FID_SET_PALETTE_VGA4    = 10,
+    OF_VIDEO_FID_VSYNC               = 11,
+    OF_VIDEO_FID_SET_VSYNC_CALLBACK  = 12,
+};
 
-/* Terminal */
-#define OF_SYS_TERM_PUTCHAR            0x1070
+/* -- OF_EID_AUDIO -- */
+enum of_audio_fid {
+    OF_AUDIO_FID_INIT      = 0,
+    OF_AUDIO_FID_WRITE     = 1,
+    OF_AUDIO_FID_GET_FREE  = 2,
+    OF_AUDIO_FID_OPL_WRITE = 3,
+    OF_AUDIO_FID_OPL_RESET = 4,
+};
 
-/* Timer (time/delay via POSIX clock_gettime/usleep) */
-#define OF_SYS_TIMER_SET_CALLBACK      0x1074
-#define OF_SYS_TIMER_STOP              0x1075
-#define OF_SYS_TIMER_GET_US            0x1076
-#define OF_SYS_TIMER_GET_MS            0x1077
-#define OF_SYS_TIMER_DELAY_US          0x1078
+/* -- OF_EID_INPUT -- */
+enum of_input_fid {
+    OF_INPUT_FID_POLL         = 0,
+    OF_INPUT_FID_GET_STATE    = 1,
+    OF_INPUT_FID_SET_DEADZONE = 2,
+    OF_INPUT_FID_POLL_P0      = 3,
+};
 
-/* File — handled internally by fread/fseek */
+/* -- OF_EID_ANALOGIZER -- */
+enum of_analogizer_fid {
+    OF_ANALOGIZER_FID_GET_STATE  = 0,
+    OF_ANALOGIZER_FID_IS_ENABLED = 1,
+};
 
-/* Tile engine */
-#define OF_SYS_TILE_ENABLE             0x1090
-#define OF_SYS_TILE_SCROLL             0x1091
-#define OF_SYS_TILE_SET                0x1092
-#define OF_SYS_TILE_LOAD_MAP           0x1093
-#define OF_SYS_TILE_LOAD_CHR           0x1094
+/* -- OF_EID_NET -- */
+enum of_net_fid {
+    OF_NET_FID_HOST_START   = 0,
+    OF_NET_FID_JOIN         = 1,
+    OF_NET_FID_STOP         = 2,
+    OF_NET_FID_STATUS       = 3,
+    OF_NET_FID_CLIENT_COUNT = 4,
+    OF_NET_FID_SEND_TO      = 5,
+    OF_NET_FID_RECV_FROM    = 6,
+    OF_NET_FID_BROADCAST    = 7,
+    OF_NET_FID_SEND         = 8,
+    OF_NET_FID_RECV         = 9,
+    OF_NET_FID_POLL         = 10,
+};
 
-/* Sprite engine */
-#define OF_SYS_SPRITE_ENABLE           0x10A0
-#define OF_SYS_SPRITE_SET              0x10A1
-#define OF_SYS_SPRITE_MOVE             0x10A2
-#define OF_SYS_SPRITE_LOAD_CHR         0x10A3
-#define OF_SYS_SPRITE_HIDE             0x10A4
-#define OF_SYS_SPRITE_HIDE_ALL         0x10A5
+/* -- OF_EID_TIMER -- */
+enum of_timer_fid {
+    OF_TIMER_FID_SET_CALLBACK = 0,
+    OF_TIMER_FID_STOP         = 1,
+    OF_TIMER_FID_GET_US       = 2,
+    OF_TIMER_FID_GET_MS       = 3,
+    OF_TIMER_FID_DELAY_US     = 4,
+};
 
-/* Version */
-#define OF_SYS_GET_VERSION             0x10B0
+/* -- OF_EID_TILE -- */
+enum of_tile_fid {
+    OF_TILE_FID_ENABLE   = 0,
+    OF_TILE_FID_SCROLL   = 1,
+    OF_TILE_FID_SET      = 2,
+    OF_TILE_FID_LOAD_MAP = 3,
+    OF_TILE_FID_LOAD_CHR = 4,
+};
 
-/* Idle hook — internal, called during DMA waits */
+/* -- OF_EID_SPRITE -- */
+enum of_sprite_fid {
+    OF_SPRITE_FID_ENABLE   = 0,
+    OF_SPRITE_FID_SET      = 1,
+    OF_SPRITE_FID_MOVE     = 2,
+    OF_SPRITE_FID_LOAD_CHR = 3,
+    OF_SPRITE_FID_HIDE     = 4,
+    OF_SPRITE_FID_HIDE_ALL = 5,
+};
 
-/* Memory allocation */
-#define OF_SYS_MALLOC                  0x10C0
-#define OF_SYS_FREE                    0x10C1
-#define OF_SYS_REALLOC                 0x10C2
-#define OF_SYS_CALLOC                  0x10C3
+/* -- OF_EID_MEMORY -- */
+enum of_memory_fid {
+    OF_MEMORY_FID_MALLOC  = 0,
+    OF_MEMORY_FID_FREE    = 1,
+    OF_MEMORY_FID_REALLOC = 2,
+    OF_MEMORY_FID_CALLOC  = 3,
+};
 
-/* Audio Mixer */
-#define OF_SYS_MIXER_INIT              0x10D0
-#define OF_SYS_MIXER_PLAY              0x10D1
-#define OF_SYS_MIXER_STOP              0x10D2
-#define OF_SYS_MIXER_STOP_ALL          0x10D3
-#define OF_SYS_MIXER_SET_VOLUME        0x10D4
-#define OF_SYS_MIXER_PUMP              0x10D5
-#define OF_SYS_MIXER_VOICE_ACTIVE      0x10D6
-#define OF_SYS_MIXER_SET_PAN           0x10D7
-#define OF_SYS_MIXER_SET_LOOP          0x10D8
-#define OF_SYS_MIXER_SET_RATE          0x10D9
-#define OF_SYS_MIXER_SET_VOL_LR        0x10DA
-#define OF_SYS_MIXER_SET_BIDI          0x10DB
-#define OF_SYS_MIXER_GET_POSITION      0x10DC
-#define OF_SYS_MIXER_SET_POSITION      0x10DD
-#define OF_SYS_MIXER_SET_VOICE         0x10DE
-#define OF_SYS_MIXER_ALLOC_SAMPLES     0x10DF
-#define OF_SYS_MIXER_FREE_SAMPLES      0x10E0
-#define OF_SYS_MIXER_SET_RATE_RAW      0x10E1
-#define OF_SYS_MIXER_SET_VOICE_RAW     0x10E2
-#define OF_SYS_MIXER_SET_VOL_RATE      0x10E3
-#define OF_SYS_MIXER_POLL_ENDED        0x10E4
-#define OF_SYS_MIXER_SET_END_CALLBACK  0x10E9
-#define OF_SYS_MIXER_RETRIGGER         0x10EA
+/* -- OF_EID_MIXER -- */
+enum of_mixer_fid {
+    OF_MIXER_FID_INIT              = 0,
+    OF_MIXER_FID_PLAY              = 1,
+    OF_MIXER_FID_STOP              = 2,
+    OF_MIXER_FID_STOP_ALL          = 3,
+    OF_MIXER_FID_SET_VOLUME        = 4,
+    OF_MIXER_FID_PUMP              = 5,
+    OF_MIXER_FID_VOICE_ACTIVE      = 6,
+    OF_MIXER_FID_SET_PAN           = 7,
+    OF_MIXER_FID_SET_LOOP          = 8,
+    OF_MIXER_FID_SET_RATE          = 9,
+    OF_MIXER_FID_SET_VOL_LR        = 10,
+    OF_MIXER_FID_SET_BIDI          = 11,
+    OF_MIXER_FID_GET_POSITION      = 12,
+    OF_MIXER_FID_SET_POSITION      = 13,
+    OF_MIXER_FID_SET_VOICE         = 14,
+    OF_MIXER_FID_ALLOC_SAMPLES     = 15,
+    OF_MIXER_FID_FREE_SAMPLES      = 16,
+    OF_MIXER_FID_SET_RATE_RAW      = 17,
+    OF_MIXER_FID_SET_VOICE_RAW     = 18,
+    OF_MIXER_FID_SET_VOLUME_RAMP   = 19,
+    OF_MIXER_FID_POLL_ENDED        = 20,
+    OF_MIXER_FID_SET_END_CALLBACK  = 21,
+    OF_MIXER_FID_RETRIGGER         = 22,
+    OF_MIXER_FID_PLAY_8BIT         = 23,
+    OF_MIXER_FID_SET_GROUP         = 24,
+    OF_MIXER_FID_SET_GROUP_VOLUME  = 25,
+    OF_MIXER_FID_SET_MASTER_VOLUME = 26,
+};
 
-/* Audio Codec */
-#define OF_SYS_CODEC_PARSE_VOC         0x10E5
-#define OF_SYS_CODEC_PARSE_WAV         0x10E6
+/* -- OF_EID_CODEC -- */
+enum of_codec_fid {
+    OF_CODEC_FID_PARSE_VOC = 0,
+    OF_CODEC_FID_PARSE_WAV = 1,
+};
 
-/* LZW Compression */
-#define OF_SYS_LZW_COMPRESS            0x10E7
-#define OF_SYS_LZW_UNCOMPRESS          0x10E8
+/* -- OF_EID_LZW -- */
+enum of_lzw_fid {
+    OF_LZW_FID_COMPRESS   = 0,
+    OF_LZW_FID_UNCOMPRESS = 1,
+};
 
-/* Interact */
-#define OF_SYS_INTERACT_GET            0x10F0
+/* -- OF_EID_INTERACT -- */
+enum of_interact_fid {
+    OF_INTERACT_FID_GET = 0,
+};
 
-/* Async file I/O */
-#define OF_SYS_FILE_READ_ASYNC         0x10F1
-#define OF_SYS_FILE_ASYNC_POLL         0x10F2
-#define OF_SYS_FILE_ASYNC_BUSY         0x10F3
+/* -- OF_EID_FILE -- */
+enum of_file_fid {
+    OF_FILE_FID_READ_ASYNC = 0,
+    OF_FILE_FID_ASYNC_POLL = 1,
+    OF_FILE_FID_ASYNC_BUSY = 2,
+};
 
 #ifdef __cplusplus
 }

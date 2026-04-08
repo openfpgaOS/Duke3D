@@ -11,8 +11,10 @@ APP_NAME  = $(notdir $(CURDIR))
 OBJ_DIR   = $(ROOT)/.obj/sdk/$(APP_NAME)
 BUILD_DIR = $(OBJ_DIR)
 
-SRCS     = $(wildcard *.c)
-SRCS_CXX = $(wildcard *.cpp)
+# Auto-discover sources unless the per-app Makefile already set SRCS /
+# SRCS_CXX before including this file (e.g. to pull in $(OF_MIDI_SRC)).
+SRCS     ?= $(wildcard *.c)
+SRCS_CXX ?= $(wildcard *.cpp)
 
 .DEFAULT_GOAL := all
 

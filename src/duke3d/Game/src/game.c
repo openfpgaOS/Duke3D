@@ -55,6 +55,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "../../d3d_audio.h"
 #ifdef OPENFPGA
 #include "of_file.h"
+#include "of_timer.h"
 #endif
 
 #include "control.h"
@@ -8586,7 +8587,6 @@ int main(int argc,char  **argv)
 
 #ifdef OPENFPGA
         { static int _pf = 0; uint32_t _t0, _t1, _t2, _t3;
-          extern unsigned int of_time_us(void);
           _t0 = of_time_us();
 #endif
         displayrooms(screenpeek,i);

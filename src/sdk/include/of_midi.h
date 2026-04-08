@@ -31,8 +31,24 @@ extern "C" {
 #define OF_MIDI_ERR_NO_TRACKS (-4)
 #define OF_MIDI_ERR_PLAYING   (-5)
 
-/* Instrument patch size (11 bytes: FB/CNT + 5 mod + 5 car) */
-#define OF_MIDI_INST_SIZE 11
+/* Instrument patch size in the built-in WOPL-derived bank:
+ *   [0]     flags   (bit0 = pseudo-4-op, bit1 = blank, bit6 = fixed-pitch)
+ *   [1]     note_offset1 (int8, semitones for voice 1)
+ *   [2]     C0 register, voice 1 (FB | CNT1)
+ *   [3]     C0 register, voice 2 (FB | CNT2)
+ *   [4..8]  op1 = modulator of voice 1  (AVEK_MULT, KSL_TL, AR_DR, SL_RR, WS)
+ *   [9..13] op2 = carrier  of voice 1
+ *   [14..18] op3 = modulator of voice 2 (pseudo-4-op stack)
+ *   [19..23] op4 = carrier  of voice 2
+ *   [24]    percussion_key_number (drum fixed OPL3 play note; 0 melodic)
+ *   [25]    note_offset2 (int8, semitones for voice 2 stack)
+ *
+ * Pseudo-4-op patches are loaded as TWO independent 2-op voices on
+ * separate OPL3 channels (voice 1 ops on one channel, voice 2 ops on
+ * another), with their own note offsets — this matches the DMXOPL3
+ * style where most "GM" instruments are stacked 2-op pairs rather than
+ * true OPL3 4-op. The bank is 128 melodic + 47 GM drums × 26 bytes. */
+#define OF_MIDI_INST_SIZE 26
 
 /* Initialize MIDI subsystem.  Resets OPL3 and enables OPL3 mode. */
 int of_midi_init(void);
@@ -62,16 +78,15 @@ int of_midi_paused(void);
 void of_midi_set_volume(int volume);
 int  of_midi_get_volume(void);
 
-/* Load a custom instrument bank (128 melodic + 47 percussion instruments,
- * 11 bytes each = 1925 bytes total).  Pass NULL to restore built-in bank. */
+/* Load a custom instrument bank: 128 melodic + 47 drum records in the
+ * WOPL-derived 4-op format described at OF_MIDI_INST_SIZE above
+ * (175 × 26 = 4550 bytes total). Pass NULL to restore the built-in bank. */
 void of_midi_load_bank(const uint8_t *bank);
 
-/* Get a pointer to the built-in GM instrument bank (1925 bytes, read-only).
- * Use to merge custom patches (e.g. Duke3D TMB) over the default bank:
- *   uint8_t merged[1925];
- *   memcpy(merged, of_midi_builtin_bank(), 1925);
- *   // overlay TMB patches into merged[]
- *   of_midi_load_bank(merged); */
+/* Pointer to the built-in GM instrument bank (4550 bytes, read-only).
+ * First 128 records are melodic programs 0..127, next 47 are GM drum
+ * notes 35..81 in order. Useful for merging custom patches over the
+ * default bank. */
 const uint8_t *of_midi_builtin_bank(void);
 
 #ifdef __cplusplus

@@ -10,9 +10,10 @@
 #include "build.h"
 #include "draw.h"
 #ifdef OPENFPGA
-#include "of_bram.h"
+#include "of_fastram.h"
 #else
 #define OF_FASTTEXT
+#define OF_FASTDATA
 #endif
 
 #if RENDER_LIMIT_PIXELS

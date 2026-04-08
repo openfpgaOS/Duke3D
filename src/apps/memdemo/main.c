@@ -55,45 +55,45 @@ static inline uint32_t xorshift32(void) {
 static uint32_t bench_seq_read(const void *buf, uint32_t size, int r) {
     volatile uint32_t *p = (volatile uint32_t *)buf;
     uint32_t n_words = size / 4;
-    uint32_t t0 = clock_us();
+    uint32_t t0 = of_time_us();
     for (int i = 0; i < r; i++) {
         uint32_t acc = 0;
         for (uint32_t j = 0; j < n_words; j++)
             acc += p[j];
         sink = (uint8_t)acc;
     }
-    uint32_t t1 = clock_us();
+    uint32_t t1 = of_time_us();
     return t1 - t0;
 }
 
 static uint32_t bench_seq_write(void *buf, uint32_t size, int r) {
     volatile uint32_t *p = (volatile uint32_t *)buf;
     uint32_t n_words = size / 4;
-    uint32_t t0 = clock_us();
+    uint32_t t0 = of_time_us();
     for (int i = 0; i < r; i++) {
         for (uint32_t j = 0; j < n_words; j++)
             p[j] = j;
     }
-    uint32_t t1 = clock_us();
+    uint32_t t1 = of_time_us();
     sink = *(volatile uint8_t *)buf;
     return t1 - t0;
 }
 
 static uint32_t bench_memset(void *dst, uint32_t size, int r) {
-    uint32_t t0 = clock_us();
+    uint32_t t0 = of_time_us();
     for (int i = 0; i < r; i++)
         memset(dst, i & 0xFF, size);
-    uint32_t t1 = clock_us();
+    uint32_t t1 = of_time_us();
     sink = *(volatile uint8_t *)dst;
     return t1 - t0;
 }
 
 static uint32_t bench_memcpy(void *dst, const void *src, uint32_t size, int r) {
     memset((void *)src, 0xAA, size);
-    uint32_t t0 = clock_us();
+    uint32_t t0 = of_time_us();
     for (int i = 0; i < r; i++)
         memcpy(dst, src, size);
-    uint32_t t1 = clock_us();
+    uint32_t t1 = of_time_us();
     sink = *(volatile uint8_t *)dst;
     return t1 - t0;
 }
@@ -106,12 +106,12 @@ static uint32_t bench_random(void *buf, uint32_t size, int r, void *idx_store) {
     xor_state = 0x12345678;
     for (uint32_t j = 0; j < n_words; j++)
         idx_tbl[j] = xorshift32() % n_words;
-    uint32_t t0 = clock_us();
+    uint32_t t0 = of_time_us();
     for (int i = 0; i < r; i++) {
         for (uint32_t j = 0; j < n_words; j++)
             p[idx_tbl[j]] = j;
     }
-    uint32_t t1 = clock_us();
+    uint32_t t1 = of_time_us();
     sink = *(volatile uint8_t *)buf;
     return t1 - t0;
 }
@@ -276,10 +276,10 @@ static void run_cross(void) {
 
     for (int i = 0; i < NUM_SIZES; i++) {
         memset(psram, 0xBB, sizes[i]);
-        uint32_t t0 = clock_us();
+        uint32_t t0 = of_time_us();
         for (int j = 0; j < reps[i]; j++)
             memcpy(sdram, psram, sizes[i]);
-        uint32_t t1 = clock_us();
+        uint32_t t1 = of_time_us();
         sink = *(volatile uint8_t *)sdram;
         fmt_mbps(r[i], 16, sizes[i], t1 - t0, reps[i]);
     }
@@ -294,12 +294,12 @@ static void run_cross(void) {
         xor_state = 0x12345678;
         for (uint32_t k = 0; k < n_words; k++)
             idx_tbl[k] = xorshift32() % n_words;
-        uint32_t t0 = clock_us();
+        uint32_t t0 = of_time_us();
         for (int j = 0; j < reps[i]; j++) {
             for (uint32_t k = 0; k < n_words; k++)
                 sd[k] = ps[idx_tbl[k]];
         }
-        uint32_t t1 = clock_us();
+        uint32_t t1 = of_time_us();
         sink = *(volatile uint8_t *)sdram;
         fmt_mbps(r[i], 16, sizes[i], t1 - t0, reps[i]);
     }
@@ -310,10 +310,10 @@ static void run_cross(void) {
 
     for (int i = 0; i < NUM_SIZES; i++) {
         memset(sdram, 0xCC, sizes[i]);
-        uint32_t t0 = clock_us();
+        uint32_t t0 = of_time_us();
         for (int j = 0; j < reps[i]; j++)
             memcpy(psram, sdram, sizes[i]);
-        uint32_t t1 = clock_us();
+        uint32_t t1 = of_time_us();
         sink = *(volatile uint8_t *)psram;
         fmt_mbps(r[i], 16, sizes[i], t1 - t0, reps[i]);
     }
@@ -328,12 +328,12 @@ static void run_cross(void) {
         xor_state = 0x12345678;
         for (uint32_t k = 0; k < n_words; k++)
             idx_tbl[k] = xorshift32() % n_words;
-        uint32_t t0 = clock_us();
+        uint32_t t0 = of_time_us();
         for (int j = 0; j < reps[i]; j++) {
             for (uint32_t k = 0; k < n_words; k++)
                 ps[k] = sd[idx_tbl[k]];
         }
-        uint32_t t1 = clock_us();
+        uint32_t t1 = of_time_us();
         sink = *(volatile uint8_t *)psram;
         fmt_mbps(r[i], 16, sizes[i], t1 - t0, reps[i]);
     }

@@ -11,6 +11,11 @@
  *   of_mixer_3d_set_source(voice, source_x, source_y);
  *   // Each frame:
  *   of_mixer_3d_update();   // recomputes all active voice volumes/pans
+ *
+ * IMPORTANT: This header contains static mutable state (source table,
+ * listener position, attenuation parameters). Include it from exactly
+ * ONE translation unit per program — multi-TU apps would otherwise end
+ * up with independent copies of the mixer state.
  */
 
 #ifndef OF_MIXER_3D_H
@@ -24,8 +29,11 @@ extern "C" {
 #include "of_mixer.h"
 
 /* Fixed-point helpers (16.16) */
-#define M3D_FP(x)    ((int32_t)((x) * 65536))
-#define M3D_INT(x)   ((x) >> 16)
+#define OF_MIXER_3D_FP(x)    ((int32_t)((x) * 65536))
+#define OF_MIXER_3D_INT(x)   ((x) >> 16)
+
+/* Private implementation helpers (prefix _m3d_) are subject to change
+ * without notice — use the of_mixer_3d_* API. */
 
 /* Attenuation models */
 #define OF_MIXER_3D_ATTEN_LINEAR  0   /* vol = 1 - dist/max_dist            */
@@ -36,7 +44,7 @@ extern "C" {
  * State
  * ====================================================================== */
 
-#define M3D_MAX_SOURCES 32
+#define OF_MIXER_3D_MAX_SOURCES 32
 
 typedef struct {
     int32_t  x, y;          /* 16.16 fixed-point position */
@@ -50,9 +58,9 @@ static int32_t _m3d_listener_x;
 static int32_t _m3d_listener_y;
 static int32_t _m3d_listener_angle;  /* 0-65535 = full circle (16-bit BAM) */
 static int _m3d_atten_model = OF_MIXER_3D_ATTEN_INV_CLAMP;
-static int _m3d_default_ref_dist = M3D_FP(64);
-static int _m3d_default_max_dist = M3D_FP(1024);
-static _m3d_source_t _m3d_sources[M3D_MAX_SOURCES];
+static int _m3d_default_ref_dist = OF_MIXER_3D_FP(64);
+static int _m3d_default_max_dist = OF_MIXER_3D_FP(1024);
+static _m3d_source_t _m3d_sources[OF_MIXER_3D_MAX_SOURCES];
 
 /* ======================================================================
  * Integer sqrt (16-bit result from 32-bit input)
@@ -112,7 +120,7 @@ static inline void of_mixer_3d_init(void) {
     _m3d_listener_x = 0;
     _m3d_listener_y = 0;
     _m3d_listener_angle = 0;
-    for (int i = 0; i < M3D_MAX_SOURCES; i++)
+    for (int i = 0; i < OF_MIXER_3D_MAX_SOURCES; i++)
         _m3d_sources[i].active = 0;
 }
 
@@ -129,7 +137,7 @@ static inline void of_mixer_3d_set_attenuation(int model, int ref_dist, int max_
 }
 
 static inline void of_mixer_3d_set_source(int voice, int32_t x, int32_t y) {
-    if (voice < 0 || voice >= M3D_MAX_SOURCES) return;
+    if (voice < 0 || voice >= OF_MIXER_3D_MAX_SOURCES) return;
     _m3d_sources[voice].x = x;
     _m3d_sources[voice].y = y;
     _m3d_sources[voice].active = 1;
@@ -139,24 +147,24 @@ static inline void of_mixer_3d_set_source(int voice, int32_t x, int32_t y) {
 }
 
 static inline void of_mixer_3d_set_source_dist(int voice, int min_dist, int max_dist) {
-    if (voice < 0 || voice >= M3D_MAX_SOURCES) return;
+    if (voice < 0 || voice >= OF_MIXER_3D_MAX_SOURCES) return;
     _m3d_sources[voice].min_dist = min_dist;
     _m3d_sources[voice].max_dist = max_dist;
 }
 
 static inline void of_mixer_3d_set_source_volume(int voice, int volume) {
-    if (voice < 0 || voice >= M3D_MAX_SOURCES) return;
+    if (voice < 0 || voice >= OF_MIXER_3D_MAX_SOURCES) return;
     _m3d_sources[voice].base_vol = volume & 0xFF;
 }
 
 static inline void of_mixer_3d_remove(int voice) {
-    if (voice < 0 || voice >= M3D_MAX_SOURCES) return;
+    if (voice < 0 || voice >= OF_MIXER_3D_MAX_SOURCES) return;
     _m3d_sources[voice].active = 0;
 }
 
 /* Recompute volume + pan for all active 3D sources. Call once per frame. */
 static inline void of_mixer_3d_update(void) {
-    for (int i = 0; i < M3D_MAX_SOURCES; i++) {
+    for (int i = 0; i < OF_MIXER_3D_MAX_SOURCES; i++) {
         _m3d_source_t *s = &_m3d_sources[i];
         if (!s->active) continue;
 

@@ -43,13 +43,13 @@ int main(void) {
     uint8_t *bufs[4];
     bufs[0] = of_video_surface();
     of_video_flip();
-    of_video_sync();  /* wait for vsync to consume the swap */
+    of_video_wait_flip();  /* wait for vsync to consume the swap */
     bufs[1] = of_video_surface();
     of_video_flip();
-    of_video_sync();
+    of_video_wait_flip();
     bufs[2] = of_video_surface();
     of_video_flip();
-    of_video_sync();
+    of_video_wait_flip();
     bufs[3] = of_video_surface();
 
     ASSERT("cycle", bufs[3] == bufs[0]);
@@ -68,16 +68,16 @@ int main(void) {
     bufs[0] = of_video_surface();
     bufs[0][0] = 0xAA;
     of_video_flip();
-    of_video_sync();
+    of_video_wait_flip();
     bufs[1] = of_video_surface();
     bufs[1][0] = 0xBB;
     of_video_flip();
-    of_video_sync();
+    of_video_wait_flip();
     bufs[2] = of_video_surface();
     bufs[2][0] = 0xCC;
 
     of_video_flip();
-    of_video_sync();
+    of_video_wait_flip();
     uint8_t *back = of_video_surface();
     ASSERT("retain", back == bufs[0] && back[0] == 0xAA);
 

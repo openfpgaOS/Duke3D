@@ -1,107 +1,107 @@
 /*
- * of_cxxabi.cpp -- Minimal C++ ABI support for freestanding openfpgaOS
+ * of_cxxabi.cpp -- Minimal C++ ABI shim for openfpgaOS apps.
  *
- * Provides operator new/delete, pure virtual handler, static guard
- * helpers, and __cxa_atexit for global destructor registration.
- * No exceptions, no RTTI — compile with -fno-exceptions -fno-rtti.
+ * Apps that use C++ language features (classes, virtual methods, new /
+ * delete, static constructors) link this file instead of the toolchain's
+ * libsupc++. We provide our own because the riscv-elf gcc's libsupc++ is
+ * built against newlib and references newlib-only symbols (_impure_ptr,
+ * _Unwind_Resume, ...) that musl doesn't ship.
+ *
+ * Build with -fno-exceptions -fno-rtti (sdk.mk does this for SRCS_CXX).
+ *
+ * What you DO get:
+ *   - operator new / new[] / delete / delete[] (-> musl malloc/free)
+ *   - __cxa_pure_virtual hook (calls abort)
+ *   - Static destructor registration (__cxa_atexit / __cxa_finalize)
+ *   - Static-init guards (__cxa_guard_acquire/release/abort)
+ *
+ * What you DON'T get:
+ *   - C++ standard library (std::vector, std::string, std::cout, ...)
+ *   - Exceptions (-fno-exceptions)
+ *   - RTTI / dynamic_cast (-fno-rtti)
+ *
+ * For std::cout-style I/O, use printf from <stdio.h> instead.
  */
+
+#include <stdlib.h>     /* musl: malloc, free, abort */
 
 extern "C" {
 
-/* Use syscalls directly for malloc/free to avoid header conflicts */
-static inline long __cxx_syscall1(long n, long a0) {
-    register long a7 __asm__("a7") = n;
-    register long _a0 __asm__("a0") = a0;
-    __asm__ volatile("ecall" : "+r"(_a0) : "r"(a7) : "memory");
-    return _a0;
+/* ── operator new / delete ──────────────────────────────────────── */
+
+void *__cxa_allocate(unsigned int size) {
+    void *p = malloc(size);
+    if (!p) abort();    /* match the C++ standard's "throw bad_alloc"
+                         * behavior, but without exceptions enabled */
+    return p;
 }
 
-/* OF_SYS_MALLOC = 0x10C0, OF_SYS_FREE = 0x10C1 */
-static void *cxx_malloc(unsigned int size) {
-    return (void *)__cxx_syscall1(0x10C0, (long)size);
+/* ── Pure virtual handler ────────────────────────────────────────
+ * Called if a pure-virtual method is invoked through a pointer to a
+ * partially-constructed object. Should never happen in correct code. */
+void __cxa_pure_virtual() {
+    abort();
 }
 
-static void cxx_free(void *ptr) {
-    __cxx_syscall1(0x10C1, (long)ptr);
-}
+/* ── DSO handle (required by __cxa_atexit) ──────────────────────── */
+void *__dso_handle = nullptr;
 
-/* ── Pure virtual handler ─────────────────────────────────────── */
-
-void __cxa_pure_virtual(void) {
-    __cxx_syscall1(93 /* SYS_exit */, 1);
-    __builtin_unreachable();
-}
-
-/* ── DSO handle (required by __cxa_atexit) ────────────────────── */
-
-void *__dso_handle = 0;
-
-/* ── Static destructor registration ───────────────────────────── */
-
+/* ── Static destructor registration ──────────────────────────────
+ * The compiler emits calls to __cxa_atexit for each global object's
+ * destructor. We record up to N callbacks and run them on program exit
+ * via __cxa_finalize (called from musl's exit() through .fini_array). */
 #define CXA_ATEXIT_MAX 32
-
 static struct {
     void (*destructor)(void *);
     void *arg;
     void *dso;
 } __cxa_atexit_funcs[CXA_ATEXIT_MAX];
-
 static int __cxa_atexit_count = 0;
 
 int __cxa_atexit(void (*destructor)(void *), void *arg, void *dso_handle) {
-    if (__cxa_atexit_count >= CXA_ATEXIT_MAX)
-        return -1;
+    if (__cxa_atexit_count >= CXA_ATEXIT_MAX) return -1;
     __cxa_atexit_funcs[__cxa_atexit_count].destructor = destructor;
     __cxa_atexit_funcs[__cxa_atexit_count].arg        = arg;
-    __cxa_atexit_funcs[__cxa_atexit_count].dso         = dso_handle;
+    __cxa_atexit_funcs[__cxa_atexit_count].dso        = dso_handle;
     __cxa_atexit_count++;
     return 0;
 }
 
 void __cxa_finalize(void *dso) {
     for (int i = __cxa_atexit_count - 1; i >= 0; i--) {
-        if (dso == 0 || __cxa_atexit_funcs[i].dso == dso) {
+        if (dso == nullptr || __cxa_atexit_funcs[i].dso == dso) {
             if (__cxa_atexit_funcs[i].destructor) {
                 __cxa_atexit_funcs[i].destructor(__cxa_atexit_funcs[i].arg);
-                __cxa_atexit_funcs[i].destructor = 0;
+                __cxa_atexit_funcs[i].destructor = nullptr;
             }
         }
     }
 }
 
-/* ── Thread-safe static init guards (single-threaded stubs) ──── */
-
+/* ── Thread-safe static-init guards ──────────────────────────────
+ * Single-threaded environment -- no real locking needed. The "guard"
+ * is a 64-bit value where the LSB tracks "already initialized". */
 int __cxa_guard_acquire(long long *guard) {
-    return !*(char *)guard;
+    return !*reinterpret_cast<char *>(guard);
 }
 
 void __cxa_guard_release(long long *guard) {
-    *(char *)guard = 1;
+    *reinterpret_cast<char *>(guard) = 1;
 }
 
-void __cxa_guard_abort(long long *guard) {
-    (void)guard;
+void __cxa_guard_abort(long long *) {
+    /* Nothing to roll back in a single-threaded environment. */
 }
 
-} /* extern "C" */
+}  /* extern "C" */
 
-/* ── operator new / delete ────────────────────────────────────── */
+/* ── operator new / delete ──────────────────────────────────────── */
 
 typedef __SIZE_TYPE__ size_t;
 
-void *operator new(size_t size)              { return cxx_malloc(size); }
-void *operator new[](size_t size)            { return cxx_malloc(size); }
-void  operator delete(void *ptr) noexcept    { cxx_free(ptr); }
-void  operator delete[](void *ptr) noexcept  { cxx_free(ptr); }
-void  operator delete(void *ptr, size_t) noexcept   { cxx_free(ptr); }
-void  operator delete[](void *ptr, size_t) noexcept  { cxx_free(ptr); }
-
-/* ── iostream global stream objects ──────────────────────────────────── */
-
-#include <iostream>
-
-namespace std {
-    ostream cout(1);   /* stdout (fd 1) */
-    ostream cerr(2);   /* stderr (fd 2) */
-    istream cin;       /* stdin  (fd 0) */
-}
+void *operator new(size_t size)              { return __cxa_allocate(size); }
+void *operator new[](size_t size)            { return __cxa_allocate(size); }
+void  operator delete(void *p) noexcept      { free(p); }
+void  operator delete[](void *p) noexcept    { free(p); }
+void  operator delete(void *p, size_t) noexcept   { free(p); }
+void  operator delete[](void *p, size_t) noexcept { free(p); }

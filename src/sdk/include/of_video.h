@@ -38,7 +38,8 @@ static inline void of_video_flip(void) {
     OF_SVC->video_flip();
 }
 
-static inline void of_video_sync(void) {
+/* Wait for the most recent of_video_flip() to be presented (vsync). */
+static inline void of_video_wait_flip(void) {
     OF_SVC->video_wait_flip();
 }
 
@@ -135,7 +136,7 @@ static inline uint16_t *of_video_surface16(void) {
 void     of_video_init(void);
 uint8_t *of_video_surface(void);
 void     of_video_flip(void);
-void     of_video_sync(void);
+void     of_video_wait_flip(void);
 void     of_video_clear(uint8_t color);
 void     of_video_palette(uint8_t index, uint32_t rgb);
 void     of_video_palette_bulk(const uint32_t *pal, int count);

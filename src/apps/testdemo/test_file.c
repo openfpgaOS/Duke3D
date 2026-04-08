@@ -302,13 +302,13 @@ void test_file_io(void) {
     /* Speed test: read 64KB from slot:1 and measure throughput */
     {
         static uint8_t speed_buf[65536];
-        uint32_t t_start = clock_ms();
+        uint32_t t_start = of_time_ms();
         f = fopen("slot:1", "rb");
         if (f) {
             fread(speed_buf, 1, 65536, f);
             fclose(f);
         }
-        uint32_t t_elapsed = clock_ms() - t_start;
+        uint32_t t_elapsed = of_time_ms() - t_start;
         ASSERT("speed", t_elapsed < 5000);
         (void)t_elapsed;
     }
@@ -514,7 +514,7 @@ void test_posix_file_io(void) {
 }
 
 void test_lseek_readahead(void) {
-    section_start("Seek Readahead");
+    section_start("Seek Rdahd");
 
     /* Test: lseek must invalidate read-ahead buffer.
      * Opens a data slot, reads N bytes, seeks back to 0, reads again.
@@ -583,7 +583,7 @@ void test_lseek_readahead(void) {
 }
 
 void test_lseek_large_read(void) {
-    section_start("Seek Large Rd");
+    section_start("Seek Large");
 
     /* Simulates art-file loading: read a large block, seek back,
      * read again at a different offset. Exercises read-ahead
@@ -756,7 +756,7 @@ void test_file_limit(void) {
 }
 
 void test_oversize_read(void) {
-    section_start("Oversize Read");
+    section_start("Oversize Rd");
 
     /* Read with a buffer much larger than the file.
      * os.bin is ~112KB. Request 256KB — fread must return the

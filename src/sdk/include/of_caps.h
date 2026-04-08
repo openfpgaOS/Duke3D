@@ -30,20 +30,30 @@ extern "C" {
 /* Platform IDs */
 #define OF_PLATFORM_POCKET    1
 #define OF_PLATFORM_MISTER    2
-#define OF_PLATFORM_DE10NANO  2     /* alias */
 #define OF_PLATFORM_SIM       255
 
-/* Hardware feature flags */
-#define OF_HW_MIXER       (1 << 0)    /* PCM hardware mixer */
-#define OF_HW_OPL3        (1 << 1)    /* OPL3 FM synthesis */
-#define OF_HW_LINK        (1 << 2)    /* Link cable / serial port */
-#define OF_HW_ANALOGIZER  (1 << 3)    /* Analog video output */
-#define OF_HW_GPU_2D      (1 << 4)    /* 2D sprite/tile engine (future) */
-#define OF_HW_GPU_3D      (1 << 5)    /* 3D rasterizer (future) */
-#define OF_HW_MIDI        (1 << 6)    /* MIDI I/O (future) */
-#define OF_HW_WIFI        (1 << 7)    /* Network (future) */
-#define OF_HW_FPU         (1 << 8)    /* Hardware FPU (RISC-V F extension) */
-#define OF_HW_SAVE_SLOTS  (1 << 9)    /* Persistent save storage */
+/* Hardware feature flags — must match RTL HW_FEATURES bit layout in
+ * src/fpga/common/axi_periph_slave.v and src/firmware/os/hal/regs.h. */
+#define OF_HW_MIXER         (1 << 0)    /* PCM hardware mixer */
+#define OF_HW_OPL3          (1 << 1)    /* OPL3 FM synthesis */
+#define OF_HW_NET           (1 << 2)    /* Networking (link cable / serial / wifi) */
+#define OF_HW_ANALOGIZER    (1 << 3)    /* Analog video output */
+#define OF_HW_GPU_SPAN      (1 << 4)    /* GPU span renderer (always set) */
+#define OF_HW_GPU_TRIANGLE  (1 << 5)    /* GPU triangle rasterizer (Full only) */
+#define OF_HW_MIDI          (1 << 6)    /* MIDI playback via OPL3 */
+#define OF_HW_WIFI          (1 << 7)    /* Wireless networking */
+#define OF_HW_FPU           (1 << 8)    /* Hardware FPU (RISC-V F extension) */
+#define OF_HW_SAVE_SLOTS    (1 << 9)    /* Persistent save storage */
+#define OF_HW_GPU_VCOLOR    (1 << 10)   /* GPU vertex color interpolation */
+#define OF_HW_GPU_BILINEAR  (1 << 11)   /* GPU bilinear texture filter */
+#define OF_HW_GPU_ALPHA     (1 << 12)   /* GPU alpha / additive blending */
+#define OF_HW_GPU_PERSP     (1 << 13)   /* GPU perspective spans (Quake-style) */
+#define OF_HW_GPU_FRAGPIPE  (1 << 14)   /* GPU 1-px/cycle fragment pipeline */
+
+/* Convenience: all the GPU bits an app might care about for renderer choice. */
+#define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_PERSP | OF_HW_GPU_FRAGPIPE)
+#define OF_HW_GPU_FULL_MASK  (OF_HW_GPU_LITE_MASK | OF_HW_GPU_TRIANGLE | \
+                              OF_HW_GPU_VCOLOR | OF_HW_GPU_BILINEAR | OF_HW_GPU_ALPHA)
 
 struct of_capabilities {
     uint32_t magic;             /* OF_CAPS_MAGIC */
@@ -74,7 +84,6 @@ struct of_capabilities {
     /* OS info */
     uint32_t os_version;        /* Packed: major.minor.patch */
     uint32_t cpu_freq_hz;       /* CPU clock frequency */
-    uint32_t libc_table;        /* Address of libc jump table */
     uint32_t services_table;    /* Address of OS services table (0 = none) */
 };
 

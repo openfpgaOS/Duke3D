@@ -57,7 +57,7 @@ extern "C" {
 #define ACS_BOARD       _ACS(177)   /* ▒ */
 #define ACS_CKBOARD     _ACS(176)   /* ░ */
 #define ACS_BLOCK_LO    _ACS(220)   /* ▄ */
-#define ACS_BLOCK_HI    _ACS(223)   /* ▐ -- note: font has this as right half */
+#define ACS_BLOCK_HI    _ACS(223)   /* ▐ right half block (CP437 0xDF) */
 
 /* Arrows */
 #define ACS_UARROW      _ACS(24)    /* ↑ */

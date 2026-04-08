@@ -277,7 +277,9 @@ void of_input_poll(void) {
             break;
         case SDL_CONTROLLERBUTTONDOWN:
         case SDL_CONTROLLERBUTTONUP: {
-            int p = 0;  /* TODO: multi-controller */
+            /* PC backend folds all SDL controllers into player 0; the
+             * P2 button query stubs above always read empty state. */
+            int p = 0;
             uint32_t mask = 0;
             switch (ev.cbutton.button) {
                 case SDL_CONTROLLER_BUTTON_DPAD_UP:    mask = BTN_UP; break;
@@ -386,12 +388,12 @@ int of_audio_free(void) {
     return (AUDIO_BUF_SIZE - 1 - used) / 2;
 }
 
-void of_opm_write(uint8_t reg, uint8_t val) {
+void of_audio_opl_write(uint16_t reg, uint8_t val) {
     (void)reg; (void)val;
-    /* OPM not emulated on PC -- stub */
+    /* OPL3 not emulated on PC -- stub */
 }
 
-void of_opm_reset(void) {
+void of_audio_opl_reset(void) {
     /* stub */
 }
 

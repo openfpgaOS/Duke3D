@@ -29,10 +29,15 @@ void test_printf_edge(void) {
     snprintf(buf, sizeof(buf), "%08X", 0xDEADBEEF);
     ASSERT("hex08", strcmp(buf, "DEADBEEF") == 0);
 
-    snprintf(buf, sizeof(buf), "");
+    /* Use volatile pointers so GCC can't constant-fold the format string
+     * and trigger -Wformat-zero-length / -Wformat-truncation on these
+     * intentional edge-case tests. */
+    const char *volatile empty_fmt = "";
+    const char *volatile trunc_fmt = "hello world";
+    snprintf(buf, sizeof(buf), empty_fmt);
     ASSERT("empty fmt", buf[0] == '\0');
 
-    int n = snprintf(buf, 5, "hello world");
+    int n = snprintf(buf, 5, trunc_fmt);
     ASSERT("trunc len", n == 11);
     ASSERT("trunc str", strcmp(buf, "hell") == 0);
 

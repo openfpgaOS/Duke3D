@@ -54,7 +54,7 @@ struct of_services_table {
     void      (*input_poll_p0)(void *out);
     void      (*input_set_deadzone)(int16_t deadzone);
 
-    /* -- Mixer (22) -- */
+    /* -- Mixer core (22) -- (extensions appended below) */
     void      (*mixer_init)(int max_voices, int output_rate);
     int       (*mixer_play)(const uint8_t *pcm_s16, uint32_t sample_count,
                             uint32_t sample_rate, int priority, int volume);
@@ -105,7 +105,9 @@ struct of_services_table {
     long      (*file_size)(const char *path);
     long      (*file_size_fd)(int fd);
 
-    /* -- Mixer extensions (append-only to preserve ABI) -- */
+    /* -- Mixer + audio extensions (5+4, append-only to preserve ABI) --
+     *    The audio_stream_* slots logically belong to the audio module
+     *    but live here for ABI append-only ordering. */
     void      (*mixer_retrigger)(int voice, const uint8_t *pcm_s16,
                                  uint32_t sample_count, uint32_t sample_rate,
                                  int volume);

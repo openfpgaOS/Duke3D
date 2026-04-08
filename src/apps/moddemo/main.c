@@ -274,9 +274,9 @@ static void play_note(int ch, mod_note_t *n) {
                 /* Hardware volume ramp: smooth for long/looping samples,
                  * instant for short percussion to preserve attack. */
                 if (s->loop_length > 2 || s->length > 2000)
-                    of_mixer_set_vol_rate(c->voice, 8);
+                    of_mixer_set_volume_ramp(c->voice, 8);
                 else
-                    of_mixer_set_vol_rate(c->voice, 0);
+                    of_mixer_set_volume_ramp(c->voice, 0);
             }
         }
     } else if (n->period > 0 && n->effect == 0x3) {

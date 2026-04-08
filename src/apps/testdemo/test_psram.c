@@ -54,11 +54,11 @@ void test_psram_memory(void) {
         for (uint32_t i = 0; i < 16384; i++)
             cram0[i] = i;
 
-        uint32_t t0 = clock_us();
+        uint32_t t0 = of_time_us();
         volatile uint32_t sum = 0;
         for (uint32_t i = 0; i < 16384; i++)
             sum += cram0[i];
-        uint32_t t1 = clock_us();
+        uint32_t t1 = of_time_us();
         (void)sum;
 
         uint32_t elapsed_us = t1 - t0;

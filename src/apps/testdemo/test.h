@@ -66,5 +66,14 @@ void test_string(void);
 void test_string_edge(void);
 void test_lzw(void);
 void test_version(void);
+void test_cache_primitives(void);
+void test_cache(void);
+void test_cache_cram0(void);
+void test_cache_cram1(void);
+void test_mixer_adv(void);
+void test_mixer_stress(void);
+void test_opl3(void);
+void test_midi(void);
+void test_audio_stream(void);
 
 #endif /* TEST_H */

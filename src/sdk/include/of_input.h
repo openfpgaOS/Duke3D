@@ -46,6 +46,10 @@ typedef struct {
 
 #include "of_services.h"
 
+/* IMPORTANT: This header keeps the polled controller snapshot in static
+ * storage so the of_btn* helpers stay branch-free. Include it from
+ * exactly ONE translation unit per program; multi-TU apps that include
+ * of.h in several files will end up with independent snapshots. */
 static of_input_state_t __of_p0, __of_p1;
 
 static inline void of_input_poll(void) {

@@ -295,6 +295,13 @@ typedef struct
 #pragma pack(pop)
 
 /* !!! FIXME: "sync" is defined in unistd.h ... :(  --ryan. */
+/* Pre-include unistd.h so its `void sync(void)` is declared under its
+ * real name BEFORE we install the rename macro. Without this, when
+ * something later in the TU pulls in unistd.h (e.g. via fx_man.h or
+ * engine.h on the OPENFPGA build, where dukeunix.h is skipped), the
+ * macro rewrites unistd's prototype to `void duke_sync(void)` and it
+ * collides with Duke's `input duke_sync[MAXPLAYERS]` array below. */
+#include <unistd.h>
 #define sync duke_sync
 extern input inputfifo[MOVEFIFOSIZ][MAXPLAYERS], sync[MAXPLAYERS];
 extern input recsync[RECSYNCBUFSIZ];

@@ -116,7 +116,10 @@ static inline void of_mixer_set_voice_raw(int voice, uint32_t rate_fp16,
     OF_SVC->mixer_set_voice_raw(voice, rate_fp16, vol_l, vol_r);
 }
 
-static inline void of_mixer_set_vol_rate(int voice, int rate) {
+/* Set the volume-ramp rate for a voice -- how fast the hardware smooths
+ * volume transitions when of_mixer_set_volume()/set_vol_lr() change.
+ * `rate` is a hardware-specific step value (higher = faster). */
+static inline void of_mixer_set_volume_ramp(int voice, int rate) {
     OF_SVC->mixer_set_vol_rate(voice, rate);
 }
 
@@ -215,7 +218,7 @@ static inline void of_mixer_set_voice_raw(int voice, uint32_t rate_fp16,
                                           int vol_l, int vol_r) {
     (void)voice; (void)rate_fp16; (void)vol_l; (void)vol_r;
 }
-static inline void of_mixer_set_vol_rate(int voice, int rate) {
+static inline void of_mixer_set_volume_ramp(int voice, int rate) {
     (void)voice; (void)rate;
 }
 static inline uint32_t of_mixer_poll_ended(void) { return 0; }
@@ -229,6 +232,15 @@ static inline void of_mixer_set_group_volume(int group, int volume) {
 }
 static inline void of_mixer_set_master_volume(int volume) {
     (void)volume;
+}
+static inline void of_mixer_retrigger(int voice, const uint8_t *pcm_s16,
+                                      uint32_t sample_count, uint32_t sample_rate,
+                                      int volume) {
+    (void)voice; (void)pcm_s16; (void)sample_count;
+    (void)sample_rate; (void)volume;
+}
+static inline void of_mixer_set_end_callback(void (*cb)(uint32_t ended_mask)) {
+    (void)cb;
 }
 
 #endif /* OF_PC */

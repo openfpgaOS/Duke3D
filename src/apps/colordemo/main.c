@@ -160,11 +160,11 @@ static const draw_fn_t draw_fns[] = {
     draw_8bit, draw_4bit, draw_2bit,
     draw_rgb565, draw_rgb555, draw_rgba5551,
 };
+#define NUM_MODES ((int)(sizeof(draw_fns) / sizeof(draw_fns[0])))
 
 int main(void) {
     of_video_init();
     int mode = 0;
-    int num_modes = 6;
 
     while (1) {
         /* Set color mode */
@@ -187,11 +187,11 @@ int main(void) {
         while (1) {
             of_input_poll();
             if (of_btn_pressed(OF_BTN_A)) {
-                mode = (mode + 1) % num_modes;
+                mode = (mode + 1) % NUM_MODES;
                 break;
             }
             if (of_btn_pressed(OF_BTN_B)) {
-                mode = (mode + num_modes - 1) % num_modes;
+                mode = (mode + NUM_MODES - 1) % NUM_MODES;
                 break;
             }
             usleep(16 * 1000);

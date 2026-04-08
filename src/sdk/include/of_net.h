@@ -36,37 +36,40 @@ extern "C" {
 #include "of_syscall_numbers.h"
 
 static inline int of_net_host_start(void) {
-    return (int)__of_syscall0(OF_SYS_NET_HOST_START);
+    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_HOST_START).value;
 }
 static inline int of_net_join(void) {
-    return (int)__of_syscall0(OF_SYS_NET_JOIN);
+    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_JOIN).value;
 }
 static inline void of_net_stop(void) {
-    __of_syscall0(OF_SYS_NET_STOP);
+    of_ecall0(OF_EID_NET, OF_NET_FID_STOP);
 }
 static inline int of_net_status(void) {
-    return (int)__of_syscall0(OF_SYS_NET_STATUS);
+    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_STATUS).value;
 }
 static inline int of_net_client_count(void) {
-    return (int)__of_syscall0(OF_SYS_NET_CLIENT_COUNT);
+    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_CLIENT_COUNT).value;
 }
 static inline int of_net_send_to(int client, const void *data, size_t len) {
-    return (int)__of_syscall3(OF_SYS_NET_SEND_TO, client, (long)data, len);
+    return (int)of_ecall3(OF_EID_NET, OF_NET_FID_SEND_TO,
+                          client, (long)data, len).value;
 }
 static inline int of_net_recv_from(int client, void *data, size_t len) {
-    return (int)__of_syscall3(OF_SYS_NET_RECV_FROM, client, (long)data, len);
+    return (int)of_ecall3(OF_EID_NET, OF_NET_FID_RECV_FROM,
+                          client, (long)data, len).value;
 }
 static inline int of_net_broadcast(const void *data, size_t len) {
-    return (int)__of_syscall2(OF_SYS_NET_BROADCAST, (long)data, len);
+    return (int)of_ecall2(OF_EID_NET, OF_NET_FID_BROADCAST,
+                          (long)data, len).value;
 }
 static inline int of_net_send(const void *data, size_t len) {
-    return (int)__of_syscall2(OF_SYS_NET_SEND, (long)data, len);
+    return (int)of_ecall2(OF_EID_NET, OF_NET_FID_SEND, (long)data, len).value;
 }
 static inline int of_net_recv(void *data, size_t len) {
-    return (int)__of_syscall2(OF_SYS_NET_RECV, (long)data, len);
+    return (int)of_ecall2(OF_EID_NET, OF_NET_FID_RECV, (long)data, len).value;
 }
 static inline int of_net_poll(void) {
-    return (int)__of_syscall0(OF_SYS_NET_POLL);
+    return (int)of_ecall0(OF_EID_NET, OF_NET_FID_POLL).value;
 }
 
 #else /* OF_PC */

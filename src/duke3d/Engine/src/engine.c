@@ -26,7 +26,7 @@
 #include "engine.h"
 #include "tiles.h"
 #ifdef OPENFPGA
-#include "of_bram.h"
+#include "of_fastram.h"
 #else
 #define OF_FASTTEXT
 #define OF_FASTDATA

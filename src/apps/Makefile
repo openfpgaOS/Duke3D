@@ -30,6 +30,7 @@ build-apps:
 # Assemble: dist/ (static) + runtime + ELFs + data files = deployable
 release:
 	@echo "Assembling build/sdk/..."
+	@rm -rf $(BUILD)
 	@mkdir -p $(SDK_ROOT)/build
 	@cp -r $(DIST)/ $(BUILD)/
 	@# Runtime binaries

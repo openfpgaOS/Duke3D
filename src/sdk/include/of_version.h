@@ -28,7 +28,7 @@ extern "C" {
 #include "of_syscall_numbers.h"
 
 static inline uint32_t of_get_version(void) {
-    return (uint32_t)__of_syscall0(OF_SYS_GET_VERSION);
+    return (uint32_t)of_ecall0(OF_EID_BASE, OF_BASE_FID_GET_VERSION).value;
 }
 
 #else

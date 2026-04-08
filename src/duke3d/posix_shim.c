@@ -1,12 +1,19 @@
 /*
  * posix_shim.c -- Duke3D-specific stubs for openfpgaOS
  *
- * POSIX I/O, libc symbols, and printf are provided by the SDK runtime
- * (sdk/of_posix.c). This file only contains game-specific glue.
+ * POSIX I/O, libc symbols, and printf come straight from upstream musl
+ * (statically linked by sdk.mk). This file only contains game-specific
+ * glue: filelength, STUBBED, getch, Z_AvailHeap, the global min/max
+ * functions the BUILD audiolib expects, etc.
  */
 
 #include <stdint.h>
 #include <unistd.h>
+
+/* BUILD/audiolib uses min/max as plain functions (not standard C).
+ * Define them globally so multivoc.c et al. link cleanly. */
+int min(int a, int b) { return a < b ? a : b; }
+int max(int a, int b) { return a > b ? a : b; }
 
 /* Duke3D's filelength() -- get file size via lseek */
 long filelength(int fd) {

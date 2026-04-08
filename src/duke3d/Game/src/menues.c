@@ -48,6 +48,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "soundefs.h"
 
 #ifdef OPENFPGA
+#include <stddef.h>  /* offsetof */
 #include "../../d3d_save.h"
 #endif
 

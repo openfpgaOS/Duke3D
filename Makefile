@@ -53,7 +53,7 @@ help:
 	@echo "    /_/_/_/___\\___/_/ |_|"
 	@echo "   / __ \\/ __/"
 	@echo "  / /_/ /\\ \\"
-	@echo "  \\____/___/  Duke Nukem 3D"
+	@echo "  \\____/___/  SDK"
 	@printf "$(C_RESET)\n"
 	@printf "  $(C_HEAD)Getting started:$(C_RESET)\n"
 	@printf "    $(C_CMD)make $(C_VERB)setup$(C_RESET)              Install RISC-V toolchain\n"

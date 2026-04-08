@@ -105,7 +105,11 @@ void test_malloc_edge(void) {
     if (p) free(p);
 
     p = malloc(64);
-    if (p) { realloc(p, 0); test_pass("realloc 0"); }
+    if (p) {
+        void *r = realloc(p, 0);
+        if (r) free(r);
+        test_pass("realloc 0");
+    }
 
     int align_ok = 1;
     for (int i = 0; i < 20; i++) {

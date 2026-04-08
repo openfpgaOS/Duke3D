@@ -17,6 +17,8 @@ extern "C" {
 #ifndef OF_PC
 
 #include "of_services.h"
+#include "of_syscall.h"
+#include "of_syscall_numbers.h"
 
 /* Set a periodic timer callback at the given frequency (Hz).
  * The callback runs in interrupt context — keep it short.
@@ -30,10 +32,21 @@ static inline void of_timer_stop(void) {
     OF_SVC->timer_stop();
 }
 
+/* Free-running monotonic time queries (in microseconds / milliseconds).
+ * Wrap around at ~71 minutes / ~49 days respectively. */
+static inline unsigned int of_time_us(void) {
+    return (unsigned int)of_ecall0(OF_EID_TIMER, OF_TIMER_FID_GET_US).value;
+}
+static inline unsigned int of_time_ms(void) {
+    return (unsigned int)of_ecall0(OF_EID_TIMER, OF_TIMER_FID_GET_MS).value;
+}
+
 #else /* OF_PC */
 
 static inline void of_timer_set_callback(void (*fn)(void), uint32_t hz) { (void)fn; (void)hz; }
 static inline void of_timer_stop(void) { }
+unsigned int of_time_us(void);
+unsigned int of_time_ms(void);
 
 #endif /* OF_PC */
 

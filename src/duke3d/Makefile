@@ -50,7 +50,11 @@ MIDI_SRCS = Game/src/midi/midi_of.c
 
 SHIM_SRCS = posix_shim.c d3d_audio.c d3d_save.c
 
-SRCS = $(ENGINE_SRCS) $(GAME_SRCS) $(AUDIOLIB_SRCS) $(CONSOLE_SRCS) $(MIDI_SRCS) $(SHIM_SRCS)
+# SDK helper sources -- duke3d's midi_of.c calls of_midi_* which lives
+# in the SDK's of_midi.c (opt-in via $(OF_MIDI_SRC) defined in sdk.mk).
+SDK_SRCS = $(OF_MIDI_SRC)
+
+SRCS = $(ENGINE_SRCS) $(GAME_SRCS) $(AUDIOLIB_SRCS) $(CONSOLE_SRCS) $(MIDI_SRCS) $(SHIM_SRCS) $(SDK_SRCS)
 
 # ── SDK paths ────────────────────────────────────────────────────
 APP       = duke3d

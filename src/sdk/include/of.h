@@ -1,13 +1,21 @@
 /*
  * of.h -- openfpgaOS Application API
  *
- * One header. Everything you need to make a game on Analogue Pocket.
- * On PC, compile with -DOF_PC and link SDL2. No of_sdl2.c needed.
+ * One header that pulls in every openfpgaOS-specific subsystem (video,
+ * audio, input, mixer, GPU, ...). Standard C library functions come
+ * from musl directly: include <stdio.h>/<string.h>/<math.h>/<stdlib.h>
+ * as you would on any Linux system. Apps statically link musl through
+ * the bundled riscv32-elf toolchain; the kernel implements the Linux
+ * syscall surface that musl emits.
+ *
+ * On PC, compile with -DOF_PC and link SDL2.
  *
  *   #include "of.h"
+ *   #include <stdio.h>
  *
  *   int main(void) {
  *       of_video_init();
+ *       printf("openfpgaOS booted!\n");
  *       while (1) {
  *           of_input_poll();
  *           if (of_btn(OF_BTN_A)) shoot();
@@ -49,7 +57,7 @@ extern "C" {
 #include "of_timer.h"
 #include "of_file.h"
 #include "of_save.h"
-#include "of_link.h"
+#include "of_net.h"
 #include "of_analogizer.h"
 #include "of_terminal.h"
 #include "of_tile.h"
@@ -58,10 +66,14 @@ extern "C" {
 #include "of_mixer.h"
 #include "of_codec.h"
 #include "of_lzw.h"
-#include "of_bram.h"
+#include "of_fastram.h"
 #include "of_midi.h"
 #include "of_caps.h"
 #include "of_services.h"
+/* Note: of_gpu.h is intentionally NOT included here -- it has per-app
+ * static state (ring buffer pointers) and must be included from exactly
+ * one TU. Standard C library functions come from upstream musl headers
+ * (<stdio.h>, <string.h>, <math.h>, ...); the SDK doesn't ship its own. */
 
 /* ======================================================================
  * System
@@ -70,7 +82,9 @@ extern "C" {
 #ifndef OF_PC
 
 static inline void of_exit(void) {
-    __of_syscall0(93); /* SYS_exit */
+    /* Linux-compat path: SYS_exit (93) is in the Linux EID range and
+     * is dispatched by the kernel via the Linux convention, not SBI. */
+    __of_linux_syscall0(93);
     __builtin_unreachable();
 }
 

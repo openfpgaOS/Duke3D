@@ -85,7 +85,7 @@ static int wav_parse(const uint8_t *buf, uint32_t len, wav_info_t *info) {
 }
 
 static void draw_progress(void) {
-    uint32_t elapsed_ms = clock_ms() - play_start_ms;
+    uint32_t elapsed_ms = of_time_ms() - play_start_ms;
     uint32_t pos = (uint32_t)((uint64_t)elapsed_ms * sample_rate / 1000);
     if (pos > total_samples) pos = total_samples;
     int pct = (int)((uint64_t)pos * 100 / total_samples);
@@ -105,7 +105,7 @@ static int start_play(void) {
     int voice = of_mixer_play(
         (const uint8_t *)sample_buf,
         total_samples, sample_rate, 0, 255);
-    play_start_ms = clock_ms();
+    play_start_ms = of_time_ms();
     playing = 1;
     printf("\033[9;3H[PLAYING]    \n");
     return voice;
@@ -116,7 +116,8 @@ int main(void) {
     printf("  WAV Player Demo\n\n");
     printf("  Loading WAV file...\n");
 
-    /* TODO: use fopen("audio.wav") when DS_CMD_GETFILE returns filenames */
+    /* Loads from data slot 3; filename-based fopen requires SDK plumbing
+     * of_file_get_name from the OS, which is not wired up yet. */
     FILE *f = fopen("slot:3", "rb");
     if (!f) {
         printf("  Error: cannot open WAV\n");

@@ -28,10 +28,10 @@ static int  midi_looping = 0;
 static uint8_t midi_buffer[MIDI_BUF_SIZE];
 static uint32_t midi_buffer_len = 0;
 
-/* Converted instrument bank: 175 instruments x 11 bytes = 1925 bytes.
- * Built from Duke3D's TMB format (13-byte sparse records) by
- * scattering patches into the sequential layout of_midi expects. */
-static uint8_t converted_bank[175 * OF_MIDI_INST_SIZE];
+/* TMB override disabled: of_midi now uses a 4-op WOPL bank (25-byte
+ * records) where Duke3D's 2-op TMB timbres don't fit. Keeping the
+ * bank empty lets the engine fall back on the built-in 4-op GM patches,
+ * which generally sound richer than the DMX-era TMB anyway. */
 
 /* ---- error string -------------------------------------------------- */
 
@@ -208,63 +208,14 @@ void MUSIC_RerouteMidiChannel(int channel,
     (void)function;
 }
 
-/* Parse Duke3D TMB format and convert to of_midi bank format.
- *
- * Duke3D TMB: variable number of 13-byte records:
- *   [instrument_number (1)] [OPL data (11)] [note_offset (1)]
- * The instrument number selects which slot to overwrite (0-174).
- *
- * of_midi bank: 175 sequential instruments, 11 bytes each:
- *   128 melodic (GM program 0-127) + 47 percussion (notes 35-81).
- */
+/* No-op: Duke3D's TMB format is 2-op DMX-era timbre data that does
+ * not fit the 4-op 25-byte records used by the current of_midi bank.
+ * Rather than hand-upgrade every TMB patch to 4-op, let the engine
+ * fall back on its built-in 4-op GM bank, which tracks the Sound
+ * Canvas more closely than Duke's original AdLib timbres. */
 void MUSIC_RegisterTimbreBank(uint8_t *timbres)
 {
-    if (!timbres || !midi_initialized)
-        return;
-
-    /* Start from built-in GM bank, overlay Duke3D TMB patches */
-    memcpy(converted_bank, of_midi_builtin_bank(), 175 * OF_MIDI_INST_SIZE);
-
-    /* TMB format (bytes 1-11 of each 13-byte record):
-     *   [0] Mod Char, [1] Car Char, [2] Mod KSL, [3] Car KSL,
-     *   [4] Mod AD,   [5] Car AD,   [6] Mod SR,  [7] Car SR,
-     *   [8] Mod WS,   [9] Car WS,   [10] FB/CNT
-     *
-     * of_midi bank format (11 bytes per instrument):
-     *   [0] FB/CNT,
-     *   [1] Mod Char, [2] Mod KSL, [3] Mod AD, [4] Mod SR, [5] Mod WS,
-     *   [6] Car Char, [7] Car KSL, [8] Car AD, [9] Car SR, [10] Car WS */
-    int tmb_count = 0;
-    uint8_t *p = timbres;
-    uint8_t *end = timbres + 8000;
-    while (p + 13 <= end) {
-        int inst = p[0];
-        if (inst >= 175) break;
-        const uint8_t *t = &p[1];
-        uint8_t *d = &converted_bank[inst * OF_MIDI_INST_SIZE];
-        /* TMB per-operator: Char(0x20), AD(0x60), SR(0x80), WS(0xE0), KSL_TL(0x40)
-         * of_midi per-operator: Char(0x20), KSL_TL(0x40), AD(0x60), SR(0x80), WS(0xE0)
-         * TMB: [ModChar ModAD ModSR ModWS ModKSL] [CarChar CarAD CarSR CarWS CarKSL] FB
-         * Mask WS to 3 bits — TMB has dirty upper bits real OPL ignores. */
-        d[0]  = t[10];          /* FB/CNT */
-        d[1]  = t[0];           /* Mod Char */
-        d[2]  = t[4];           /* Mod KSL_TL */
-        d[3]  = t[1];           /* Mod AD */
-        d[4]  = t[2];           /* Mod SR */
-        d[5]  = t[3] & 0x07;   /* Mod WS */
-        d[6]  = t[5];           /* Car Char */
-        d[7]  = t[9];           /* Car KSL_TL */
-        d[8]  = t[6];           /* Car AD */
-        d[9]  = t[7];           /* Car SR */
-        d[10] = t[8] & 0x07;   /* Car WS */
-        if (tmb_count < 5)
-            printf("[bank] #%d: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                   inst, d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7],d[8],d[9],d[10]);
-        tmb_count++;
-        p += 13;
-    }
-
-    of_midi_load_bank(converted_bank);
+    (void)timbres;
 }
 
 /* ---- PlayMusic: load MIDI from GRP and play ------------------------ */
@@ -274,11 +225,10 @@ void PlayMusic(char *fileName)
     if (!midi_initialized)
         return;
 
-    /* Stop any currently playing song and re-apply TMB bank
-     * (of_midi_stop/play may reset to built-in bank) */
+    /* Stop any currently playing song. The TMB override path used to
+     * re-apply a custom bank here, but of_midi now uses the 4-op GM
+     * bank by default (see MUSIC_RegisterTimbreBank). */
     of_midi_stop();
-    if (converted_bank[0] != 0)
-        of_midi_load_bank(converted_bank);
 
     /* Load MIDI file from GRP */
     short fp = TCkopen4load(fileName, 0);
