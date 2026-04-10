@@ -186,6 +186,17 @@ static const uint32_t _gpu_ring_mask = OF_GPU_RING_SIZE - 1;
 /* ---- Internal helpers ---- */
 
 static inline void _gpu_ring_ensure(uint32_t bytes) {
+    /* Fast path: enough free space already, return immediately. */
+    if (((GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask) >= bytes)
+        return;
+
+    /* Slow path: ring is full. Publish our current write pointer to
+     * the GPU first — otherwise the GPU is sitting at its old wrptr
+     * with nothing to drain, and we'd spin forever. (The GPU only
+     * starts consuming commands when wrptr advances; queuing many
+     * spans without an intervening kick deadlocks the producer when
+     * the ring fills.) Then spin until enough space frees up. */
+    GPU_RING_WRPTR = _gpu_wrptr;
     while (((GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask) < bytes)
         ;
 }
