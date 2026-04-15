@@ -109,8 +109,6 @@ enum of_audio_fid {
     OF_AUDIO_FID_INIT      = 0,
     OF_AUDIO_FID_WRITE     = 1,
     OF_AUDIO_FID_GET_FREE  = 2,
-    OF_AUDIO_FID_OPL_WRITE = 3,
-    OF_AUDIO_FID_OPL_RESET = 4,
 };
 
 /* -- OF_EID_INPUT -- */

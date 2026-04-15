@@ -416,23 +416,39 @@ OF_FASTTEXT void vlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
 
 	const uint8_t local_shift = mach3_al;
 	const int32_t local_bpl = bytesperline;
-	int i;
 	uint32_t index = 0;
 	const uint32_t length = ylookup[columnIndex];
 
+	/* Alignment depends only on framebuffer pointer — index always
+	 * advances by bytesperline (320 = 4×80, always 4-aligned). */
+	const int aligned = (((uintptr_t)framebuffer) & 3) == 0;
+
 	do {
-		for (i = 0; i < 4; i++)
-		{
-			uint32_t temp = ((uint32_t)vplce[i]) >> local_shift;
-			temp = (((uint8_t*)(bufplce[i]))[temp]);
+		uint32_t t0 = palookupoffse[0][((uint8_t *)bufplce[0])[(uint32_t)vplce[0] >> local_shift]];
+		uint32_t t1 = palookupoffse[1][((uint8_t *)bufplce[1])[(uint32_t)vplce[1] >> local_shift]];
+		uint32_t t2 = palookupoffse[2][((uint8_t *)bufplce[2])[(uint32_t)vplce[2] >> local_shift]];
+		uint32_t t3 = palookupoffse[3][((uint8_t *)bufplce[3])[(uint32_t)vplce[3] >> local_shift]];
 
 #if RENDER_LIMIT_PIXELS
-			if (pixelsAllowed-- > 0)
+		if (pixelsAllowed > 0) { pixelsAllowed -= 4;
 #endif
-				framebuffer[index + i] = palookupoffse[i][temp];
-
-			vplce[i] += vince[i];
+		uint32_t packed = t0 | (t1 << 8) | (t2 << 16) | (t3 << 24);
+		if (aligned) {
+			*(uint32_t *)(framebuffer + index) = packed;
+		} else {
+			framebuffer[index+0] = (uint8_t)packed;
+			framebuffer[index+1] = (uint8_t)(packed >> 8);
+			framebuffer[index+2] = (uint8_t)(packed >> 16);
+			framebuffer[index+3] = (uint8_t)(packed >> 24);
 		}
+#if RENDER_LIMIT_PIXELS
+		}
+#endif
+
+		vplce[0] += vince[0];
+		vplce[1] += vince[1];
+		vplce[2] += vince[2];
+		vplce[3] += vince[3];
 		index += local_bpl;
 	} while (index < length);
 }
@@ -448,7 +464,6 @@ OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
 {
     const uint8_t local_shift = machmv;
     const int32_t local_bpl = bytesperline;
-    int i;
 	uint32_t index = 0;
 	const uint32_t length = ylookup[columnIndex];
 
@@ -459,19 +474,45 @@ OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
 			return;
 #endif
 
-        for (i = 0; i < 4; i++)
-        {
-	      uint32_t temp = ((uint32_t)vplce[i]) >> local_shift;
-	      temp = (((uint8_t *)(bufplce[i]))[temp]);
-	      if (temp != TRANSPARENT_COLOR)
-		  {
+		uint32_t s0 = ((uint8_t *)bufplce[0])[(uint32_t)vplce[0] >> local_shift];
+		uint32_t s1 = ((uint8_t *)bufplce[1])[(uint32_t)vplce[1] >> local_shift];
+		uint32_t s2 = ((uint8_t *)bufplce[2])[(uint32_t)vplce[2] >> local_shift];
+		uint32_t s3 = ((uint8_t *)bufplce[3])[(uint32_t)vplce[3] >> local_shift];
+
+		if ((s0 != TRANSPARENT_COLOR) & (s1 != TRANSPARENT_COLOR) &
+		    (s2 != TRANSPARENT_COLOR) & (s3 != TRANSPARENT_COLOR)) {
+			/* All 4 opaque — try 32-bit store if aligned */
+			uint32_t packed =
+				(uint32_t)palookupoffse[0][s0]       |
+				(uint32_t)palookupoffse[1][s1] << 8  |
+				(uint32_t)palookupoffse[2][s2] << 16 |
+				(uint32_t)palookupoffse[3][s3] << 24;
+			if (((uintptr_t)(framebuffer + index) & 3) == 0) {
+				*(uint32_t *)(framebuffer + index) = packed;
+			} else {
+				framebuffer[index+0] = (uint8_t)packed;
+				framebuffer[index+1] = (uint8_t)(packed >> 8);
+				framebuffer[index+2] = (uint8_t)(packed >> 16);
+				framebuffer[index+3] = (uint8_t)(packed >> 24);
+			}
 #if RENDER_LIMIT_PIXELS
-			  if (pixelsAllowed-- > 0)
+			pixelsAllowed -= 4;
 #endif
-				  framebuffer[index+i] = palookupoffse[i][temp];
-		  }
-	      vplce[i] += vince[i];
-        }
+		} else {
+			/* Mixed transparency — byte writes for opaque pixels only */
+			if (s0 != TRANSPARENT_COLOR) framebuffer[index+0] = palookupoffse[0][s0];
+			if (s1 != TRANSPARENT_COLOR) framebuffer[index+1] = palookupoffse[1][s1];
+			if (s2 != TRANSPARENT_COLOR) framebuffer[index+2] = palookupoffse[2][s2];
+			if (s3 != TRANSPARENT_COLOR) framebuffer[index+3] = palookupoffse[3][s3];
+#if RENDER_LIMIT_PIXELS
+			pixelsAllowed -= 4;
+#endif
+		}
+
+		vplce[0] += vince[0];
+		vplce[1] += vince[1];
+		vplce[2] += vince[2];
+		vplce[3] += vince[3];
         index += local_bpl;
 
     } while (index < length);

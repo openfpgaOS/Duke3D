@@ -240,11 +240,17 @@ static void run_sram(void) {
 }
 
 static void run_bram(void) {
+    /* BRAM total is 32 KB (0x0000-0x8000); the OS owns 0x0000-0x2000
+     * and the app virtual map v1 reserves 0x2000-0x7800 for app hot
+     * code/data. We use the bottom 8 KB of that for two 4 KB buffers
+     * (dst at 0x2000, src at 0x4000). The previous layout walked src
+     * past 0x8000 for the largest test size and stalled the AXI bus
+     * trying to read unmapped addresses, which looked like memcpy
+     * "hanging" mid-row. Larger sizes simply won't fit in BRAM. */
     void *dst = (void *)0x00002000;
-    void *src = (void *)0x00006000;
-    /* BRAM is ~55KB, max test size limited */
-    static const uint32_t bram_sizes[] = { 256, 1024, 16384 };
-    static const int      bram_reps[]  = { 10000, 10000, 2000 };
+    void *src = (void *)0x00004000;
+    static const uint32_t bram_sizes[] = { 256, 1024, 4096 };
+    static const int      bram_reps[]  = { 10000, 10000, 5000 };
     #define NUM_BRAM 3
     char r[NUM_SIZES][16];
 

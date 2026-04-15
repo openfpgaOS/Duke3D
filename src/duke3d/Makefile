@@ -98,8 +98,12 @@ release: $(OBJ_DIR)/app.elf
 	@cp $< $$(ls -d $(OUT)/Assets/*/)/common/$(APP).elf
 	@echo "Ready: build/$(APP)/"
 
+# DEBUG=v / DEBUG=t forwards -v / -t to phdpd via debug.sh.
+DEBUG ?=
+DEBUG_FLAGS = $(if $(DEBUG),-$(DEBUG))
+
 debug: all
-	@$(ROOT)/scripts/debug.sh $$(find $(OUT)/Assets -name "$(APP).elf" | head -1)
+	@$(ROOT)/scripts/debug.sh $(DEBUG_FLAGS) $$(find $(OUT)/Assets -name "$(APP).elf" | head -1)
 
 copy: all
 	@$(SDK_DIR)/platforms/pocket/copy.sh "$(APP)" "$$(find $(OUT)/Assets -name '$(APP).elf' | head -1)"

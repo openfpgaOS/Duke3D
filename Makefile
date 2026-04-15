@@ -97,7 +97,11 @@ help:
 	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET)                    Build SDK core + every custom core\n"
 	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET) $(C_ARG)CORE=<core|sdk>$(C_RESET)    Build core or sdk only\n"
 	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET) $(C_ARG)CORE=<core>$(C_RESET)        Build the <core> custom core only\n"
-	@printf "    $(C_CMD)make $(C_VERB)debug$(C_RESET) $(C_ARG)CORE=<core>$(C_RESET)        Build + UART push + stream console\n"
+	@printf "    $(C_CMD)make $(C_VERB)build$(C_RESET) $(C_ARG)APP=<app>$(C_RESET)          Build the <app> SDK app only\n"
+	@printf "    $(C_CMD)make $(C_VERB)debug$(C_RESET) $(C_ARG)CORE=<core>$(C_RESET)        Build + UART push + stream a custom core\n"
+	@printf "    $(C_CMD)make $(C_VERB)debug$(C_RESET) $(C_ARG)APP=<app>$(C_RESET)          Build + UART push + stream a single SDK app\n"
+	@printf "    $(C_CMD)make $(C_VERB)test$(C_RESET) $(C_ARG)CORE=<core>$(C_RESET)         Test a custom core on desktop (SDL2)\n"
+	@printf "    $(C_CMD)make $(C_VERB)test$(C_RESET) $(C_ARG)APP=<app>$(C_RESET)           Test a single SDK app on desktop (SDL2)\n"
 	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET)                     Copy SDK demo core + custom cores\n"
 	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET) $(C_ARG)CORE=sdk$(C_RESET)            Copy SDK demo core only\n"
 	@printf "    $(C_CMD)make $(C_VERB)copy$(C_RESET) $(C_ARG)CORE=<core>$(C_RESET)         Copy the <core> custom core only\n"
@@ -117,8 +121,11 @@ core:
 # `make build`              → SDK demo core + every custom core under src/<name>/
 # `make build CORE=sdk`     → SDK demo core only (src/apps/)
 # `make build CORE=<name>`  → custom core src/<name>/ only
+# `make build APP=<name>`   → single SDK app src/apps/<name>/ only
 build:
-ifdef CORE
+ifdef APP
+	$(MAKE) -C src/apps/$(APP)
+else ifdef CORE
 ifeq ($(CORE),sdk)
 	$(MAKE) -C src/apps
 else
@@ -136,21 +143,54 @@ else
 endif
 
 # ── Debug (UART push + console) ─────────────────────────────────────
-# Custom-core path only — `make debug` from the SDK demo core isn't
-# meaningful at the root (the demo core is the runtime, not a single
-# app to push). To push a single SDK app over UART use
-# `cd src/apps && make debug APP=<name>` instead.
-# With no CORE, picks the lone custom core if exactly one exists.
+# `make debug`              → the lone custom core (if exactly one exists)
+# `make debug CORE=<name>`  → custom core src/<name>/ — pushes its release ELF
+# `make debug APP=<name>`   → SDK app src/apps/<name>/ — pushes that single
+#                             app's ELF over UART (for iterating on one app
+#                             without rebuilding the whole SDK demo core).
+# CORE=sdk is intentionally rejected: the SDK demo core is the runtime,
+# not a single ELF, so there's nothing for the loader to push.
 debug:
-ifndef CORE
+ifdef APP
+	$(MAKE) -C src/apps debug APP=$(APP)
+else ifndef CORE
 ifneq ($(APP_NAME),)
 	$(MAKE) -C src/$(APP_NAME) debug
 else
 	@echo "Usage: make debug CORE=<custom-core>"
+	@echo "       make debug APP=<sdk-app>"
 	@exit 1
 endif
+else ifeq ($(CORE),sdk)
+	@echo "make debug CORE=sdk is not supported — the SDK demo core is not a single ELF."
+	@echo "Use 'make debug APP=<sdk-app>' to push a single SDK app over UART instead."
+	@exit 1
 else
 	$(MAKE) -C src/$(CORE) debug
+endif
+
+# ── Test (desktop SDL2 build) ───────────────────────────────────────
+# `make test CORE=<name>`  → build the custom core's app_pc
+# `make test APP=<name>`   → build a single SDK app's app_pc
+test:
+ifdef APP
+	$(MAKE) -C src/apps test APP=$(APP)
+else ifdef CORE
+ifeq ($(CORE),sdk)
+	@echo "make test CORE=sdk is not supported — pick a single SDK app instead."
+	@echo "Use 'make test APP=<sdk-app>' to build that app for desktop."
+	@exit 1
+else
+	$(MAKE) -C src/$(CORE) test
+endif
+else
+ifneq ($(APP_NAME),)
+	$(MAKE) -C src/$(APP_NAME) test
+else
+	@echo "Usage: make test CORE=<custom-core>"
+	@echo "       make test APP=<sdk-app>"
+	@exit 1
+endif
 endif
 
 # ── Copy to SD card ──────────────────────────────────────────────────
@@ -210,4 +250,4 @@ else
 	rm -rf build .obj releases
 endif
 
-.PHONY: all help setup core build debug copy package tools clean
+.PHONY: all help setup core build debug test copy package tools clean

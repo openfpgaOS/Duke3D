@@ -1,9 +1,10 @@
 /*
  * of_mixer.h -- Hardware PCM Mixer API for openfpgaOS
  *
- * 32-voice hardware mixer. Mixing runs entirely in FPGA fabric —
+ * 48-voice hardware mixer. Mixing runs entirely in FPGA fabric —
  * zero CPU cost during playback.
- * Output: 48kHz stereo via audio FIFO, mixed with OPL3 FM synthesis.
+ * Output: 48 kHz stereo via audio FIFO.  Sample-based MIDI synthesis
+ * (of_midi / of_smp_voice) drives this mixer directly.
  *
  * Usage:
  *   1. Call of_mixer_init()
@@ -27,7 +28,7 @@ extern "C" {
 #include <stdint.h>
 #include <stddef.h>
 
-#define OF_MIXER_MAX_VOICES  32
+#define OF_MIXER_MAX_VOICES  48
 #define OF_MIXER_OUTPUT_RATE 48000
 
 /* Convert sample rate in Hz to 16.16 fixed-point for raw API.
@@ -162,6 +163,13 @@ static inline void of_mixer_set_master_volume(int volume) {
     OF_SVC->mixer_set_master_volume(volume);
 }
 
+/* Per-voice SVF low-pass filter.  cutoff_q016 is a Q0.16 register
+ * value (65535 ≈ wide-open), q is 0..255 resonance, enable gates
+ * the filter into the voice's signal path. */
+static inline void of_mixer_set_filter(int voice, int cutoff_q016, int q, int enable) {
+    OF_SVC->mixer_set_filter(voice, cutoff_q016, q, enable);
+}
+
 #else /* OF_PC */
 
 #include <stdlib.h>
@@ -232,6 +240,9 @@ static inline void of_mixer_set_group_volume(int group, int volume) {
 }
 static inline void of_mixer_set_master_volume(int volume) {
     (void)volume;
+}
+static inline void of_mixer_set_filter(int voice, int cutoff_q016, int q, int enable) {
+    (void)voice; (void)cutoff_q016; (void)q; (void)enable;
 }
 static inline void of_mixer_retrigger(int voice, const uint8_t *pcm_s16,
                                       uint32_t sample_count, uint32_t sample_rate,

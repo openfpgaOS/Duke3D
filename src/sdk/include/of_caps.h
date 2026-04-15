@@ -38,19 +38,18 @@ extern "C" {
 /* Hardware feature flags — must match RTL HW_FEATURES bit layout in
  * src/fpga/common/axi_periph_slave.v and src/firmware/os/hal/regs.h. */
 #define OF_HW_MIXER         (1 << 0)    /* PCM hardware mixer */
-#define OF_HW_OPL3          (1 << 1)    /* OPL3 FM synthesis */
 #define OF_HW_NET           (1 << 2)    /* Networking (link cable / serial / wifi) */
 #define OF_HW_ANALOGIZER    (1 << 3)    /* Analog video output */
 #define OF_HW_GPU_SPAN      (1 << 4)    /* GPU span renderer (always set) */
 #define OF_HW_GPU_TRIANGLE  (1 << 5)    /* GPU triangle rasterizer (Full only) */
-#define OF_HW_MIDI          (1 << 6)    /* MIDI playback via OPL3 */
+#define OF_HW_MIDI          (1 << 6)    /* MIDI playback (sample-based synth) */
 #define OF_HW_WIFI          (1 << 7)    /* Wireless networking */
 #define OF_HW_FPU           (1 << 8)    /* Hardware FPU (RISC-V F extension) */
 #define OF_HW_SAVE_SLOTS    (1 << 9)    /* Persistent save storage */
 #define OF_HW_GPU_VCOLOR    (1 << 10)   /* GPU vertex color interpolation */
 #define OF_HW_GPU_BILINEAR  (1 << 11)   /* GPU bilinear texture filter */
 #define OF_HW_GPU_ALPHA     (1 << 12)   /* GPU alpha / additive blending */
-#define OF_HW_GPU_PERSP     (1 << 13)   /* GPU perspective spans (Quake-style) */
+#define OF_HW_GPU_PERSP     (1 << 13)   /* GPU perspective-correct spans */
 #define OF_HW_GPU_FRAGPIPE  (1 << 14)   /* GPU 1-px/cycle fragment pipeline */
 
 /* Convenience: all the GPU bits an app might care about for renderer choice. */

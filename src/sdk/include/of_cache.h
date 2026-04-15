@@ -22,6 +22,23 @@ static inline void of_cache_flush_video(void) {
     OF_SVC->video_flush_cache();
 }
 
+/* Full D-cache write-back + I-cache invalidate.  Use before handing
+ * data off to a DMA peer that reads from RAM, or after writing code
+ * the CPU is about to fetch. */
+static inline void of_cache_flush(void) {
+    OF_SVC->cache_flush();
+}
+
+/* Range variants — cheaper than the full flush when the affected
+ * window is small. */
+static inline void of_cache_clean_range(void *addr, uint32_t size) {
+    OF_SVC->cache_clean_range(addr, size);
+}
+
+static inline void of_cache_inval_range(void *addr, uint32_t size) {
+    OF_SVC->cache_inval_range(addr, size);
+}
+
 /* Invalidate I-cache (fence.i). */
 static inline void of_cache_invalidate_icache(void) {
     __asm__ volatile("fence");
@@ -65,6 +82,9 @@ static inline uint32_t of_read_uncached32(const void *ptr, uint32_t offset) {
 #else /* OF_PC */
 
 static inline void of_cache_flush_video(void) { /* no-op on PC */ }
+static inline void of_cache_flush(void) { /* no-op on PC */ }
+static inline void of_cache_clean_range(void *addr, uint32_t size) { (void)addr; (void)size; }
+static inline void of_cache_inval_range(void *addr, uint32_t size) { (void)addr; (void)size; }
 static inline void of_cache_invalidate_icache(void) { /* no-op on PC */ }
 
 /* PC: no cache — just access directly */

@@ -28,7 +28,6 @@ void test_mixer(void) {
     ASSERT("MX.02 alloc", sample_buf != NULL);
     if (sample_buf) {
         memcpy(sample_buf, pcm_tone_src, MIX_TONE_LEN * sizeof(int16_t));
-        OF_SVC->cache_flush();
     }
 
     int voice = of_mixer_play((const uint8_t *)sample_buf, MIX_TONE_LEN, 11025, 0, 128);
@@ -103,7 +102,6 @@ void test_mixer_adv(void) {
     int16_t *s16_buf = (int16_t *)of_mixer_alloc_samples(ADV_TONE_LEN * 2);
     if (!s16_buf) { test_fail("MA.00 alloc", "null"); section_end(); return; }
     memcpy(s16_buf, adv_tone_src, ADV_TONE_LEN * 2);
-    OF_SVC->cache_flush();
 
     /* MA.01: 8-bit playback — allocate 8-bit signed, play, verify voice starts */
     {
@@ -112,7 +110,6 @@ void test_mixer_adv(void) {
         if (s8_buf) {
             for (int i = 0; i < ADV_TONE_LEN; i++)
                 s8_buf[i] = (i & 1) ? 31 : -31;
-            OF_SVC->cache_flush();
             int v = of_mixer_play_8bit((const uint8_t *)s8_buf, ADV_TONE_LEN, 11025, 0, 200);
             ASSERT("MA.01b play8", v >= 0);
             if (v >= 0) {
@@ -233,7 +230,6 @@ void test_mixer_adv(void) {
         if (rate_buf) {
             for (int i = 0; i < RATE_TONE_LEN; i++)
                 rate_buf[i] = (i & 1) ? 4000 : -4000;
-            OF_SVC->cache_flush();
 
             int v = of_mixer_play((const uint8_t *)rate_buf, RATE_TONE_LEN, 48000, 0, 100);
             ASSERT("MA.10a play", v >= 0);
@@ -257,7 +253,6 @@ void test_mixer_adv(void) {
         if (rate_buf) {
             for (int i = 0; i < RATE_TONE_LEN; i++)
                 rate_buf[i] = (i & 1) ? 4000 : -4000;
-            OF_SVC->cache_flush();
 
             int v = of_mixer_play((const uint8_t *)rate_buf, RATE_TONE_LEN, 24000, 0, 100);
             if (v >= 0) {
@@ -285,7 +280,6 @@ void test_mixer_adv(void) {
                 buf1[i] = (int16_t)(i & 0xFF);
                 buf2[i] = (int16_t)(~i & 0xFF);
             }
-            OF_SVC->cache_flush();
 
             int v1 = of_mixer_play((const uint8_t *)buf1, RATE_TONE_LEN, 48000, 0, 100);
             int v2 = of_mixer_play((const uint8_t *)buf2, RATE_TONE_LEN, 11025, 0, 100);
@@ -330,7 +324,6 @@ void test_mixer_adv(void) {
         if (end_buf) {
             for (int i = 0; i < END_TONE_LEN; i++)
                 end_buf[i] = (i & 1) ? 2000 : -2000;
-            OF_SVC->cache_flush();
 
             int v = of_mixer_play((const uint8_t *)end_buf, END_TONE_LEN, 48000, 0, 100);
             if (v >= 0) {
@@ -370,9 +363,7 @@ void test_mixer_stress(void) {
     of_mixer_poll_ended();
     of_mixer_free_samples();
 
-    /* Allocate 31 different sample buffers with unique patterns.
-     * Flush after each buffer — total data (149KB) exceeds D-cache (64KB),
-     * so natural eviction from the 0x39 alias may lose data. */
+    /* Allocate 31 different sample buffers with unique patterns. */
     #define STRESS_LEN 2400
     int16_t *bufs[31];
     int alloc_ok = 1;
@@ -382,7 +373,6 @@ void test_mixer_stress(void) {
         int half_period = 10 + i * 3;
         for (int j = 0; j < STRESS_LEN; j++)
             bufs[i][j] = ((j / half_period) & 1) ? 2000 : -2000;
-        OF_SVC->cache_flush();  /* flush each buffer individually */
     }
     ASSERT("ST.01 alloc31", alloc_ok);
 

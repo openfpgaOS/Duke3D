@@ -26,16 +26,8 @@ fail() { echo -e "  ${RED}x${RESET} $1"; exit 1; }
 
 [[ -z "$APP" ]] && { echo "Usage: $0 <app_name> <elf_path> [sd_path]"; exit 1; }
 
-# ── Find SD card ─────────────────────────────────────────────────────
-if [[ -z "$SDCARD" ]]; then
-    for mount in /run/media/"$USER"/* /Volumes/*; do
-        if [[ -d "$mount/Cores" && -d "$mount/Assets" ]]; then
-            SDCARD="$mount"
-            break
-        fi
-    done
-fi
-[[ -z "$SDCARD" ]] && fail "No Analogue Pocket SD card found. Pass path as third argument."
+# ── Find / mount SD card ─────────────────────────────────────────────
+source "$SDK_ROOT/scripts/sdcard.sh"
 
 # ── Copy build/<app>/ to SD card ────────────────────────────────────
 if [[ -d "$BUILD_DIR/Cores" ]]; then

@@ -12,6 +12,8 @@
 #ifndef OF_FILE_H
 #define OF_FILE_H
 
+#include <stdint.h>
+
 /* Standard file I/O is via POSIX (fopen/fread/fwrite/fclose).
  * The of_file_* helpers below are advanced async DMA reads only. */
 
@@ -19,6 +21,23 @@
 
 #include "of_syscall.h"
 #include "of_syscall_numbers.h"
+#include "of_services.h"
+
+/* Register a filename→data-slot binding for fopen() by name.
+ *
+ * Needed because on current APF firmware DS_CMD_GETFILE returns no
+ * response — the kernel cannot discover filenames from the datatable
+ * by itself. Apps that know their own slot assignments (from the
+ * instance JSON) should call this during startup for each slot they
+ * will open by name. Overwrites any prior mapping with the same name.
+ * Max 16 registrations total.
+ *
+ *   of_file_slot_register(3, "data.bin");
+ *   FILE *f = fopen("data.bin", "rb");
+ */
+static inline void of_file_slot_register(uint32_t slot_id, const char *filename) {
+    OF_SVC->file_slot_register(slot_id, filename);
+}
 
 /* Start a non-blocking file read from a data slot.
  * dest must point into a DMA-target region (the kernel rejects

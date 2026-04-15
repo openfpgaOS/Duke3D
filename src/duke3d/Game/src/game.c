@@ -7656,6 +7656,7 @@ void Logo(void)
 }
 
 static uint8_t tmb_bank[8000];  /* must persist — of_midi_load_bank stores a pointer */
+static int32_t tmb_bank_size;
 
 void loadtmb(void)
 {
@@ -7670,8 +7671,9 @@ void loadtmb(void)
     if (l > (int32_t)sizeof(tmb_bank)) l = (int32_t)sizeof(tmb_bank);
 
     kread(fil, tmb_bank, l);
+    tmb_bank_size = l;
 
-    MUSIC_RegisterTimbreBank(tmb_bank);
+    MUSIC_RegisterTimbreBank(tmb_bank, (uint32_t)l);
 
     kclose(fil);
 }

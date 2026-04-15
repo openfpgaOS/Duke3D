@@ -29,8 +29,16 @@ all: $(OBJ_DIR)/app.elf
 
 # UART push of this single SDK app's ELF (no SDK release/assembly step
 # needed — the bare app.elf is what the loader expects).
+#
+# Optionally forward verbosity to phdpd:
+#   make debug             -- silent phdpd
+#   make debug DEBUG=v     -- start phdpd with -v (state + packet headers)
+#   make debug DEBUG=t     -- start phdpd with -t (full hex trace)
+DEBUG ?=
+DEBUG_FLAGS = $(if $(DEBUG),-$(DEBUG))
+
 debug: $(OBJ_DIR)/app.elf
-	@$(ROOT)/scripts/debug.sh $(OBJ_DIR)/app.elf
+	@$(ROOT)/scripts/debug.sh $(DEBUG_FLAGS) $(OBJ_DIR)/app.elf
 
 # Desktop test build via SDL2 — sdk.mk already provides the app_pc rule.
 test: app_pc

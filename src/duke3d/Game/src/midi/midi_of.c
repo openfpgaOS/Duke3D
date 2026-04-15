@@ -20,7 +20,7 @@ extern void kclose(short handle);
 /* ---- state --------------------------------------------------------- */
 
 static int  midi_initialized = 0;
-static int  midi_volume = 255;       /* 0-255, maps to of_midi 0-255 */
+static int  midi_volume = 255;       /* 0-255, game-requested volume */
 static int  midi_looping = 0;
 
 /* Buffer for loaded MIDI data (largest Duke3D MIDI is ~60KB) */
@@ -208,14 +208,13 @@ void MUSIC_RerouteMidiChannel(int channel,
     (void)function;
 }
 
-/* No-op: Duke3D's TMB format is 2-op DMX-era timbre data that does
- * not fit the 4-op 25-byte records used by the current of_midi bank.
- * Rather than hand-upgrade every TMB patch to 4-op, let the engine
- * fall back on its built-in 4-op GM bank, which tracks the Sound
- * Canvas more closely than Duke's original AdLib timbres. */
-void MUSIC_RegisterTimbreBank(uint8_t *timbres)
+/* Load Duke3D's DMX 2-op timbre bank (d3dtimbr.tmb).
+ * Converts the sparse 13-byte-per-entry TMB format to the engine's
+ * 26-byte WOPL layout and overlays onto the built-in GM bank. */
+void MUSIC_RegisterTimbreBank(uint8_t *timbres, unsigned int size)
 {
-    (void)timbres;
+    if (timbres && size >= 13 && midi_initialized)
+        of_midi_load_bank_dmx(timbres, size);
 }
 
 /* ---- PlayMusic: load MIDI from GRP and play ------------------------ */

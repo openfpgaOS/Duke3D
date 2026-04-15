@@ -1,7 +1,9 @@
 /*
  * of_audio.h -- Audio subsystem API for openfpgaOS
  *
- * 48 kHz stereo PCM + YMF262 OPL3 FM synthesis.
+ * 48 kHz stereo PCM over the hardware FIFO, plus a double-buffered
+ * streaming path for music and voice.  MIDI playback is layered on
+ * top of the PCM mixer via of_midi.h / of_smp_voice.h.
  */
 
 #ifndef OF_AUDIO_H
@@ -15,7 +17,6 @@ extern "C" {
 
 #define OF_AUDIO_RATE   48000
 #define OF_AUDIO_FIFO   512
-#define OF_OPL_CHANNELS 18
 
 #ifndef OF_PC
 
@@ -31,14 +32,6 @@ static inline int of_audio_write(const int16_t *samples, int count) {
 
 static inline int of_audio_free(void) {
     return OF_SVC->audio_get_free();
-}
-
-static inline void of_audio_opl_write(uint16_t reg, uint8_t val) {
-    OF_SVC->opl_write(reg, val);
-}
-
-static inline void of_audio_opl_reset(void) {
-    OF_SVC->opl_reset();
 }
 
 /* Streaming audio: double-buffered gapless playback for music/voice. */
@@ -63,8 +56,6 @@ static inline void of_audio_stream_close(void) {
 void of_audio_init(void);
 int  of_audio_write(const int16_t *samples, int count);
 int  of_audio_free(void);
-void of_audio_opl_write(uint16_t reg, uint8_t val);
-void of_audio_opl_reset(void);
 static inline int of_audio_stream_open(int sample_rate) { (void)sample_rate; return -1; }
 static inline int of_audio_stream_write(const int16_t *samples, int count) { (void)samples; (void)count; return 0; }
 static inline int of_audio_stream_ready(void) { return 1; }

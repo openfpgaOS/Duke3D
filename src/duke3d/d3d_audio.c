@@ -48,9 +48,10 @@ static decoded_sound_t decoded[NUM_SOUNDS];
 #define MAX_ACTIVE_VOICES 32
 
 typedef struct {
-    int      voice;      /* OS mixer voice index (0-31), or -1 */
-    int      sound_num;  /* Duke sound number */
-    int      has_owner;  /* 1 = xyzsound (tracked in SoundOwner), 0 = fire-and-forget */
+    int      voice;       /* OS mixer voice index (0-31), or -1 */
+    int      sound_num;   /* Duke sound number */
+    int      has_owner;   /* 1 = xyzsound (tracked in SoundOwner), 0 = fire-and-forget */
+    uint32_t expire_ms;   /* of_time_ms() when sound finishes, 0 = looping/never */
 } active_voice_t;
 
 static active_voice_t active_voices[MAX_ACTIVE_VOICES];
@@ -60,16 +61,33 @@ static void init_voice_tracking(void) {
         active_voices[i].voice = -1;
 }
 
-static void track_voice(int voice, int sound_num, int has_owner) {
+static void track_voice_timed(int voice, int sound_num, int has_owner,
+                              uint32_t duration_ms) {
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
     active_voices[voice].voice = voice;
     active_voices[voice].sound_num = sound_num;
     active_voices[voice].has_owner = has_owner;
+    active_voices[voice].expire_ms = duration_ms ? (of_time_ms() + duration_ms) : 0;
 }
 
 static void untrack_voice(int voice) {
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
     active_voices[voice].voice = -1;
+}
+
+static void complete_voice(int i) {
+    int snd = active_voices[i].sound_num;
+    int owned = active_voices[i].has_owner;
+    /* Timer-based expiry: the voice has been silent for ~50ms by the
+     * time we get here. If the mixer reused the slot for a new sound,
+     * track_voice_timed would have overwritten expire_ms with a future
+     * time, so the expiry check wouldn't have fired. Safe to stop. */
+    of_mixer_stop(i);
+    untrack_voice(i);
+    if (owned) {
+        extern void testcallback(int32_t num);
+        testcallback(snd);
+    }
 }
 
 /* ================================================================
@@ -79,23 +97,19 @@ static void untrack_voice(int voice) {
 /* Convert Duke angle (0-2047 BAMS) + distance (0-255) to L/R volumes.
  * angle 0 = ahead, 512 = right, 1024 = behind, 1536 = left.
  * Uses BUILD engine sintable for smooth panning. */
-static void angle_dist_to_lr(int angle, int distance,
-                              int *out_vol_l, int *out_vol_r)
+/* Compute volume (0-255) and pan (0=left, 128=center, 255=right)
+ * from BUILD angle + distance. */
+static void angle_dist_to_vol_pan(int angle, int distance,
+                                  int *out_vol, int *out_pan)
 {
     int volume = 255 - distance;
     if (volume < 0) volume = 0;
 
-    /* sintable[(angle+512)&2047] = cos(angle) → front/back
-     * sintable[angle&2047]       = sin(angle) → left/right
-     * sin > 0 when angle 0-1023 (right side)
-     * sin < 0 when angle 1024-2047 (left side) */
     int s = sintable[angle & 2047];  /* -16383 to +16383 */
-
-    /* Map sine to pan: 0 (full left) to 255 (full right), 128 = center */
     int pan = 128 + ((s * 127) >> 14);
 
-    *out_vol_l = (volume * (255 - pan)) >> 8;
-    *out_vol_r = (volume * pan) >> 8;
+    *out_vol = volume;
+    *out_pan = pan;
 }
 
 /* ================================================================
@@ -123,8 +137,11 @@ void d3d_audio_init(void)
     memset(decoded, 0, sizeof(decoded));
     audio_initialized = 1;
 
-    /* No timer interrupt — pump from game loop like mididemo.
-     * Timer ISR hangs when it fires during blocking of_video_flip. */
+    /* No timer interrupt — pump cooperatively from the game loop like
+     * mididemo. A timer ISR racing with the video path (FB_SWAP_CTRL
+     * writes in of_video_flip, or the busy-wait in of_video_wait_flip)
+     * has been observed to hang; pumping from _nextpage / sampletimer
+     * avoids the race entirely. */
 }
 
 void d3d_audio_shutdown(void)
@@ -180,12 +197,6 @@ static int ensure_decoded(int num)
         memcpy(cram_ptr, result.pcm, byte_len);
     }
 
-    /* Full D-cache eviction — the "uncached" 0x39 CRAM1 alias is not
-     * reliably uncached (PMA not fully enforced on VexiiRiscv), and
-     * range-based cbo.clean doesn't find lines cached under the alias.
-     * Conflict eviction forces all dirty lines out regardless of address. */
-    OF_SVC->cache_flush();
-
     decoded[num].pcm = (uint8_t *)cram_ptr;
     decoded[num].sample_count = sample_count;
     decoded[num].sample_rate = result.sample_rate;
@@ -208,7 +219,6 @@ int d3d_sound_play(int num, int priority, int volume)
     if (!ensure_decoded(num))
         return -1;
 
-    /* Boost SFX volume (clamp to 255) */
     int vol = volume * 2;
     if (vol > 255) vol = 255;
 
@@ -218,7 +228,9 @@ int d3d_sound_play(int num, int priority, int volume)
                               priority, vol);
 
     if (voice >= 0) {
-        track_voice(voice, num, 0);
+        uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
+                     / decoded[num].sample_rate + 50;
+        track_voice_timed(voice, num, 0, dur);
     }
 
     return voice;
@@ -236,19 +248,22 @@ int d3d_sound_play_3d(int num, int priority, int angle, int distance)
     if (!ensure_decoded(num))
         return -1;
 
-    int vol_l, vol_r;
-    angle_dist_to_lr(angle, distance, &vol_l, &vol_r);
+    int vol, pan;
+    angle_dist_to_vol_pan(angle, distance, &vol, &pan);
 
-    /* Start voice at center volume, then set L/R immediately */
-    int avg = (vol_l + vol_r) >> 1;
+    int scaled_vol = vol * 2;
+    if (scaled_vol > 255) scaled_vol = 255;
+
     int voice = of_mixer_play(decoded[num].pcm,
                               decoded[num].sample_count,
                               decoded[num].sample_rate,
-                              priority, avg);
+                              priority, scaled_vol);
 
     if (voice >= 0) {
-        of_mixer_set_vol_lr(voice, vol_l, vol_r);
-        track_voice(voice, num, 0);
+        of_mixer_set_pan(voice, pan);
+        uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
+                     / decoded[num].sample_rate + 50;
+        track_voice_timed(voice, num, 0, dur);
     }
 
     return voice;
@@ -261,9 +276,13 @@ void d3d_sound_set_pan(int voice, int angle, int distance)
 {
     if (!audio_initialized || voice < 0) return;
 
-    int vol_l, vol_r;
-    angle_dist_to_lr(angle, distance, &vol_l, &vol_r);
-    of_mixer_set_vol_lr(voice, vol_l, vol_r);
+    int vol, pan;
+    angle_dist_to_vol_pan(angle, distance, &vol, &pan);
+
+    /* Only update pan — volume was set at play time and the hardware
+     * ramp rate (default 0) blocks post-play volume changes. Pan is
+     * a separate hardware path that works regardless of ramp. */
+    of_mixer_set_pan(voice, pan);
 }
 
 /*
@@ -273,6 +292,9 @@ void d3d_sound_set_loop(int voice)
 {
     if (!audio_initialized || voice < 0) return;
     of_mixer_set_loop(voice, 0, -1);
+    /* Cancel timer expiry — looping sounds play until explicitly stopped */
+    if (voice < MAX_ACTIVE_VOICES)
+        active_voices[voice].expire_ms = 0;
 }
 
 void d3d_sound_stop(int voice)
@@ -303,31 +325,28 @@ void d3d_sound_set_owned(int voice)
 }
 
 /*
- * Poll for completed voices and fire Duke's TestCallBack.
- * Called from timer interrupt and also from display loop as fallback.
+ * Pump MIDI + expire finished voices.  Called from sampletimer
+ * (via getpackets, frequent) and _nextpage (once per frame).
+ *
+ * Voice completion is purely timer-based: we know each sound's
+ * duration (sample_count / sample_rate) and expire it after that
+ * time.  No hardware poll_ended register, no IRQs, no races.
  */
 void d3d_audio_pump(void)
 {
     if (!audio_initialized) return;
 
-    /* Pump MIDI every call — of_midi_pump uses internal timestamps,
-     * processes all events up to "now". Called from sampletimer + nextpage. */
     of_midi_pump();
 
-    /* Single register read: bitmask of voices that finished since last poll */
-    uint32_t ended = of_mixer_poll_ended();
-    while (ended) {
-        int i = __builtin_ctz(ended);
-        ended &= ended - 1;
+    /* Drain the hardware ended register so it doesn't overflow,
+     * but we don't act on it — timer expiry handles everything. */
+    of_mixer_poll_ended();
 
-        if (active_voices[i].voice >= 0) {
-            int snd = active_voices[i].sound_num;
-            int owned = active_voices[i].has_owner;
-            untrack_voice(i);
-            if (owned) {
-                extern void testcallback(int32_t num);
-                testcallback(snd);
-            }
-        }
+    uint32_t now = of_time_ms();
+    for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
+        if (active_voices[i].voice < 0) continue;
+        if (active_voices[i].expire_ms == 0) continue;  /* looping — no expiry */
+        if ((int32_t)(now - active_voices[i].expire_ms) >= 0)
+            complete_voice(i);
     }
 }

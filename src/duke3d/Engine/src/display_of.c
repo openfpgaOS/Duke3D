@@ -234,7 +234,7 @@ static void ensure_video_init(void) {
     if (!video_initialized) {
         video_initialized = 1;
         of_video_init();
-        of_video_set_display_mode(OF_DISPLAY_OVERLAY);
+        of_video_set_display_mode(OF_DISPLAY_FRAMEBUFFER);
         of_video_palette_bulk(of_palette, 256);
         /* Clear all 3 triple-buffer frames */
         of_video_clear(0); of_video_flip();
@@ -293,8 +293,17 @@ void _nextpage(void)
     d3d_audio_pump();
     uint32_t _d = of_time_us();
 
+    /* Pace the game loop to real display cadence. Placed AFTER
+     * d3d_audio_pump so MIDI/voice servicing never eats the ~16 ms
+     * wait latency; we block on vsync only after audio is up to date.
+     * Gives VRR clean flip-to-flip intervals to retune the scaler
+     * against, and kills the unpaced-render judder that appears when
+     * the scene renders faster than one vsync period. */
+    of_video_wait_flip();
+    uint32_t _e = of_time_us();
+
     np_input_us = _b - _a;
-    np_flip_us  = _c - _b;
+    np_flip_us  = (_c - _b) + (_e - _d);
     np_audio_us = _d - _c;
 }
 
