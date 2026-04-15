@@ -3,7 +3,7 @@
         "magic": "APF_VER_1",
         "data_slots": [
             {
-                "id": 9,
+                "id": 0,
                 "name": "Game",
                 "required": true,
                 "parameters": 275,

@@ -78,12 +78,10 @@ struct of_services_table {
     void      (*mixer_free_samples)(void);
     void      (*mixer_set_end_callback)(void (*cb)(uint32_t ended_mask));
 
-    /* -- Audio (5) -- */
+    /* -- Audio (3) -- */
     void      (*audio_init)(void);
     int       (*audio_write)(const int16_t *samples, int count);
     int       (*audio_get_free)(void);
-    void      (*opl_write)(uint16_t reg, uint8_t val);
-    void      (*opl_reset)(void);
 
     /* -- Timer (5) -- */
     void      (*timer_set_callback)(void (*cb)(void), uint32_t hz);
@@ -115,10 +113,28 @@ struct of_services_table {
     void      (*mixer_set_group)(int voice, int group);
     void      (*mixer_set_group_volume)(int group, int volume);
     void      (*mixer_set_master_volume)(int volume);
+    void      (*mixer_set_filter)(int voice, int cutoff_q016, int q, int enable);
     int       (*audio_stream_open)(int sample_rate);
     int       (*audio_stream_write)(const int16_t *samples, int count);
     int       (*audio_stream_ready)(void);
     void      (*audio_stream_close)(void);
+
+    /* -- Filesystem (1) -- append-only, ABI-stable --
+     *    Register a filename→slot mapping for fopen() by name.
+     *    The openFPGA manifest identifies data slots by numeric id;
+     *    this service lets apps tell the kernel which id holds which
+     *    filename so fopen() by name resolves correctly. Overwrites
+     *    any prior mapping for the same filename. Max 16 entries. */
+    void      (*file_slot_register)(uint32_t slot_id, const char *filename);
+
+    /* -- SoundFont preload (append-only, ABI-stable) --
+     *    The kernel auto-loads the first .ofsf file it finds in a data
+     *    slot during boot. Apps should check smp_bank_preload_base and,
+     *    when non-NULL, skip of_smp_bank_load() / of_mixer_alloc_samples
+     *    and reuse the preloaded CRAM1 buffer directly. Older firmware
+     *    leaves these as NULL/0. */
+    const void *smp_bank_preload_base;
+    uint32_t    smp_bank_preload_size;
 };
 
 #ifndef OF_PC
