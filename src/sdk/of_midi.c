@@ -78,10 +78,10 @@ static uint32_t rd32(const uint8_t *p) {
 static uint32_t read_var(midi_track_t *t) {
     uint32_t val = 0;
     const uint8_t *d = t->data;
-    while (t->pos < t->len) {
+    for (int i = 0; i < 4 && t->pos < t->len; i++) {
         uint8_t b = d[t->pos++];
         val = (val << 7) | (b & 0x7F);
-        if (!(b & 0x80)) break;
+        if (!(b & 0x80)) return val;
     }
     return val;
 }
@@ -166,6 +166,11 @@ static void control_change(int ch, int cc, int val) {
  * SMF track processor
  * ======================================================================== */
 
+static inline int trk_need(midi_track_t *t, uint32_t n) {
+    if (t->pos + n > t->len) { t->done = 1; return 0; }
+    return 1;
+}
+
 static int process_event(midi_track_t *t) {
     if (t->done || t->pos >= t->len)
         return 0;
@@ -173,6 +178,7 @@ static int process_event(midi_track_t *t) {
     uint8_t status = t->data[t->pos];
     if (status < 0x80) {
         status = t->running;
+        if (status == 0) { t->done = 1; return 0; }
     } else {
         t->pos++;
         if (status < 0xF0)
@@ -184,10 +190,11 @@ static int process_event(midi_track_t *t) {
 
     if (status == 0xFF) {
         /* Meta event */
+        if (!trk_need(t, 1)) return 0;
         uint8_t meta = t->data[t->pos++];
         uint32_t mlen = read_var(t);
+        if (mlen > t->len - t->pos) { t->done = 1; return 0; }
         if (meta == 0x51 && mlen == 3) {
-            /* Tempo change */
             M.us_per_beat = ((uint32_t)t->data[t->pos] << 16) |
                             ((uint32_t)t->data[t->pos+1] << 8) |
                             t->data[t->pos+2];
@@ -198,33 +205,42 @@ static int process_event(midi_track_t *t) {
     } else if (status >= 0xF0 && status <= 0xF7) {
         /* SysEx */
         uint32_t slen = read_var(t);
+        if (slen > t->len - t->pos) { t->done = 1; return 0; }
         t->pos += slen;
     } else if (cmd == 0x90) {
+        if (!trk_need(t, 2)) return 0;
         uint8_t note = t->data[t->pos++];
         uint8_t vel  = t->data[t->pos++];
         if (vel > 0) note_on(ch, note, vel);
         else         smp_voice_note_off(ch, note);
     } else if (cmd == 0x80) {
+        if (!trk_need(t, 2)) return 0;
         uint8_t note = t->data[t->pos++];
-        t->pos++;  /* release velocity ignored */
+        t->pos++;
         smp_voice_note_off(ch, note);
     } else if (cmd == 0xC0) {
+        if (!trk_need(t, 1)) return 0;
         M.program[ch] = t->data[t->pos++];
     } else if (cmd == 0xB0) {
+        if (!trk_need(t, 2)) return 0;
         uint8_t cc  = t->data[t->pos++];
         uint8_t val = t->data[t->pos++];
         control_change(ch, cc, val);
     } else if (cmd == 0xE0) {
+        if (!trk_need(t, 2)) return 0;
         uint8_t lsb = t->data[t->pos++];
         uint8_t msb = t->data[t->pos++];
         int16_t bend = (int16_t)(((uint16_t)msb << 7) | lsb) - 8192;
         smp_voice_update_bend(ch, bend);
     } else if (cmd == 0xD0) {
-        t->pos += 1;  /* channel pressure — ignored */
+        if (!trk_need(t, 1)) return 0;
+        t->pos += 1;
     } else if (cmd == 0xA0) {
-        t->pos += 2;  /* polyphonic key pressure — ignored */
+        if (!trk_need(t, 2)) return 0;
+        t->pos += 2;
     } else {
-        t->pos += 2;  /* unknown — skip 2 bytes */
+        if (!trk_need(t, 2)) return 0;
+        t->pos += 2;
     }
 
     return !t->done;
@@ -356,16 +372,18 @@ void of_midi_pump(void) {
     int64_t elapsed = (int64_t)(now - M.last_pump_us);
     M.last_pump_us = now;
 
-    /* Clamp to avoid huge jumps (e.g., after a long pause) */
     if (elapsed > 500000) elapsed = 500000;
 
-    /* Always tick envelopes at 1 kHz, even if no events are pending. */
     if (elapsed > 0) {
         M.tick_accum_us += (uint32_t)elapsed;
-        while (M.tick_accum_us >= 1000) {
+        int tick_budget = 250;
+        while (M.tick_accum_us >= 2000 && tick_budget > 0) {
             smp_voice_tick();
-            M.tick_accum_us -= 1000;
+            M.tick_accum_us -= 2000;
+            tick_budget--;
         }
+        if (tick_budget == 0)
+            M.tick_accum_us = 0;
 
         int any_active = 0;
         for (int i = 0; i < M.num_tracks; i++) {

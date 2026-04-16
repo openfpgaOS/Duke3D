@@ -60,6 +60,19 @@ int  smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
                        int velocity, const void *sample_base);
 void smp_voice_note_off(int midi_ch, int note);
 void smp_voice_tick(void);  /* 1 kHz ISR */
+
+/* Diagnostic stats for smp_voice_tick cost.  Task #10 probe: detect
+ * whether the tick exceeds its 2 ms budget (200k cycles @ 100 MHz). */
+typedef struct {
+    uint32_t cycles_max;     /* worst-case cycles for a single tick */
+    uint32_t cycles_last;    /* cycles of most recent tick */
+    uint32_t spike_count;    /* ticks where cycles > 200 000 (2 ms @100MHz) */
+    uint32_t tick_count;     /* total ticks since reset */
+    uint8_t  active_peak;    /* max active voices seen since reset */
+} smp_tick_stats_t;
+
+void smp_voice_tick_get_stats(smp_tick_stats_t *out);
+void smp_voice_tick_reset_stats(void);
 void smp_voice_update_volume(int midi_ch, int volume, int expression);
 void smp_voice_update_pan(int midi_ch, int pan);
 void smp_voice_update_bend(int midi_ch, int bend);
