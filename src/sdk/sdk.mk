@@ -166,8 +166,17 @@ PC_CC ?= cc
 SDL_CFLAGS := $(shell sdl2-config --cflags 2>/dev/null || pkg-config --cflags sdl2 2>/dev/null)
 SDL_LIBS   := $(shell sdl2-config --libs 2>/dev/null || pkg-config --libs sdl2 2>/dev/null)
 
+# PC-side CFLAGS. Separate from SDK_CFLAGS because the host build uses
+# the system libc/toolchain (no -nostdinc, no -march/-mabi, no musl
+# headers) and has its own include + warning defaults. User-supplied
+# CFLAGS flow in via ALL_PC_CFLAGS so apps with subdir layouts or
+# third-party code can customize without overriding this recipe.
+SDK_PC_CFLAGS  = -DOF_PC -O2 -Wall -Wextra
+SDK_PC_CFLAGS += -I$(SDK_DIR)/include -I.
+ALL_PC_CFLAGS  = $(SDK_PC_CFLAGS) $(CFLAGS)
+
 app_pc: $(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(OF_INIT_SRC) $(SDK_DIR)/include/of.h
-	$(PC_CC) -DOF_PC -I$(SDK_DIR)/include -I. -O2 -Wall -Wextra \
+	$(PC_CC) $(ALL_PC_CFLAGS) \
 		$(SRCS) $(SDK_DIR)/pc/of_sdl2.c $(OF_INIT_SRC) \
 		$(SDL_CFLAGS) $(SDL_LIBS) -lm -o $@
 
