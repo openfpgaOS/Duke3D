@@ -16,9 +16,13 @@
  *   of_midi_init();
  *   of_midi_play(midi_data, midi_len, 1);  // loop
  *   while (1) {
- *       of_midi_pump();
- *       // ... game logic ...
+ *       // ... game logic ...  (pump runs in timer ISR at 500 Hz)
  *   }
+ *
+ * Note: of_midi_play() installs of_midi_pump as the machine-timer ISR
+ * callback at 500 Hz, so the mixer is driven independently of the main
+ * thread.  Do NOT call of_midi_pump() from the main loop while playback
+ * is active — the ISR owns it and concurrent calls will race.
  */
 
 #ifndef OF_MIDI_H
@@ -56,7 +60,9 @@ void of_midi_pause(void);
 void of_midi_resume(void);
 
 /* Process pending MIDI events and advance envelopes.
- * Call every frame; uses of_time_us() for timing. */
+ * Installed as the machine-timer ISR callback by of_midi_play() and
+ * called internally at 500 Hz.  Do NOT invoke from the main loop while
+ * playback is active. */
 void of_midi_pump(void);
 
 /* Query state */
@@ -66,6 +72,11 @@ int of_midi_paused(void);
 /* Master volume (0 = silent, 255 = full). Default: 255. */
 void of_midi_set_volume(int volume);
 int  of_midi_get_volume(void);
+
+/* Diagnostic: current GM program number on a channel (0-127).  Channel 9
+ * is the drum channel; its program selects the drum kit.  Returns 0 for
+ * out-of-range channels. */
+int  of_midi_get_program(int ch);
 
 #ifdef __cplusplus
 }

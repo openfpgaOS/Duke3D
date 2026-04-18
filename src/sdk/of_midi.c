@@ -11,6 +11,7 @@
 #include "include/of_smp_bank.h"
 #include "include/of_smp_voice.h"
 #include "include/of_timer.h"
+#include "include/of_services.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -321,7 +322,15 @@ int of_midi_init(void) {
     M.playing       = 0;
     M.paused        = 0;
     M.tick_accum_us = 0;
-    M.master_volume = 255;
+    /* Default below full-scale to give the HW mixer headroom for dense
+     * polyphony.  audio_mixer.v sums voices into a 32-bit accumulator and
+     * shifts ÷4 before clamping to int16 — about 6 voices at vol=180 fill
+     * the range.  With SF2 polyphony routinely 20-28 voices, master=255
+     * hard-clips at peaks and sounds like occasional voice "breakup".
+     * 128 quarters per-voice peak output (via the HW log² curve) so
+     * roughly 4× more concurrent voices fit without clipping.  Apps can
+     * raise it with of_midi_set_volume() if they know polyphony is low. */
+    M.master_volume = 128;
     smp_voice_set_master_volume(M.master_volume);
     return OF_MIDI_OK;
 }
@@ -345,10 +354,21 @@ int of_midi_play(const uint8_t *data, uint32_t len, int loop) {
     M.playing      = 1;
     M.paused       = 0;
     M.last_pump_us = of_time_us();
+
+    /* Drive the pump from the machine-timer ISR at 500 Hz.  This makes
+     * the envelope / LFO / event-dispatch cadence completely independent
+     * of the main thread — printf, framebuffer blits, and usleep jitter
+     * no longer steal ticks from the mixer.  Re-entry is avoided by
+     * having the main thread not call of_midi_pump() while playback is
+     * active (the ISR owns it). */
+    of_timer_set_callback(of_midi_pump, 500);
     return OF_MIDI_OK;
 }
 
 void of_midi_stop(void) {
+    /* Detach the ISR before mutating state — otherwise the ISR could
+     * preempt mid-teardown and race on M.playing / voice state. */
+    of_timer_set_callback(NULL, 0);
     smp_voice_all_off_global();
     M.playing = 0;
     M.paused  = 0;
@@ -368,7 +388,12 @@ void of_midi_resume(void) {
 void of_midi_pump(void) {
     if (!M.playing || M.paused) return;
 
-    uint32_t now = of_time_us();
+    /* Called from the machine-timer ISR.  DO NOT use of_time_us() here
+     * — it issues an ECALL which triggers a nested trap, clobbering
+     * mscratch + the existing trap frame and hanging the CPU.  Read
+     * the monotonic timer via the direct service-table pointer
+     * instead; it reads the cycle CSR in-line from M-mode. */
+    uint32_t now = OF_SVC->timer_get_us();
     int64_t elapsed = (int64_t)(now - M.last_pump_us);
     M.last_pump_us = now;
 
@@ -377,13 +402,18 @@ void of_midi_pump(void) {
     if (elapsed > 0) {
         M.tick_accum_us += (uint32_t)elapsed;
         int tick_budget = 250;
+        int ticks_fired = 0;
         while (M.tick_accum_us >= 2000 && tick_budget > 0) {
             smp_voice_tick();
             M.tick_accum_us -= 2000;
             tick_budget--;
+            ticks_fired++;
         }
-        if (tick_budget == 0)
+        int budget_exceeded = (tick_budget == 0);
+        if (budget_exceeded)
             M.tick_accum_us = 0;
+        smp_voice_tick_record_pump((uint32_t)elapsed, ticks_fired,
+                                   budget_exceeded);
 
         int any_active = 0;
         for (int i = 0; i < M.num_tracks; i++) {
@@ -408,7 +438,8 @@ void of_midi_pump(void) {
                 smp_voice_all_off_global();
                 reset_channels();
                 reset_tracks();
-                M.last_pump_us = of_time_us();
+                /* ISR context — no ECALL, see note in of_midi_pump. */
+                M.last_pump_us = OF_SVC->timer_get_us();
             } else {
                 smp_voice_all_off_global();
                 M.playing = 0;
@@ -426,4 +457,9 @@ void of_midi_set_volume(int volume) {
     if (volume > 255) volume = 255;
     M.master_volume = volume;
     smp_voice_set_master_volume(volume);
+}
+
+int of_midi_get_program(int ch) {
+    if (ch < 0 || ch > 15) return 0;
+    return M.program[ch];
 }

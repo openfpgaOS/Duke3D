@@ -7,6 +7,8 @@
 #include "include/of_smp_bank.h"
 #include "include/of_mixer.h"
 #include "include/of_cache.h"
+#include "include/of_timer.h"
+#include "include/of_services.h"
 
 /* From of_smp_tables.c */
 extern const uint32_t smp_cents_to_mult[1200];
@@ -22,39 +24,94 @@ static uint32_t tick_counter;
 /* ------------------------------------------------------------------ */
 /* Tick-cost probe (Task #10)                                         */
 /* ------------------------------------------------------------------ */
+/* NOTE: VexRiscv here does not expose rdcycle to user mode, so we use
+ * OF_SVC->timer_get_us() (direct service-table call — NOT the ecall
+ * of_time_us(), which would nest-trap when smp_voice_tick runs from
+ * the MIDI timer ISR). Stats are in microseconds. */
 
-static uint32_t tick_cycles_max;
-static uint32_t tick_cycles_last;
+static uint32_t tick_us_max;
+static uint32_t tick_us_last;
 static uint32_t tick_spike_count;
 static uint32_t tick_stat_count;
 static uint8_t  tick_active_peak;
+static uint8_t  tick_stage_sustain;
+static uint8_t  tick_stage_release;
+static uint8_t  tick_stage_decay;
+static uint8_t  tick_sustain_held;
+static uint8_t  tick_ch_active[16];
 
-/* 2 ms budget at 100 MHz = 200 000 cycles. */
-#define SMP_TICK_SPIKE_CYCLES  200000u
+/* A/B/C instrumentation counters — see smp_tick_stats_t for descriptions.
+ * These are incremented at actual HW-write sites (post-cache) and from
+ * smp_voice_tick_record_pump(), then snapshotted by get_stats and zeroed
+ * by reset_stats. */
+static uint32_t stat_filter_writes;
+static uint32_t stat_rate_writes;
+static uint32_t stat_vol_writes;
+static uint32_t stat_pump_count;
+static uint32_t stat_pump_interval_max_us;
+static uint32_t stat_pump_interval_min_us = 0xFFFFFFFFu;
+static uint32_t stat_pump_burst_count;
+static uint32_t stat_pump_budget_exceeded;
+static uint16_t stat_cutoff_delta_max;
 
-static inline uint32_t smp_rdcycle(void)
-{
-    uint32_t c;
-    __asm__ volatile ("rdcycle %0" : "=r"(c));
-    return c;
-}
+/* 2 ms budget = 500 Hz tick rate. */
+#define SMP_TICK_SPIKE_US  2000u
 
 void smp_voice_tick_get_stats(smp_tick_stats_t *out)
 {
     if (!out) return;
-    out->cycles_max   = tick_cycles_max;
-    out->cycles_last  = tick_cycles_last;
-    out->spike_count  = tick_spike_count;
-    out->tick_count   = tick_stat_count;
-    out->active_peak  = tick_active_peak;
+    /* Note: field is named cycles_* for ABI stability but holds microseconds. */
+    out->cycles_max    = tick_us_max;
+    out->cycles_last   = tick_us_last;
+    out->spike_count   = tick_spike_count;
+    out->tick_count    = tick_stat_count;
+    out->active_peak   = tick_active_peak;
+    out->stage_sustain = tick_stage_sustain;
+    out->stage_release = tick_stage_release;
+    out->stage_decay   = tick_stage_decay;
+    out->sustain_held  = tick_sustain_held;
+    for (int i = 0; i < 16; i++)
+        out->ch_active[i] = tick_ch_active[i];
+
+    out->filter_writes         = stat_filter_writes;
+    out->rate_writes           = stat_rate_writes;
+    out->vol_writes            = stat_vol_writes;
+    out->pump_count            = stat_pump_count;
+    out->pump_interval_max_us  = stat_pump_interval_max_us;
+    out->pump_interval_min_us  = stat_pump_interval_min_us;
+    out->pump_burst_count      = stat_pump_burst_count;
+    out->pump_budget_exceeded  = stat_pump_budget_exceeded;
+    out->cutoff_delta_max      = stat_cutoff_delta_max;
 }
 
 void smp_voice_tick_reset_stats(void)
 {
-    tick_cycles_max  = 0;
+    tick_us_max      = 0;
     tick_spike_count = 0;
     tick_stat_count  = 0;
     tick_active_peak = 0;
+
+    stat_filter_writes        = 0;
+    stat_rate_writes          = 0;
+    stat_vol_writes           = 0;
+    stat_pump_count           = 0;
+    stat_pump_interval_max_us = 0;
+    stat_pump_interval_min_us = 0xFFFFFFFFu;
+    stat_pump_burst_count     = 0;
+    stat_pump_budget_exceeded = 0;
+    stat_cutoff_delta_max     = 0;
+}
+
+void smp_voice_tick_record_pump(uint32_t elapsed_us, int ticks_fired,
+                                int budget_exceeded)
+{
+    stat_pump_count++;
+    if (elapsed_us > stat_pump_interval_max_us)
+        stat_pump_interval_max_us = elapsed_us;
+    if (elapsed_us < stat_pump_interval_min_us)
+        stat_pump_interval_min_us = elapsed_us;
+    if (ticks_fired > 1) stat_pump_burst_count++;
+    if (budget_exceeded) stat_pump_budget_exceeded++;
 }
 
 /* Per-channel state (16 MIDI channels) */
@@ -269,12 +326,18 @@ static void lfo_init(lfo_state_t *l, int16_t delay_tc, int16_t freq_cents)
     if (l->delay_ticks < 0) l->delay_ticks = 0;
 
     /* freq_cents is absolute cents (SF2 spec):
-     * frequency = 8.176 Hz * 2^(freq_cents/1200)
-     * Phase increment per tick (1 kHz): freq/1000 cycles/tick
-     * In Q16.16: rate = (freq * 0x10000) / 1000 */
+     *   frequency (Hz) = 8.176 * 2^(freq_cents / 1200)
+     *
+     * LFO phase is Q16.16 wrapping at 0x10000 per cycle, advanced at 1 kHz
+     * (effective — env_advance / lfo_advance runs twice per 500 Hz outer
+     * tick).  So per-advance phase increment = freq * 65536 / 1000.
+     *
+     * 8.176 Hz in Q16.16 ≈ 535822 = 0x82D0E.  Historical bug: the
+     * constant used to be 0x82D1 (33489 ≈ 8.176 * 4096, i.e. Q20.12)
+     * which made every LFO run ~16x too slow — a 6 Hz vibrato wobbled
+     * at 0.4 Hz and effect-heavy patches sounded like "timing is wrong". */
     uint32_t mult = cents_to_rate_multiplier(freq_cents);
-    /* 8.176 Hz in Q16.16 = 0x82D1 (approx 8.176 * 65536) */
-    uint32_t freq_fp16 = (uint32_t)(((uint64_t)0x82D1 * mult) >> 16);
+    uint32_t freq_fp16 = (uint32_t)(((uint64_t)535822u * mult) >> 16);
     l->rate = (int32_t)(freq_fp16 / 1000);
     if (l->rate < 1) l->rate = 1;
 }
@@ -334,13 +397,20 @@ static int voice_alloc(void)
         return best;
     }
 
-    /* Pass 3: steal ENV_RELEASE (oldest first) */
-    best_age = UINT32_MAX;
+    /* Pass 3: steal the quietest ENV_RELEASE voice (lowest envelope
+     * level).  Stealing by audible-level minimizes the click from the
+     * hard stop in voice_reclaim — a voice already near-silent fades
+     * to zero with no perceptible discontinuity.  "Oldest by age" was
+     * a poor proxy because per-zone release rates differ widely (a
+     * drum with 50 ms release started 2 s ago is silent; a piano with
+     * 3 s release started 2 s ago is still loud). */
+    int32_t best_level = INT32_MAX;
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         if (voices[i].active != STEAL_PENDING &&
-            voices[i].vol_env.stage == ENV_RELEASE && voices[i].age < best_age) {
+            voices[i].vol_env.stage == ENV_RELEASE &&
+            voices[i].vol_env.level < best_level) {
             best = i;
-            best_age = voices[i].age;
+            best_level = voices[i].vol_env.level;
         }
     }
     if (best >= 0) {
@@ -348,12 +418,14 @@ static int voice_alloc(void)
         return best;
     }
 
-    /* Pass 4: steal any (oldest first) */
-    best_age = UINT32_MAX;
+    /* Pass 4: steal the quietest voice of any stage (last resort).
+     * Same rationale as pass 3 — steal whatever is least audible. */
+    best_level = INT32_MAX;
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
-        if (voices[i].active != STEAL_PENDING && voices[i].age < best_age) {
+        if (voices[i].active != STEAL_PENDING &&
+            voices[i].vol_env.level < best_level) {
             best = i;
-            best_age = voices[i].age;
+            best_level = voices[i].vol_env.level;
         }
     }
     if (best >= 0)
@@ -461,6 +533,81 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
         *out_l = (vol * (500 - pan)) / 500;
         *out_r = vol;
     }
+}
+
+/* Recompute and (if changed) write the filter state for a voice.
+ *
+ * Called at 1 kHz (mid-tick + end-tick) rather than 500 Hz because the HW
+ * filter cutoff snaps instantly — each cents-level change produces a small
+ * SVF state-variable transient.  Doubling the update rate halves the jump
+ * size per write and reduces audible "breakup" on effect-heavy patches
+ * (synth leads, pads, brass) where mod_lfo_to_filter or mod_env_to_filter
+ * sweep the cutoff continuously.
+ *
+ * Skip the HW write when the integer-rounded HW cutoff value is unchanged:
+ * cents-level jitter often collapses to the same Q0.16 HW number, and a
+ * redundant write still perturbs the filter on the HW side. */
+static void filter_update(smp_voice_t *v)
+{
+    const ofsf_zone_t *z = v->zone;
+    if (!z) return;
+    if (v->mixer_voice < 0) return;
+    if (z->initial_fc >= 13500 &&
+        z->mod_lfo_to_filter == 0 &&
+        z->mod_env_to_filter == 0)
+        return;  /* filter bypassed at note-on */
+
+    int32_t fc = z->initial_fc;
+
+    if (z->mod_lfo_to_filter != 0) {
+        int32_t lfo_out = triangle_wave(v->mod_lfo.phase);
+        fc += (lfo_out * z->mod_lfo_to_filter) >> 16;
+    }
+    if (z->mod_env_to_filter != 0) {
+        fc += ((int64_t)v->mod_env.level * z->mod_env_to_filter) >> 16;
+    }
+    fc += ((int32_t)ch_brightness[v->midi_ch] - 64) * 75;
+
+    if (fc < 1500)  fc = 1500;
+    if (fc > 13500) fc = 13500;
+
+    int16_t fc16 = (int16_t)fc;
+    int16_t q16  = z->initial_q + (int16_t)(ch_resonance[v->midi_ch] * 8);
+    if (q16 > 960) q16 = 960;
+
+    if (fc16 == v->cur_filter_fc && q16 == v->cur_filter_q)
+        return;
+    v->cur_filter_fc = fc16;
+    v->cur_filter_q  = q16;
+
+    /* Convert cents to Q0.16 normalized frequency for hardware.
+     * fc_hz = 8.176 * 2^(fc_cents/1200)
+     * cutoff_hw = (fc_hz / 24000) * 65535  (Nyquist = 24 kHz)
+     * 8.176 Hz * 65536 / 24000 ≈ 22.36 → use 22 as integer approx */
+    uint32_t fc_mult = cents_to_rate_multiplier(fc16);
+    uint32_t cutoff_hw = (uint32_t)(((uint64_t)fc_mult * 22) >> 16);
+    if (cutoff_hw > 65535) cutoff_hw = 65535;
+
+    /* SVF q is damping (higher = less resonance), SF2 Q is resonance
+     * gain (higher = more resonance). Invert. */
+    int q_hw = 255 - (q16 * 255 / 960);
+    if (q_hw < 8) q_hw = 8;  /* prevent self-oscillation */
+
+    if ((uint16_t)cutoff_hw == v->cur_cutoff_hw)
+        return;  /* HW cutoff unchanged — avoid redundant write */
+
+    /* Track the largest single-tick cutoff jump across all voices since
+     * the last stats reset.  Big jumps correlate with audible SVF
+     * state-variable transients. */
+    uint16_t new_hw = (uint16_t)cutoff_hw;
+    uint16_t delta  = (new_hw > v->cur_cutoff_hw)
+                        ? (uint16_t)(new_hw - v->cur_cutoff_hw)
+                        : (uint16_t)(v->cur_cutoff_hw - new_hw);
+    if (delta > stat_cutoff_delta_max) stat_cutoff_delta_max = delta;
+    v->cur_cutoff_hw = new_hw;
+
+    of_mixer_set_filter(v->mixer_voice, (int)cutoff_hw, q_hw, 1);
+    stat_filter_writes++;
 }
 
 static uint32_t compute_pitch(smp_voice_t *v)
@@ -574,12 +721,35 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     if (mhv < 0) { v->active = 0; return -1; }
     v->mixer_voice = mhv;
     of_mixer_set_rate_raw(mhv, v->base_rate_fp16);
+    stat_rate_writes++;
 
     /* Loop setup */
     if (zone->loop_mode == OFSF_LOOP_FORWARD || zone->loop_mode == OFSF_LOOP_BIDI) {
         of_mixer_set_loop(mhv, zone->loop_start, zone->loop_end);
         if (zone->loop_mode == OFSF_LOOP_BIDI)
             of_mixer_set_bidi(mhv, 1);
+        /* Looping voice: let the envelope decide when it ends. */
+        v->sample_ticks_remaining = 0;
+    } else {
+        /* One-shot: compute how many software ticks (500 Hz) until the
+         * sample walks off its natural end.
+         *
+         *   samples consumed per 48 kHz output tick = base_rate_fp16 / 65536
+         *   seconds to finish = sample_length * 65536 / (base_rate_fp16 * 48000)
+         *   SW ticks (500 Hz) = sample_length * 65536 / (base_rate_fp16 * 96)
+         *
+         * Adds 20 % headroom so modest pitch bends (drums: typically none)
+         * don't truncate audible content. */
+        if (v->base_rate_fp16 > 0 && zone->sample_length > 0) {
+            uint64_t num = (uint64_t)zone->sample_length * 65536u * 6u;
+            uint64_t den = (uint64_t)v->base_rate_fp16 * 96u * 5u;
+            uint64_t ticks = num / (den ? den : 1);
+            if (ticks < 1) ticks = 1;
+            if (ticks > 0x7FFFFFFFu) ticks = 0x7FFFFFFFu;
+            v->sample_ticks_remaining = (int32_t)ticks;
+        } else {
+            v->sample_ticks_remaining = 0;
+        }
     }
 
     of_mixer_set_group(mhv, OF_MIXER_GROUP_MUSIC);
@@ -597,9 +767,53 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     lfo_init(&v->mod_lfo, zone->mod_lfo_delay, zone->mod_lfo_freq);
     lfo_init(&v->vib_lfo, zone->vib_lfo_delay, zone->vib_lfo_freq);
 
-    /* Initial filter state */
+    /* Initial filter state.
+     *
+     * CRITICAL: of_mixer_play does NOT reset the per-voice filter
+     * registers (FILTER_FC / FILTER_Q), so a reused voice slot inherits
+     * whatever cutoff/Q/enable the previous note left behind.  Without
+     * an explicit write here, a new zone with no filter requirement
+     * would play through a stale low-pass filter from an unrelated
+     * sample, producing audibly wrong timbres on stolen voices.
+     *
+     * Program the filter explicitly:
+     *   - If the zone needs filtering (cutoff below wide-open, or any
+     *     modulation source), enable with the zone's initial cutoff/Q
+     *     converted to the hardware Q0.16 / 0..255 representation —
+     *     same math as the per-tick filter update below.
+     *   - Otherwise disable the filter so the voice runs unfiltered. */
     v->cur_filter_fc = zone->initial_fc;
     v->cur_filter_q  = zone->initial_q;
+    {
+        int need_filter = (zone->initial_fc < 13500) ||
+                          (zone->mod_lfo_to_filter != 0) ||
+                          (zone->mod_env_to_filter != 0);
+        if (need_filter) {
+            int32_t fc = zone->initial_fc;
+            if (fc < 1500)  fc = 1500;
+            if (fc > 13500) fc = 13500;
+            int16_t q16 = zone->initial_q + (int16_t)(ch_resonance[midi_ch] * 8);
+            if (q16 > 960) q16 = 960;
+            uint32_t fc_mult = cents_to_rate_multiplier(fc);
+            uint32_t cutoff_hw = (uint32_t)(((uint64_t)fc_mult * 22) >> 16);
+            if (cutoff_hw > 65535) cutoff_hw = 65535;
+            int q_hw = 255 - (q16 * 255 / 960);
+            if (q_hw < 8) q_hw = 8;
+            of_mixer_set_filter(mhv, (int)cutoff_hw, q_hw, 1);
+            stat_filter_writes++;
+            /* Cache the fc we actually wrote so tick() only rewrites on
+             * a real change. */
+            v->cur_filter_fc = (int16_t)fc;
+            v->cur_filter_q  = q16;
+            v->cur_cutoff_hw = (uint16_t)cutoff_hw;
+        } else {
+            /* Bypass the filter — enable=0 ensures a prior voice's
+             * cutoff doesn't bleed into this one. */
+            of_mixer_set_filter(mhv, 65535, 8, 0);
+            stat_filter_writes++;
+            v->cur_cutoff_hw = 65535;
+        }
+    }
 
     /* Advance the envelope one tick so the level is non-zero before
      * the ISR runs — otherwise the ISR writes volume 0 immediately. */
@@ -608,6 +822,7 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     int vl, vr;
     compute_vol_lr(v, &vl, &vr);
     of_mixer_set_vol_lr(mhv, vl, vr);
+    stat_vol_writes++;
     prev_vol_l[idx] = vl;
     prev_vol_r[idx] = vr;
     prev_rate[idx]  = v->base_rate_fp16;
@@ -635,8 +850,13 @@ void smp_voice_note_off(int midi_ch, int note)
 
 void smp_voice_tick(void)
 {
-    uint32_t _probe_t0 = smp_rdcycle();
+    uint32_t _probe_t0 = OF_SVC->timer_get_us();
     uint8_t  _probe_active = 0;
+    uint8_t  _probe_sustain = 0;
+    uint8_t  _probe_release = 0;
+    uint8_t  _probe_decay = 0;
+    uint8_t  _probe_held = 0;
+    uint8_t  _probe_ch[16] = {0};
 
     tick_counter++;
     voice_cleanup_stolen();
@@ -646,16 +866,58 @@ void smp_voice_tick(void)
         if (!v->active || v->active == STEAL_PENDING)
             continue;
         _probe_active++;
+        if (v->vol_env.stage == ENV_SUSTAIN) _probe_sustain++;
+        else if (v->vol_env.stage == ENV_RELEASE) _probe_release++;
+        else if (v->vol_env.stage == ENV_DECAY) _probe_decay++;
+        if (v->sustain_held) _probe_held++;
+        if (v->midi_ch < 16) _probe_ch[v->midi_ch]++;
 
         const ofsf_zone_t *z = v->zone;
 
-        env_advance(&v->vol_env, z, 1);
+        /* Natural sample-end check for one-shots.  When the sample has
+         * played to its end the mixer is already emitting silence, so we
+         * can force-DONE without any audible click and reclaim the slot
+         * immediately — otherwise the envelope's long SUSTAIN parks the
+         * voice (especially SF2 drum zones with very long vol_sustain)
+         * and fills all 28 soft voices during dense drum tracks. */
+        if (v->sample_ticks_remaining > 0) {
+            if (--v->sample_ticks_remaining == 0) {
+                v->vol_env.stage = ENV_DONE;
+                v->vol_env.level = 0;
+            }
+        }
+
+        /* Envelopes and LFOs advance twice per outer tick (effective
+         * 1 kHz), but we must also sample pitch at 1 kHz — writing RATE
+         * only once per outer tick produces an audible 2 ms staircase
+         * on fast pitch modulation (short mod_env_to_pitch sweeps, fast
+         * vibratos, snappy pitch bends).  HW RATE snaps (no ramp), so
+         * we interleave a mid-tick compute_pitch between the two halves
+         * of the advance sequence.  Volume is handled only at the end
+         * because the mixer already ramps between VOL writes. */
         env_advance(&v->vol_env, z, 1);
         env_advance(&v->mod_env, z, 0);
-        env_advance(&v->mod_env, z, 0);
-        lfo_advance(&v->mod_lfo);
         lfo_advance(&v->mod_lfo);
         lfo_advance(&v->vib_lfo);
+
+        /* Mid-tick pitch update (1 kHz sampling) */
+        if (v->mixer_voice >= 0 && v->vol_env.stage != ENV_DONE) {
+            uint32_t rate_mid = compute_pitch(v);
+            if (rate_mid != prev_rate[i]) {
+                of_mixer_set_rate_raw(v->mixer_voice, rate_mid);
+                prev_rate[i] = rate_mid;
+                stat_rate_writes++;
+            }
+            /* Mid-tick filter update — run at 1 kHz (matches pitch) so
+             * cents-level cutoff sweeps from mod_lfo_to_filter /
+             * mod_env_to_filter change in smaller steps and produce
+             * smaller SVF state-variable transients. */
+            filter_update(v);
+        }
+
+        env_advance(&v->vol_env, z, 1);
+        env_advance(&v->mod_env, z, 0);
+        lfo_advance(&v->mod_lfo);
         lfo_advance(&v->vib_lfo);
 
         if (v->vol_env.stage == ENV_DONE) {
@@ -672,61 +934,30 @@ void smp_voice_tick(void)
         if (vl != prev_vol_l[i] || vr != prev_vol_r[i] ||
             rate != prev_rate[i]) {
             of_mixer_set_voice_raw(v->mixer_voice, rate, vl, vr);
+            /* set_voice_raw coalesces rate + vol; count each independently
+             * changed field so the stats reflect the underlying load. */
+            if (rate != prev_rate[i]) stat_rate_writes++;
+            if (vl != prev_vol_l[i] || vr != prev_vol_r[i]) stat_vol_writes++;
             prev_vol_l[i] = vl;
             prev_vol_r[i] = vr;
             prev_rate[i] = rate;
         }
 
-        /* Compute and apply filter */
-        if (z->initial_fc < 13500 || z->mod_lfo_to_filter != 0 ||
-            z->mod_env_to_filter != 0) {
-            int32_t fc = z->initial_fc;
-
-            /* Mod LFO to filter */
-            if (z->mod_lfo_to_filter != 0) {
-                int32_t lfo_out = triangle_wave(v->mod_lfo.phase);
-                fc += (lfo_out * z->mod_lfo_to_filter) >> 16;
-            }
-
-            /* Mod envelope to filter */
-            if (z->mod_env_to_filter != 0) {
-                fc += ((int64_t)v->mod_env.level * z->mod_env_to_filter) >> 16;
-            }
-
-            /* CC74 brightness offset: center at 64, range +/-4800 cents */
-            fc += ((int32_t)ch_brightness[v->midi_ch] - 64) * 75;
-
-            if (fc < 1500) fc = 1500;
-            if (fc > 13500) fc = 13500;
-
-            int16_t fc16 = (int16_t)fc;
-            int16_t q16  = z->initial_q + (int16_t)(ch_resonance[v->midi_ch] * 8);
-            if (q16 > 960) q16 = 960;
-
-            if (fc16 != v->cur_filter_fc || q16 != v->cur_filter_q) {
-                v->cur_filter_fc = fc16;
-                v->cur_filter_q  = q16;
-                /* Convert cents to Q0.16 normalized frequency for hardware.
-                 * fc_hz = 8.176 * 2^(fc_cents/1200)
-                 * cutoff_hw = (fc_hz / 24000) * 65535  (Nyquist = 24 kHz) */
-                uint32_t fc_mult = cents_to_rate_multiplier(fc16);
-                /* 8.176 Hz * 65536 / 24000 ≈ 22.36 → use 22 as integer approx */
-                uint32_t cutoff_hw = (uint32_t)(((uint64_t)fc_mult * 22) >> 16);
-                if (cutoff_hw > 65535) cutoff_hw = 65535;
-                /* SVF q is damping (higher = less resonance), SF2 Q is
-                 * resonance gain (higher = more resonance). Invert. */
-                int q_hw = 255 - (q16 * 255 / 960);
-                if (q_hw < 8) q_hw = 8;  /* prevent self-oscillation */
-                of_mixer_set_filter(v->mixer_voice, (int)cutoff_hw, q_hw, 1);
-            }
-        }
+        /* End-tick filter update (second half of the 1 kHz sampling). */
+        filter_update(v);
     }
 
-    uint32_t _probe_dt = smp_rdcycle() - _probe_t0;
-    tick_cycles_last = _probe_dt;
-    if (_probe_dt > tick_cycles_max) tick_cycles_max = _probe_dt;
-    if (_probe_dt > SMP_TICK_SPIKE_CYCLES) tick_spike_count++;
+    uint32_t _probe_dt = OF_SVC->timer_get_us() - _probe_t0;
+    tick_us_last = _probe_dt;
+    if (_probe_dt > tick_us_max) tick_us_max = _probe_dt;
+    if (_probe_dt > SMP_TICK_SPIKE_US) tick_spike_count++;
     if (_probe_active > tick_active_peak) tick_active_peak = _probe_active;
+    tick_stage_sustain = _probe_sustain;
+    tick_stage_release = _probe_release;
+    tick_stage_decay   = _probe_decay;
+    tick_sustain_held  = _probe_held;
+    for (int i = 0; i < 16; i++)
+        tick_ch_active[i] = _probe_ch[i];
     tick_stat_count++;
 }
 
