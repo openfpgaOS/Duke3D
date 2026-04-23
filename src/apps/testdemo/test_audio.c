@@ -126,14 +126,14 @@ void test_mixer_adv(void) {
         of_mixer_stop_all();
         of_mixer_poll_ended();
         int filled = 0;
-        for (int i = 0; i < 31; i++) {
+        for (int i = 0; i < OF_MIXER_MAX_VOICES; i++) {
             int v = of_mixer_play((const uint8_t *)s16_buf, ADV_TONE_LEN, 11025, 0, 50);
             if (v >= 0) {
                 of_mixer_set_loop(v, 0, ADV_TONE_LEN);  /* keep alive */
                 filled++;
             }
         }
-        ASSERT("MA.02a fill", filled >= 28);
+        ASSERT("MA.02a fill", filled >= OF_MIXER_MAX_VOICES - 4);
 
         /* All voices busy — same priority play should fail (can't steal equal) */
         int vlo = of_mixer_play((const uint8_t *)s16_buf, ADV_TONE_LEN, 11025, 0, 50);
@@ -169,7 +169,14 @@ void test_mixer_adv(void) {
             usleep(20 * 1000);
             ASSERT("MA.06b pre", of_mixer_voice_active(v));
             of_mixer_retrigger(v, (const uint8_t *)s16_buf, ADV_TONE_LEN, 11025, 150);
-            usleep(10 * 1000);
+            /* Sleep just long enough for the mixer to process the
+             * retrigger and start advancing. ADV_TONE_LEN=551 at
+             * 11025 Hz = 50 ms total playback, so the half-mark is
+             * ~25 ms after retrigger — the old 10 ms sleep + the
+             * inactive/get_position call overhead pushed pos right
+             * to that boundary and randomly tipped over. 2 ms gives
+             * ~22 samples played, well under ADV_TONE_LEN/2 = 275. */
+            usleep(2 * 1000);
             ASSERT("MA.06c post", of_mixer_voice_active(v));
             /* After retrigger, position should be near start */
             int pos = of_mixer_get_position(v);
@@ -392,48 +399,7 @@ void test_mixer_stress(void) {
     }
     ASSERT("ST.02 start31", started >= 29);
 
-    /* ST.03: Start OPL3 FM while all 31 voices are playing.
-     * Play a simple chord: 3 OPL channels with different frequencies. */
-    of_audio_opl_reset();
-    /* Enable OPL3 mode */
-    of_audio_opl_write(0x105, 0x01);  /* OPL3 enable */
-    /* Channel 0: ~440Hz (A4) */
-    of_audio_opl_write(0x20, 0x21);   /* op1: sustain, multiply=1 */
-    of_audio_opl_write(0x40, 0x10);   /* op1: volume (lower = louder) */
-    of_audio_opl_write(0x60, 0xF0);   /* op1: attack=F, decay=0 */
-    of_audio_opl_write(0x80, 0x0F);   /* op1: sustain=0, release=F */
-    of_audio_opl_write(0x23, 0x21);   /* op2: sustain, multiply=1 */
-    of_audio_opl_write(0x43, 0x00);   /* op2: max volume */
-    of_audio_opl_write(0x63, 0xF0);   /* op2: attack=F, decay=0 */
-    of_audio_opl_write(0x83, 0x0F);   /* op2: sustain=0, release=F */
-    of_audio_opl_write(0xA0, 0x41);   /* freq low byte */
-    of_audio_opl_write(0xB0, 0x32);   /* freq high + key on + octave */
-    /* Channel 1: ~554Hz (C#5) */
-    of_audio_opl_write(0x21, 0x21);
-    of_audio_opl_write(0x41, 0x10);
-    of_audio_opl_write(0x61, 0xF0);
-    of_audio_opl_write(0x81, 0x0F);
-    of_audio_opl_write(0x24, 0x21);
-    of_audio_opl_write(0x44, 0x00);
-    of_audio_opl_write(0x64, 0xF0);
-    of_audio_opl_write(0x84, 0x0F);
-    of_audio_opl_write(0xA1, 0x90);
-    of_audio_opl_write(0xB1, 0x32);
-    /* Channel 2: ~659Hz (E5) */
-    of_audio_opl_write(0x22, 0x21);
-    of_audio_opl_write(0x42, 0x10);
-    of_audio_opl_write(0x62, 0xF0);
-    of_audio_opl_write(0x82, 0x0F);
-    of_audio_opl_write(0x25, 0x21);
-    of_audio_opl_write(0x45, 0x00);
-    of_audio_opl_write(0x65, 0xF0);
-    of_audio_opl_write(0x85, 0x0F);
-    of_audio_opl_write(0xA2, 0xE0);
-    of_audio_opl_write(0xB2, 0x32);
-    test_pass("ST.03 opl3 on");
-
-    /* ST.04: Let everything run for 200ms — this is the stress window.
-     * All 31 mixer voices + 3 OPL channels running simultaneously.
+    /* ST.03: Let all 31 voices run for 200ms.
      * Check every 50ms that voices are still active (no underrun/crash). */
     {
         int alive_50 = 0, alive_100 = 0, alive_150 = 0, alive_200 = 0;
@@ -451,13 +417,13 @@ void test_mixer_stress(void) {
             if (voices[i] >= 0 && of_mixer_voice_active(voices[i])) alive_200++;
 
         /* All looping voices should remain active throughout */
-        ASSERT("ST.04a @50ms", alive_50 >= started - 1);
-        ASSERT("ST.04b @100ms", alive_100 >= started - 1);
-        ASSERT("ST.04c @150ms", alive_150 >= started - 1);
-        ASSERT("ST.04d @200ms", alive_200 >= started - 1);
+        ASSERT("ST.03a @50ms", alive_50 >= started - 1);
+        ASSERT("ST.03b @100ms", alive_100 >= started - 1);
+        ASSERT("ST.03c @150ms", alive_150 >= started - 1);
+        ASSERT("ST.03d @200ms", alive_200 >= started - 1);
     }
 
-    /* ST.05: verify positions are advancing (not stuck) */
+    /* ST.04: verify positions are advancing (not stuck) */
     {
         int advancing = 0;
         for (int i = 0; i < 31; i++) {
@@ -467,22 +433,10 @@ void test_mixer_stress(void) {
             int p2 = of_mixer_get_position(voices[i]);
             if (p2 != p1) advancing++;
         }
-        ASSERT("ST.05 advance", advancing >= started - 2);
+        ASSERT("ST.04 advance", advancing >= started - 2);
     }
 
-    /* ST.06: stop OPL3, verify mixer voices unaffected */
-    of_audio_opl_write(0xB0, 0x00);  /* key off ch0 */
-    of_audio_opl_write(0xB1, 0x00);  /* key off ch1 */
-    of_audio_opl_write(0xB2, 0x00);  /* key off ch2 */
-    {
-        usleep(20 * 1000);
-        int alive = 0;
-        for (int i = 0; i < 31; i++)
-            if (voices[i] >= 0 && of_mixer_voice_active(voices[i])) alive++;
-        ASSERT("ST.06 post opl", alive >= started - 2);
-    }
-
-    /* ST.07: stop all voices, verify clean shutdown */
+    /* ST.05: stop all voices, verify clean shutdown */
     of_mixer_stop_all();
     usleep(10 * 1000);
     of_mixer_poll_ended();
@@ -490,525 +444,15 @@ void test_mixer_stress(void) {
         int alive = 0;
         for (int i = 0; i < 31; i++)
             if (voices[i] >= 0 && of_mixer_voice_active(voices[i])) alive++;
-        ASSERT("ST.07 stopped", alive == 0);
+        ASSERT("ST.05 stopped", alive == 0);
     }
 
-    of_audio_opl_reset();
     of_mixer_free_samples();
 
     section_end();
 }
 
-/* ================================================================
- * OPL3 FM synthesis tests (OP.xx)
- *
- * YMF262 register map reference:
- *   Operator slots: 0x20-0x35 (char), 0x40-0x55 (level), 0x60-0x75 (AD),
- *                   0x80-0x95 (SR), 0xE0-0xF5 (waveform)
- *   Channels: 0xA0-0xA8 (freq lo), 0xB0-0xB8 (freq hi + key),
- *             0xC0-0xC8 (feedback/connection/output)
- *   Bank 1 (OPL3): add 0x100 to all above
- *   Global: 0x01 (test), 0x08 (CSW/NTS), 0xBD (percussion), 0x105 (OPL3 enable)
- *
- * Operator-to-channel mapping (2-op mode):
- *   Ch 0-2: ops {0,3}, {1,4}, {2,5}
- *   Ch 3-5: ops {6,9}, {7,10}, {8,11}
- *   Ch 6-8: ops {12,15}, {13,16}, {14,17}
- * ================================================================ */
-
-/* OPL3 operator slot offset for a given channel (2-op mode) */
-static const uint8_t opl_op1[] = {0,1,2,8,9,10,16,17,18};
-static const uint8_t opl_op2[] = {3,4,5,11,12,13,19,20,21};
-
-/* Program a simple 2-op FM instrument on a channel */
-static void opl_program_ch(int bank, int ch, uint8_t ws, uint8_t tl, uint8_t fb_cnt) {
-    int base = bank ? 0x100 : 0;
-    int m = opl_op1[ch], c = opl_op2[ch];
-    of_audio_opl_write(base + 0x20 + m, 0x21);  /* EG=1, MULT=1 */
-    of_audio_opl_write(base + 0x40 + m, tl);    /* modulator level */
-    of_audio_opl_write(base + 0x60 + m, 0xF0);  /* AR=15, DR=0 */
-    of_audio_opl_write(base + 0x80 + m, 0x0F);  /* SL=0, RR=15 */
-    of_audio_opl_write(base + 0xE0 + m, ws);    /* waveform */
-    of_audio_opl_write(base + 0x20 + c, 0x21);
-    of_audio_opl_write(base + 0x40 + c, 0x00);  /* carrier max vol */
-    of_audio_opl_write(base + 0x60 + c, 0xF0);
-    of_audio_opl_write(base + 0x80 + c, 0x0F);
-    of_audio_opl_write(base + 0xE0 + c, ws);
-    of_audio_opl_write(base + 0xC0 + ch, fb_cnt | 0x30);  /* L+R output */
-}
-
-/* Key on/off */
-static void opl_key_on(int bank, int ch, uint16_t fnum, uint8_t block) {
-    int base = bank ? 0x100 : 0;
-    of_audio_opl_write(base + 0xA0 + ch, fnum & 0xFF);
-    of_audio_opl_write(base + 0xB0 + ch, 0x20 | ((block & 7) << 2) | ((fnum >> 8) & 3));
-}
-static void opl_key_off(int bank, int ch) {
-    int base = bank ? 0x100 : 0;
-    of_audio_opl_write(base + 0xB0 + ch, 0x00);
-}
-
-void test_opl3(void) {
-    section_start("OPL3");
-
-    /* OP.01: reset clears all 512 registers */
-    of_audio_opl_reset();
-    test_pass("OP.01 reset");
-
-    /* OP.02: enable OPL3 mode + waveform select */
-    of_audio_opl_write(0x105, 0x01);  /* NEW=1 (OPL3 mode) */
-    of_audio_opl_write(0x01, 0x20);   /* WSE=1 (enable waveform select) */
-    test_pass("OP.02 opl3en");
-
-    /* OP.03: 2-op FM instrument, key on A4 (440Hz), key off */
-    opl_program_ch(0, 0, 0, 0x1A, 0x01);  /* sine, mod TL=26, additive */
-    opl_key_on(0, 0, 0x241, 4);           /* 440Hz, block 4 */
-    usleep(50 * 1000);
-    opl_key_off(0, 0);
-    usleep(30 * 1000);
-    test_pass("OP.03 2op A4");
-
-    /* OP.04: all 4 waveforms — sine, half-sine, abs-sine, quarter-sine */
-    {
-        uint8_t ws[] = {0, 1, 2, 3};
-        uint16_t fn[] = {0x241, 0x287, 0x2D0, 0x300};  /* A4, B4, C#5, D5 */
-        for (int i = 0; i < 4; i++) {
-            opl_program_ch(0, i, ws[i], 0x18, 0x01);
-            opl_key_on(0, i, fn[i], 4);
-        }
-        usleep(80 * 1000);
-        for (int i = 0; i < 4; i++) opl_key_off(0, i);
-        usleep(20 * 1000);
-        test_pass("OP.04 4 wvfrm");
-    }
-
-    /* OP.05: all 9 bank-0 channels (full OPL2 polyphony) */
-    {
-        of_audio_opl_reset();
-        of_audio_opl_write(0x105, 0x01);
-        of_audio_opl_write(0x01, 0x20);
-        for (int ch = 0; ch < 9; ch++) {
-            opl_program_ch(0, ch, 0, 0x14, 0x01);
-            opl_key_on(0, ch, 0x200 + ch * 0x20, 3 + ch / 3);
-        }
-        usleep(100 * 1000);
-        for (int ch = 0; ch < 9; ch++) opl_key_off(0, ch);
-        usleep(20 * 1000);
-        test_pass("OP.05 9ch");
-    }
-
-    /* OP.06: all 9 bank-1 channels (OPL3 channels 9-17) */
-    {
-        for (int ch = 0; ch < 9; ch++) {
-            opl_program_ch(1, ch, 0, 0x14, 0x01);
-            opl_key_on(1, ch, 0x240 + ch * 0x18, 4);
-        }
-        usleep(100 * 1000);
-        for (int ch = 0; ch < 9; ch++) opl_key_off(1, ch);
-        usleep(20 * 1000);
-        test_pass("OP.06 bank1");
-    }
-
-    /* OP.07: 18-channel simultaneous (all OPL3 channels, both banks) */
-    {
-        for (int ch = 0; ch < 9; ch++) {
-            opl_program_ch(0, ch, ch % 4, 0x18, 0x01);
-            opl_key_on(0, ch, 0x1C0 + ch * 0x20, 4);
-            opl_program_ch(1, ch, (ch + 2) % 4, 0x18, 0x01);
-            opl_key_on(1, ch, 0x200 + ch * 0x20, 4);
-        }
-        usleep(100 * 1000);
-        for (int ch = 0; ch < 9; ch++) {
-            opl_key_off(0, ch);
-            opl_key_off(1, ch);
-        }
-        usleep(20 * 1000);
-        test_pass("OP.07 18ch");
-    }
-
-    /* OP.08: feedback sweep — all 8 feedback levels on ch0 */
-    {
-        opl_program_ch(0, 0, 0, 0x10, 0x00);  /* FM mode (CNT=0) */
-        for (int fb = 0; fb < 8; fb++) {
-            of_audio_opl_write(0xC0, 0x30 | (fb << 1));  /* FB=fb, CNT=0, L+R */
-            opl_key_on(0, 0, 0x241, 4);
-            usleep(30 * 1000);
-            opl_key_off(0, 0);
-            usleep(10 * 1000);
-        }
-        test_pass("OP.08 fb swp");
-    }
-
-    /* OP.09: ADSR envelope test — program extreme envelopes */
-    {
-        int m = opl_op1[0], c = opl_op2[0];
-        of_audio_opl_write(0xC0, 0x31);  /* additive mode */
-
-        /* Slow attack (AR=1), fast release (RR=15) */
-        of_audio_opl_write(0x20 + m, 0x21);
-        of_audio_opl_write(0x40 + m, 0x00);
-        of_audio_opl_write(0x60 + m, 0x10);  /* AR=1, DR=0 */
-        of_audio_opl_write(0x80 + m, 0x0F);  /* SL=0, RR=15 */
-        of_audio_opl_write(0x20 + c, 0x21);
-        of_audio_opl_write(0x40 + c, 0x00);
-        of_audio_opl_write(0x60 + c, 0x10);  /* AR=1, DR=0 */
-        of_audio_opl_write(0x80 + c, 0x0F);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(100 * 1000);  /* slow attack builds over 100ms */
-        opl_key_off(0, 0);
-        usleep(30 * 1000);   /* fast release */
-
-        /* Fast attack (AR=15), slow release (RR=1) */
-        of_audio_opl_write(0x60 + m, 0xF0);
-        of_audio_opl_write(0x80 + m, 0x01);  /* RR=1 */
-        of_audio_opl_write(0x60 + c, 0xF0);
-        of_audio_opl_write(0x80 + c, 0x01);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(30 * 1000);
-        opl_key_off(0, 0);
-        usleep(200 * 1000);  /* slow release fades over 200ms */
-        test_pass("OP.09 ADSR");
-    }
-
-    /* OP.10: tremolo + vibrato */
-    {
-        of_audio_opl_write(0xBD, 0xC0);  /* deep tremolo + deep vibrato */
-        int m = opl_op1[0], c = opl_op2[0];
-        of_audio_opl_write(0x20 + m, 0xE1);  /* AM=1, VIB=1, EG=1, MULT=1 */
-        of_audio_opl_write(0x40 + m, 0x10);
-        of_audio_opl_write(0x60 + m, 0xF0);
-        of_audio_opl_write(0x80 + m, 0x07);
-        of_audio_opl_write(0x20 + c, 0xE1);
-        of_audio_opl_write(0x40 + c, 0x00);
-        of_audio_opl_write(0x60 + c, 0xF0);
-        of_audio_opl_write(0x80 + c, 0x07);
-        of_audio_opl_write(0xC0, 0x31);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(200 * 1000);  /* hear the warble */
-        opl_key_off(0, 0);
-        usleep(30 * 1000);
-        of_audio_opl_write(0xBD, 0x00);  /* disable trem/vib */
-        test_pass("OP.10 trmvib");
-    }
-
-    /* OP.11: percussion/rhythm mode (BD, SD, TT, CY, HH) */
-    {
-        of_audio_opl_reset();
-        of_audio_opl_write(0x105, 0x01);
-        of_audio_opl_write(0x01, 0x20);
-
-        /* Program percussion operator slots (ch6=BD, ch7=SD+HH, ch8=TT+CY) */
-        /* Bass drum: ops 12,15 */
-        of_audio_opl_write(0x20 + 12, 0x01); of_audio_opl_write(0x40 + 12, 0x00);
-        of_audio_opl_write(0x60 + 12, 0xF4); of_audio_opl_write(0x80 + 12, 0x75);
-        of_audio_opl_write(0x20 + 15, 0x01); of_audio_opl_write(0x40 + 15, 0x00);
-        of_audio_opl_write(0x60 + 15, 0xF5); of_audio_opl_write(0x80 + 15, 0x75);
-        of_audio_opl_write(0xC6, 0x30);
-        of_audio_opl_write(0xA6, 0x40); of_audio_opl_write(0xB6, 0x14);
-
-        /* Snare/HiHat: ops 13,16 */
-        of_audio_opl_write(0x20 + 16, 0x01); of_audio_opl_write(0x40 + 16, 0x00);
-        of_audio_opl_write(0x60 + 16, 0xFF); of_audio_opl_write(0x80 + 16, 0x78);
-        of_audio_opl_write(0x20 + 13, 0x01); of_audio_opl_write(0x40 + 13, 0x0D);
-        of_audio_opl_write(0x60 + 13, 0xFF); of_audio_opl_write(0x80 + 13, 0x78);
-        of_audio_opl_write(0xA7, 0x00); of_audio_opl_write(0xB7, 0x11);
-
-        /* Tom/Cymbal: ops 14,17 */
-        of_audio_opl_write(0x20 + 14, 0x05); of_audio_opl_write(0x40 + 14, 0x00);
-        of_audio_opl_write(0x60 + 14, 0xF5); of_audio_opl_write(0x80 + 14, 0x68);
-        of_audio_opl_write(0x20 + 17, 0x01); of_audio_opl_write(0x40 + 17, 0x00);
-        of_audio_opl_write(0x60 + 17, 0xF7); of_audio_opl_write(0x80 + 17, 0x58);
-        of_audio_opl_write(0xA8, 0x00); of_audio_opl_write(0xB8, 0x10);
-
-        /* Enable rhythm mode: BD, SD, TT, CY, HH */
-        of_audio_opl_write(0xBD, 0x3F);  /* rhythm=1, all 5 perc on */
-        usleep(80 * 1000);
-        of_audio_opl_write(0xBD, 0x20);  /* rhythm=1, all perc off */
-        usleep(30 * 1000);
-
-        /* Individual hits */
-        of_audio_opl_write(0xBD, 0x30); usleep(40 * 1000);  /* BD only */
-        of_audio_opl_write(0xBD, 0x28); usleep(40 * 1000);  /* SD only */
-        of_audio_opl_write(0xBD, 0x24); usleep(40 * 1000);  /* TT only */
-        of_audio_opl_write(0xBD, 0x22); usleep(40 * 1000);  /* CY only */
-        of_audio_opl_write(0xBD, 0x21); usleep(40 * 1000);  /* HH only */
-        of_audio_opl_write(0xBD, 0x00);  /* rhythm off */
-        usleep(20 * 1000);
-        test_pass("OP.11 perc");
-    }
-
-    /* OP.12: stereo panning — L only, R only, both */
-    {
-        of_audio_opl_reset();
-        of_audio_opl_write(0x105, 0x01);
-        of_audio_opl_write(0x01, 0x20);
-        opl_program_ch(0, 0, 0, 0x10, 0x01);
-
-        of_audio_opl_write(0xC0, 0x10);  /* L only */
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(50 * 1000);
-        opl_key_off(0, 0); usleep(10 * 1000);
-
-        of_audio_opl_write(0xC0, 0x20);  /* R only */
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(50 * 1000);
-        opl_key_off(0, 0); usleep(10 * 1000);
-
-        of_audio_opl_write(0xC0, 0x30);  /* both */
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(50 * 1000);
-        opl_key_off(0, 0); usleep(10 * 1000);
-
-        test_pass("OP.12 stereo");
-    }
-
-    /* OP.13: frequency sweep — chromatic scale across one octave */
-    {
-        /* F-numbers for C4 through B4 (block 4) */
-        uint16_t scale[] = {0x16B,0x181,0x198,0x1B0,0x1CA,0x1E5,
-                            0x202,0x220,0x241,0x263,0x287,0x2AE};
-        opl_program_ch(0, 0, 0, 0x10, 0x01);
-        for (int n = 0; n < 12; n++) {
-            opl_key_on(0, 0, scale[n], 4);
-            usleep(30 * 1000);
-            opl_key_off(0, 0);
-            usleep(5 * 1000);
-        }
-        test_pass("OP.13 scale");
-    }
-
-    /* OP.14: rapid register hammering — 10 bursts of 18-channel on/off
-     * (simulates MIDI with max polyphony) */
-    {
-        for (int ch = 0; ch < 9; ch++) {
-            opl_program_ch(0, ch, 0, 0x14, 0x01);
-            opl_program_ch(1, ch, 0, 0x14, 0x01);
-        }
-        for (int burst = 0; burst < 10; burst++) {
-            for (int ch = 0; ch < 9; ch++) {
-                opl_key_on(0, ch, 0x200 + burst * 0x10 + ch * 0x08, 4);
-                opl_key_on(1, ch, 0x240 + burst * 0x10 + ch * 0x08, 4);
-            }
-            usleep(15 * 1000);
-            for (int ch = 0; ch < 9; ch++) {
-                opl_key_off(0, ch);
-                opl_key_off(1, ch);
-            }
-        }
-        test_pass("OP.14 rapid");
-    }
-
-    /* OP.15: KSR + KSL — key scale rate and level */
-    {
-        opl_program_ch(0, 0, 0, 0x00, 0x01);
-        int m = opl_op1[0];
-        of_audio_opl_write(0x20 + m, 0x31);  /* KSR=1 */
-        of_audio_opl_write(0x40 + m, 0xC0);  /* KSL=3, TL=0 */
-        opl_key_on(0, 0, 0x241, 2);  /* low octave */
-        usleep(40 * 1000);
-        opl_key_off(0, 0); usleep(10 * 1000);
-        opl_key_on(0, 0, 0x241, 6);  /* high octave — should be quieter (KSL) */
-        usleep(40 * 1000);
-        opl_key_off(0, 0); usleep(10 * 1000);
-        test_pass("OP.15 ksr ksl");
-    }
-
-    /* OP.16: multiplier sweep — MULT 0-15 on modulator */
-    {
-        opl_program_ch(0, 0, 0, 0x10, 0x00);  /* FM mode */
-        int m = opl_op1[0];
-        uint8_t mults[] = {0,1,2,3,4,5,6,7,8,9,10,12,15};
-        for (int i = 0; i < 13; i++) {
-            of_audio_opl_write(0x20 + m, 0x20 | mults[i]);
-            opl_key_on(0, 0, 0x241, 4);
-            usleep(25 * 1000);
-            opl_key_off(0, 0);
-            usleep(5 * 1000);
-        }
-        test_pass("OP.16 mult");
-    }
-
-    /* OP.17: MIDI API — init, volume, bank */
-    {
-        int rc = of_midi_init();
-        ASSERT("OP.17a init", rc == 0);
-        of_midi_set_volume(200);
-        ASSERT("OP.17b vol", of_midi_get_volume() == 200);
-        const uint8_t *bank = of_midi_builtin_bank();
-        ASSERT("OP.17c bank", bank != NULL);
-        of_midi_set_volume(255);
-    }
-
-    /* ============================================================
-     * OP.18-OP.25: midi_test_spec.md targeted tests
-     * ============================================================ */
-    of_audio_opl_reset();
-    of_audio_opl_write(0x105, 0x01);
-    of_audio_opl_write(0x01, 0x20);
-    of_audio_opl_write(0x101, 0x20);  /* bank1 WSE */
-
-    /* OP.18: carrier waveform addressing — set CarWS=3, ModWS=0.
-     * Validates op_car table offsets (slot 3 vs slot 0). */
-    {
-        int m = opl_op1[0], c = opl_op2[0];
-        of_audio_opl_write(0x20 + m, 0x21);
-        of_audio_opl_write(0x40 + m, 0x10);
-        of_audio_opl_write(0x60 + m, 0xF0);
-        of_audio_opl_write(0x80 + m, 0x0F);
-        of_audio_opl_write(0xE0 + m, 0x00);  /* ModWS=0 */
-        of_audio_opl_write(0x20 + c, 0x21);
-        of_audio_opl_write(0x40 + c, 0x00);
-        of_audio_opl_write(0x60 + c, 0xF0);
-        of_audio_opl_write(0x80 + c, 0x0F);
-        of_audio_opl_write(0xE0 + c, 0x03);  /* CarWS=3 (quarter-sine) */
-        of_audio_opl_write(0xC0, 0x31);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(40 * 1000);
-        opl_key_off(0, 0);
-        usleep(20 * 1000);
-        test_pass("OP.18 carWS");
-    }
-
-    /* OP.19: KEY-OFF state preservation.
-     * Program guitar, key on, key off, key on AGAIN without reprogramming.
-     * If the second key-on doesn't sound buzzy, the OPL3 core is silently
-     * resetting waveform/feedback registers on key-off. */
-    {
-        opl_program_ch(0, 0, 1, 0x10, 0x0D);  /* WS=1, FB=6, CNT=1 */
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(60 * 1000);
-        opl_key_off(0, 0);
-        usleep(50 * 1000);
-        /* Second key-on with NO reprogramming */
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(60 * 1000);
-        opl_key_off(0, 0);
-        usleep(20 * 1000);
-        /* Pass = no crash; user verifies both notes sound identical */
-        test_pass("OP.19 keepst");
-    }
-
-    /* OP.20: channel reuse with different instruments.
-     * Guitar → key off → piano → key off → guitar.
-     * All on the same channel. Validates instrument reload works. */
-    {
-        /* Guitar 1 */
-        opl_program_ch(0, 0, 1, 0x10, 0x0D);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(50 * 1000);
-        opl_key_off(0, 0);
-        usleep(20 * 1000);
-        /* Piano */
-        opl_program_ch(0, 0, 0, 0x18, 0x01);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(50 * 1000);
-        opl_key_off(0, 0);
-        usleep(20 * 1000);
-        /* Guitar 2 — should sound like guitar 1 */
-        opl_program_ch(0, 0, 1, 0x10, 0x0D);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(50 * 1000);
-        opl_key_off(0, 0);
-        usleep(20 * 1000);
-        test_pass("OP.20 reuse");
-    }
-
-    /* OP.21: multi-channel instrument loading.
-     * Load different instruments on ch0-3, key on simultaneously.
-     * Validates that programming one channel doesn't disturb others. */
-    {
-        opl_program_ch(0, 0, 0, 0x10, 0x01);  /* sine, additive */
-        opl_program_ch(0, 1, 1, 0x10, 0x0D);  /* half-sine, FM, FB=6 */
-        opl_program_ch(0, 2, 2, 0x10, 0x05);  /* abs-sine, FM, FB=2 */
-        opl_program_ch(0, 3, 3, 0x10, 0x09);  /* quarter-sine, FM, FB=4 */
-        opl_key_on(0, 0, 0x200, 3);
-        opl_key_on(0, 1, 0x241, 4);
-        opl_key_on(0, 2, 0x287, 4);
-        opl_key_on(0, 3, 0x2D0, 4);
-        usleep(100 * 1000);
-        for (int i = 0; i < 4; i++) opl_key_off(0, i);
-        usleep(20 * 1000);
-        test_pass("OP.21 multi");
-    }
-
-    /* OP.22: cross-translation-unit register writes.
-     * Calls into test_opl_xtu.c (compiled separately). If this sounds
-     * different from OP.04 (in-unit waveform test), we have a cross-TU bug. */
-    {
-        extern void xtu_program_guitar(int bank);
-        extern void xtu_key_on_a4(int bank);
-        extern void xtu_key_off(int bank);
-        xtu_program_guitar(0);
-        xtu_key_on_a4(0);
-        usleep(60 * 1000);
-        xtu_key_off(0);
-        usleep(20 * 1000);
-        test_pass("OP.22 xtu");
-    }
-
-    /* OP.23: cross-TU on bank 1.
-     * Same as OP.22 but on OPL3 channel 9 (bank 1). */
-    {
-        extern void xtu_program_guitar(int bank);
-        extern void xtu_key_on_a4(int bank);
-        extern void xtu_key_off(int bank);
-        xtu_program_guitar(1);
-        xtu_key_on_a4(1);
-        usleep(60 * 1000);
-        xtu_key_off(1);
-        usleep(20 * 1000);
-        test_pass("OP.23 xtu b1");
-    }
-
-    /* OP.24: services-table dispatch isolation.
-     * Same writes as OP.04 but explicitly through OF_SVC->opl_write
-     * to verify the function pointer dispatch isn't corrupting writes. */
-    {
-        OF_SVC->opl_write(0x20, 0x21);
-        OF_SVC->opl_write(0x40, 0x10);
-        OF_SVC->opl_write(0x60, 0xF0);
-        OF_SVC->opl_write(0x80, 0x0F);
-        OF_SVC->opl_write(0xE0, 0x01);
-        OF_SVC->opl_write(0x23, 0x21);
-        OF_SVC->opl_write(0x43, 0x00);
-        OF_SVC->opl_write(0x63, 0xF0);
-        OF_SVC->opl_write(0x83, 0x0F);
-        OF_SVC->opl_write(0xE3, 0x01);
-        OF_SVC->opl_write(0xC0, 0x3D);
-        OF_SVC->opl_write(0xA0, 0x41);
-        OF_SVC->opl_write(0xB0, 0x32);
-        usleep(60 * 1000);
-        OF_SVC->opl_write(0xB0, 0x12);
-        usleep(20 * 1000);
-        test_pass("OP.24 svctbl");
-    }
-
-    /* OP.25: WSE off vs WSE on — same registers, different result. */
-    {
-        opl_program_ch(0, 0, 1, 0x10, 0x0D);  /* WS=1, FB=6 */
-
-        /* WSE OFF: waveform select ignored, all WS=0 */
-        of_audio_opl_write(0x01, 0x00);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(50 * 1000);
-        opl_key_off(0, 0);
-        usleep(20 * 1000);
-
-        /* WSE ON: WS=1 takes effect */
-        of_audio_opl_write(0x01, 0x20);
-        opl_key_on(0, 0, 0x241, 4);
-        usleep(50 * 1000);
-        opl_key_off(0, 0);
-        usleep(20 * 1000);
-        test_pass("OP.25 wse");
-    }
-
-    /* OP.26: clean reset */
-    of_audio_opl_reset();
-    test_pass("OP.26 reset");
-
-    section_end();
-}
+void test_opl3(void) { }
 
 void test_audio_stream(void) {
     section_start("Audio Strm");

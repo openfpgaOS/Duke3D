@@ -27,6 +27,15 @@
 #include "tiles.h"
 #ifdef OPENFPGA
 #include "of_fastram.h"
+/* APP_BRAM is only 14 KB on the current SDK and draw.c's per-pixel
+ * inner loops already fill it.  These engine.c renderers are
+ * per-scanline (one call per scanline of one wall/floor/ceiling), big
+ * enough that the 32 KB I-cache covers them well — moving them out of
+ * BRAM into SDRAM frees ~12 KB and lets the link succeed.  Override
+ * OF_FASTTEXT to empty here so the function attributes below become
+ * no-ops; draw.c keeps its OF_FASTTEXT and stays in BRAM. */
+#undef OF_FASTTEXT
+#define OF_FASTTEXT
 #else
 #define OF_FASTTEXT
 #define OF_FASTDATA

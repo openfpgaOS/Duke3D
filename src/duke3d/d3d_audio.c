@@ -131,17 +131,26 @@ static void audio_timer_tick(void)
 
 void d3d_audio_init(void)
 {
+    /* Hardware mixer has 32 voices total (MIXER_MAX_VOICES in the
+     * kernel hal). SF2 polyphony uses up to 28 of these, leaving 4
+     * for game SFX — tight but matches the mididemo's allocation. */
     of_mixer_init(MAX_ACTIVE_VOICES, OF_MIXER_OUTPUT_RATE);
-    of_mixer_free_samples();
+    /* Mirror the mididemo's mixer-volume setup — the of_mixer_init
+     * defaults leave master + group volumes at 0 on this kernel, so
+     * without these explicit sets every of_mixer_play would emit
+     * silence even though the voice slot allocates fine. */
+    of_mixer_set_master_volume(255);
+    of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, 255);
+    of_mixer_set_group_volume(OF_MIXER_GROUP_SFX,   255);
+    /* DO NOT call of_mixer_free_samples() here.  The kernel allocated
+     * the SoundFont at SAMPLE_POOL_BASE during boot; free_samples
+     * resets the pool head to that same address, so duke3d's first SFX
+     * decode would happily overwrite the bank's sample blob and the
+     * mixer DMA would feed garbage to the AWE — totally distorted MIDI.
+     * The mididemo never calls free_samples for the same reason. */
     init_voice_tracking();
     memset(decoded, 0, sizeof(decoded));
     audio_initialized = 1;
-
-    /* No timer interrupt — pump cooperatively from the game loop like
-     * mididemo. A timer ISR racing with the video path (FB_SWAP_CTRL
-     * writes in of_video_flip, or the busy-wait in of_video_wait_flip)
-     * has been observed to hang; pumping from _nextpage / sampletimer
-     * avoids the race entirely. */
 }
 
 void d3d_audio_shutdown(void)
@@ -228,6 +237,12 @@ int d3d_sound_play(int num, int priority, int volume)
                               priority, vol);
 
     if (voice >= 0) {
+        /* Tag as SFX so the kernel allocator and master-mix path can
+         * tell game effects from MIDI voices.  Without this tag, AWE
+         * (which owns voices 0..27 for MIDI) and the SFX path silently
+         * compete for the same voice slots and SFX gets stomped one
+         * fabric tick after each of_mixer_play returns. */
+        of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
         uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
                      / decoded[num].sample_rate + 50;
         track_voice_timed(voice, num, 0, dur);
@@ -260,6 +275,7 @@ int d3d_sound_play_3d(int num, int priority, int angle, int distance)
                               priority, scaled_vol);
 
     if (voice >= 0) {
+        of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
         of_mixer_set_pan(voice, pan);
         uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
                      / decoded[num].sample_rate + 50;
@@ -336,7 +352,17 @@ void d3d_audio_pump(void)
 {
     if (!audio_initialized) return;
 
-    of_midi_pump();
+    /* of_midi_pump is owned by the machine-timer ISR that of_midi_play
+     * installs — calling it from here too races on the M state and
+     * has been observed to fault.  See of_midi.h for the contract. */
+
+    /* Match Doom's opl_Poll: pump the SW mixer from the main thread
+     * once per game tic.  The MIDI envelope/LFO ISR is cheap and stays
+     * in the kernel; the heavy sample-mixing work runs here so the
+     * renderer's I-cache isn't trashed on every ISR fire.  of_mixer_pump
+     * loops swmixer_tick internally with a sane cap, so a late call
+     * just catches the audio ring back up. */
+    of_mixer_pump();
 
     /* Drain the hardware ended register so it doesn't overflow,
      * but we don't act on it — timer expiry handles everything. */

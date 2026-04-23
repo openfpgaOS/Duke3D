@@ -1,10 +1,10 @@
 /*
- * of_mixer.h -- Hardware PCM Mixer API for openfpgaOS
+ * of_mixer.h -- PCM Mixer API for openfpgaOS
  *
- * 48-voice hardware mixer. Mixing runs entirely in FPGA fabric —
- * zero CPU cost during playback.
- * Output: 48 kHz stereo via audio FIFO.  Sample-based MIDI synthesis
- * (of_midi / of_smp_voice) drives this mixer directly.
+ * 32-voice CPU-side software mixer.  Runs from the 1 kHz timer ISR,
+ * produces 48 stereo samples per block, and pushes them to the
+ * audio_output dcfifo.  Sample-based MIDI synthesis (of_midi /
+ * of_smp_voice) drives this same mixer.
  *
  * Usage:
  *   1. Call of_mixer_init()
@@ -13,9 +13,9 @@
  *   4. Play: of_mixer_play(buf, sample_count, sample_rate, 0, volume)
  *   5. Optionally set loop, rate, stereo volume, bidi, position
  *
- * Volume: 0-255 per channel (log curve applied in hardware).
- * Resampling: 16.16 fixed-point rate.
- * Volume ramp: hardware smooths transitions (configurable rate).
+ * Volume: 0-255 per channel.
+ * Resampling: 16.16 fixed-point rate, linear interpolation.
+ * Volume ramp: per-sample step, configurable rate.
  */
 
 #ifndef OF_MIXER_H
@@ -28,7 +28,7 @@ extern "C" {
 #include <stdint.h>
 #include <stddef.h>
 
-#define OF_MIXER_MAX_VOICES  48
+#define OF_MIXER_MAX_VOICES  32
 #define OF_MIXER_OUTPUT_RATE 48000
 
 /* Convert sample rate in Hz to 16.16 fixed-point for raw API.

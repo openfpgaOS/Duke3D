@@ -47,11 +47,14 @@ extern "C" {
  * ================================================================ */
 
 typedef enum {
-    OF_GPU_DEPTH_NONE   = 0,
-    OF_GPU_DEPTH_ALWAYS = 1,
-    OF_GPU_DEPTH_LESS   = 2,
-    OF_GPU_DEPTH_LEQUAL = 3,
-    OF_GPU_DEPTH_EQUAL  = 4,
+    OF_GPU_DEPTH_NONE     = 0,
+    OF_GPU_DEPTH_ALWAYS   = 1,
+    OF_GPU_DEPTH_LESS     = 2,
+    OF_GPU_DEPTH_LEQUAL   = 3,
+    OF_GPU_DEPTH_EQUAL    = 4,
+    OF_GPU_DEPTH_GEQUAL   = 5,
+    OF_GPU_DEPTH_GREATER  = 6,
+    OF_GPU_DEPTH_NOTEQUAL = 7,
 } of_gpu_depth_func_t;
 
 typedef enum {
@@ -168,7 +171,7 @@ static uint32_t _gpu_base;
 #define GPU_CMD_SET_SHADE       0x25
 #define GPU_CMD_SET_ALPHA_REF   0x26
 #define GPU_CMD_DRAW_TRIANGLES  0x30
-#define GPU_CMD_DRAW_INDEXED    0x31
+/* 0x31 (indexed draw) removed — expand indices on CPU and emit DRAW_TRIANGLES. */
 #define GPU_CMD_DRAW_SPAN       0x40
 #define GPU_CMD_DRAW_SPANS      0x41
 

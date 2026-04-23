@@ -46,6 +46,8 @@ release:
 	@cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin $(BUILD)/Cores/$(CORE_ID)/
 	@mkdir -p $(BUILD)/Assets/$(PLATFORM)/common
 	@cp $(RUNTIME)/os.bin $(BUILD)/Assets/$(PLATFORM)/common/
+	@# Sound bank (SC-55 GM, shared by all MIDI apps)
+	@cp $(RUNTIME)/bank.ofsf $(BUILD)/Assets/$(PLATFORM)/common/ 2>/dev/null || true
 	@# Demo ELFs + data files
 	@for app in $(APPS); do \
 		[ -f "$(SDK_ROOT)/.obj/sdk/$$app/app.elf" ] && \

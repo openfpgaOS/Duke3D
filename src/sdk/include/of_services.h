@@ -28,6 +28,11 @@ extern "C" {
 /* Forward declare input state struct */
 struct of_input_state;
 
+/* Forward declare AWE per-voice config -- full definition in of_awe.h.
+ * Kept opaque here so this header doesn't pull the AWE-specific types
+ * into every TU that just wants the services table. */
+struct awe_voice_t;
+
 struct of_services_table {
     uint32_t magic;
     uint32_t version;
@@ -135,6 +140,62 @@ struct of_services_table {
      *    leaves these as NULL/0. */
     const void *smp_bank_preload_base;
     uint32_t    smp_bank_preload_size;
+
+    /* -- AWE coprocessor (Phase 1+, append-only ABI) --
+     *    Phase 1 wires only the playback-relevant subset (sample address,
+     *    BASE_RATE, VOICE_BASE_VOL, PAN_BASE, INITIAL_FC/Q) into the
+     *    mixer at NOTE_ON.  Channel CC writes update the channel bank
+     *    but don't recompose currently-playing voices yet.  See of_awe.h
+     *    for the full struct. */
+    void      (*awe_voice_load)(int voice, const struct awe_voice_t *v);
+    void      (*awe_voice_trigger)(int voice);
+    void      (*awe_voice_release)(int voice);
+    void      (*awe_voice_stop)(int voice);
+    void      (*awe_channel_set_volume)(int ch, int vol_0_127);
+    void      (*awe_channel_set_expression)(int ch, int expr_0_127);
+    void      (*awe_channel_set_pan)(int ch, int pan_0_127);
+    void      (*awe_channel_set_bend)(int ch, int bend_signed_8192);
+    void      (*awe_channel_set_mod)(int ch, int mod_0_127);
+    void      (*awe_channel_set_sustain)(int ch, int on_off);
+    void      (*awe_channel_set_brightness)(int ch, int br_0_127);
+    void      (*awe_channel_set_resonance)(int ch, int q_0_127);
+    void      (*awe_channel_set_reverb_send)(int ch, int send_0_255);
+    void      (*awe_channel_set_chorus_send)(int ch, int send_0_255);
+    void      (*awe_set_master_volume)(int vol_0_255);
+    void      (*awe_set_bend_range)(int cents);
+    uint64_t  (*awe_active_mask)(void);
+
+    /* Phase 2 — 1 kHz stage-sequencer tick counter readback.  Reads
+     * the free-running 32-bit counter from audio_awe; increments once
+     * per 1 ms.  Rolls over every ~50 days; callers take deltas. */
+    uint32_t  (*awe_tick_count)(void);
+
+    /* Phase 3 — global flag that hands the amplitude envelope advance
+     * and VOL_COMPOSE over to fabric.  SW voice engine checks the
+     * same flag (see of_awe_hw_envelope_enabled in hal/awe.h via
+     * service table) to avoid stomping the HW-emitted mixer writes. */
+    void      (*awe_set_hw_envelope)(int enabled);
+
+    /* Phase 6a — global reverb bus controls.  Level and feedback are
+     * 0..255.  Both default to 0 (bypass); the fabric mixes the delay
+     * tap into the output at `level`, and loops it back into the
+     * delay line at `feedback` — so level≈128, feedback≈140 gives a
+     * noticeable slap-back, level≈64, feedback≈180 gives a subtle
+     * tail. */
+    void      (*awe_set_reverb_level)(int level);
+    void      (*awe_set_reverb_feedback)(int feedback);
+
+    /* Phase 6b — global chorus bus controls.  level = wet mix 0..255,
+     * rate = LFO phase increment per sample (Q16), depth = LFO swing
+     * in samples (peak swing of read-pointer offset). */
+    void      (*awe_set_chorus_level)(int level);
+    void      (*awe_set_chorus_rate)(int rate);
+    void      (*awe_set_chorus_depth)(int depth);
+
+    /* Phase 5c — Ramp1 (mod env) trigger.  stage = 2 (ATTACK) restarts
+     * from level=0; stage = 6 (RELEASE) fades from current level; stage
+     * = 7 (DONE) snaps to 0 and stops.  rate is Q16.16 incr per ms. */
+    void      (*awe_ramp1_trigger)(int voice, int stage, uint32_t rate);
 };
 
 #ifndef OF_PC

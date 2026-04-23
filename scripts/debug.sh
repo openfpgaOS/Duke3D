@@ -115,6 +115,23 @@ fi
 # ── Clear pending slots ───────────────────────────────────────────
 "$PHDP" clear
 
+# ── Always push os.bin (slot 1) + bank.ofsf (slot 4) alongside ───
+# JTAG reset reloads the bitstream but does NOT repopulate data slots;
+# whatever was there from the SD-card preset (if the user even selected
+# one) is gone. Pushing os.bin + bank.ofsf over UART on every debug run
+# decouples the debug path from SD-card state, so the mididemo / test
+# suite / duke3d MIDI all see a real SoundFont after reset instead of
+# kernel auto-scan returning NULL ("SoundFont NONE" in the app UI).
+# Skipped individually when the user is already pushing that exact slot.
+OS_BIN="$SDK_DIR/runtime/os.bin"
+if [ "$SLOT" != "1" ] && [ -f "$OS_BIN" ]; then
+    "$PHDP" push --slot 1 "$OS_BIN"
+fi
+BANK_OFSF="$SDK_DIR/runtime/bank.ofsf"
+if [ "$SLOT" != "4" ] && [ -f "$BANK_OFSF" ]; then
+    "$PHDP" push --slot 4 "$BANK_OFSF"
+fi
+
 # ── Push file to slot ─────────────────────────────────────────────
 "$PHDP" push --slot "$SLOT" "$FILE"
 

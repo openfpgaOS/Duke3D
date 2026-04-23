@@ -37,7 +37,7 @@ extern "C" {
 
 /* Hardware feature flags — must match RTL HW_FEATURES bit layout in
  * src/fpga/common/axi_periph_slave.v and src/firmware/os/hal/regs.h. */
-#define OF_HW_MIXER         (1 << 0)    /* PCM hardware mixer */
+#define OF_HW_MIXER         (1 << 0)    /* Audio FIFO + CPU-side software mixer */
 #define OF_HW_NET           (1 << 2)    /* Networking (link cable / serial / wifi) */
 #define OF_HW_ANALOGIZER    (1 << 3)    /* Analog video output */
 #define OF_HW_GPU_SPAN      (1 << 4)    /* GPU span renderer (always set) */
@@ -74,7 +74,7 @@ struct of_capabilities {
 
     /* Hardware features */
     uint32_t hw_features;       /* OF_HW_* bitmask */
-    uint32_t mixer_voices;      /* 0 = no mixer, 32 = full */
+    uint32_t mixer_voices;      /* Max voices in CPU software mixer (32) */
     uint32_t mixer_rate;        /* Output sample rate (48000) */
 
     /* Platform identity */

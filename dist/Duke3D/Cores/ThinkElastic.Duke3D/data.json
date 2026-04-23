@@ -3,6 +3,14 @@
         "magic": "APF_VER_1",
         "data_slots": [
             {
+                "id": 0,
+                "name": "Game",
+                "required": true,
+                "parameters": 275,
+                "filename": "Duke3D.json",
+                "extensions": ["json"]
+            },
+            {
                 "id": 1,
                 "name": "OS Binary",
                 "required": false,
@@ -31,10 +39,11 @@
             },
             {
                 "id": 4,
-                "name": "Data 2",
+                "name": "Sound Bank",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["dat"],
+                "filename": "bank.ofsf",
+                "extensions": ["ofsf", "dat"],
                 "deferload": true
             },
             {

@@ -74,6 +74,7 @@ void test_mixer_adv(void);
 void test_mixer_stress(void);
 void test_opl3(void);
 void test_midi(void);
+void test_midi_smp(void);
 void test_audio_stream(void);
 
 #endif /* TEST_H */

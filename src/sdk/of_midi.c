@@ -12,6 +12,7 @@
 #include "include/of_smp_voice.h"
 #include "include/of_timer.h"
 #include "include/of_services.h"
+#include "include/of_fastram.h"
 
 #include <stdint.h>
 #include <stddef.h>
@@ -31,7 +32,10 @@ typedef struct {
     int      done;
 } midi_track_t;
 
-static struct {
+/* Pinned to BRAM (OF_FASTDATA): the timer ISR updates this struct every
+ * tick (track cursors, tick_accum_us, channel state).  ISR SDRAM stores
+ * race with GPU/bridge bus traffic — BRAM breaks the race. */
+static OF_FASTDATA struct {
     int inited;
     int playing;
     int paused;
@@ -46,7 +50,7 @@ static struct {
 
     uint32_t us_per_beat;
     uint32_t last_pump_us;
-    uint32_t tick_accum_us;   /* accumulates until >= 1000 us → one voice tick */
+    uint32_t tick_accum_us;   /* accumulates until >= 1000 µs → one voice tick (matches of_smp_tables.c 1 kHz envelope rate) */
 
     midi_track_t tracks[MIDI_MAX_TRACKS];
 
@@ -147,6 +151,12 @@ static void control_change(int ch, int cc, int val) {
     case 74: /* Brightness */
         M.brightness[ch] = (uint8_t)val;
         smp_voice_update_filter(ch, val, M.resonance[ch]);
+        break;
+    case 91: /* Reverb send (CC91) */
+        smp_voice_update_reverb_send(ch, val);
+        break;
+    case 93: /* Chorus send (CC93) */
+        smp_voice_update_chorus_send(ch, val);
         break;
     case 120: /* All Sound Off */
     case 123: /* All Notes Off */
@@ -322,14 +332,13 @@ int of_midi_init(void) {
     M.playing       = 0;
     M.paused        = 0;
     M.tick_accum_us = 0;
-    /* Default below full-scale to give the HW mixer headroom for dense
-     * polyphony.  audio_mixer.v sums voices into a 32-bit accumulator and
-     * shifts ÷4 before clamping to int16 — about 6 voices at vol=180 fill
-     * the range.  With SF2 polyphony routinely 20-28 voices, master=255
-     * hard-clips at peaks and sounds like occasional voice "breakup".
-     * 128 quarters per-voice peak output (via the HW log² curve) so
-     * roughly 4× more concurrent voices fit without clipping.  Apps can
-     * raise it with of_midi_set_volume() if they know polyphony is low. */
+    /* Default below full-scale to give the mixer headroom for dense
+     * polyphony.  The HW mixer sums voices into s32 accumulators and
+     * saturates to s16 — at master=255 a 20-28 voice MIDI passage
+     * hard-clips at peaks and sounds like voice "breakup".  128 halves
+     * the per-voice peak so roughly 4× more concurrent voices fit
+     * without clipping.  Apps can raise it with of_midi_set_volume()
+     * if they know polyphony is low. */
     M.master_volume = 128;
     smp_voice_set_master_volume(M.master_volume);
     return OF_MIDI_OK;
@@ -355,13 +364,12 @@ int of_midi_play(const uint8_t *data, uint32_t len, int loop) {
     M.paused       = 0;
     M.last_pump_us = of_time_us();
 
-    /* Drive the pump from the machine-timer ISR at 500 Hz.  This makes
-     * the envelope / LFO / event-dispatch cadence completely independent
-     * of the main thread — printf, framebuffer blits, and usleep jitter
-     * no longer steal ticks from the mixer.  Re-entry is avoided by
-     * having the main thread not call of_midi_pump() while playback is
-     * active (the ISR owns it). */
-    of_timer_set_callback(of_midi_pump, 500);
+    /* DEBUG: 100 Hz still hangs occasionally (~3 demo loops between
+     * crashes).  Drop to 50 Hz to test whether even fewer trap entries
+     * eliminates the accumulation.  Combined with the 2 ms PUMP_BUDGET_US
+     * cap below, total ISR CPU load is at most 50 × 2 ms = 100 ms/sec
+     * = 10 % CPU. */
+    of_timer_set_callback(of_midi_pump, 50);
     return OF_MIDI_OK;
 }
 
@@ -401,15 +409,36 @@ void of_midi_pump(void) {
 
     if (elapsed > 0) {
         M.tick_accum_us += (uint32_t)elapsed;
-        int tick_budget = 250;
+
+        /* OVERRUN GUARD.  Cap the ENTIRE pump call (envelope ticks +
+         * MIDI event dispatch below) to PUMP_BUDGET_US of wall-clock
+         * work.  Both loops re-check the budget every iteration; on
+         * overrun we drop unprocessed envelope accumulation AND stop
+         * dispatching MIDI events for this call.  Avoids ISR-monopoly
+         * starvation of the main thread. */
+        const uint32_t PUMP_BUDGET_US = 2000;   /* 2 ms hard cap */
+        uint32_t pump_start_us = OF_SVC->timer_get_us();
+
+        /* of_smp_tables.c bakes envelope rates assuming 1 kHz (1 ms/tick),
+         * so smp_voice_tick MUST fire every 1000 µs.  Half-rate (every
+         * 2 ms) made every attack/decay/release run at 2× duration —
+         * audible as muddy notes that overlap into the next tone.
+         * Doubled the tick budget so a moderate polyphony burst still
+         * stays inside the pump-side wall-clock cap. */
+        int tick_budget = 500;
         int ticks_fired = 0;
-        while (M.tick_accum_us >= 2000 && tick_budget > 0) {
+        int overrun = 0;
+        while (M.tick_accum_us >= 1000 && tick_budget > 0) {
             smp_voice_tick();
-            M.tick_accum_us -= 2000;
+            M.tick_accum_us -= 1000;
             tick_budget--;
             ticks_fired++;
+            if ((OF_SVC->timer_get_us() - pump_start_us) > PUMP_BUDGET_US) {
+                overrun = 1;
+                break;
+            }
         }
-        int budget_exceeded = (tick_budget == 0);
+        int budget_exceeded = (tick_budget == 0) || overrun;
         if (budget_exceeded)
             M.tick_accum_us = 0;
         smp_voice_tick_record_pump((uint32_t)elapsed, ticks_fired,
@@ -430,8 +459,15 @@ void of_midi_pump(void) {
                 process_event(t);
                 if (!t->done) read_next_delta(t);
                 safety--;
+                /* Same overrun cap as the envelope loop.  Pending MIDI
+                 * events stay queued (their pending_us is still <=0)
+                 * so the next pump call picks them up — no notes lost,
+                 * just delayed. */
+                if ((OF_SVC->timer_get_us() - pump_start_us) > PUMP_BUDGET_US)
+                    goto pump_done;
             }
         }
+        pump_done: ;
 
         if (!any_active) {
             if (M.looping) {

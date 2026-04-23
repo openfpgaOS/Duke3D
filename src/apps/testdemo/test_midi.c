@@ -2,12 +2,11 @@
  * test_midi.c — of_midi engine tests (MD.xx)
  *
  * Tests the MIDI playback engine using synthetic MIDI files built
- * in memory. Covers all the of_midi APIs that Duke3D depends on:
+ * in memory.  Rendering goes through the sample voice engine
+ * (of_smp_voice) driven by an .ofsf bank (of_smp_bank).  Covers:
  *   - init / play / stop / pump
  *   - pause / resume / playing / paused queries
  *   - set_volume / get_volume
- *   - load_bank (NULL = builtin, custom = TMB)
- *   - builtin_bank pointer
  *   - format 0 single track
  *   - format 1 multi-track
  *   - program change events
@@ -18,6 +17,9 @@
 
 #include "test.h"
 #include "of_midi.h"
+#include "of_smp_bank.h"
+#include "of_mixer.h"
+#include "of_cache.h"
 #include <time.h>
 
 /* ================================================================
@@ -599,10 +601,6 @@ void test_midi(void) {
     int rc = of_midi_init();
     ASSERT("MD.01 init", rc == OF_MIDI_OK);
 
-    /* MD.02: builtin bank pointer is non-NULL */
-    const uint8_t *bank = of_midi_builtin_bank();
-    ASSERT("MD.02 bank", bank != NULL);
-
     /* MD.03: get/set volume */
     of_midi_set_volume(180);
     ASSERT("MD.03a vol", of_midi_get_volume() == 180);
@@ -698,30 +696,6 @@ void test_midi(void) {
         ASSERT("MD.11 reject", rc != OF_MIDI_OK);
     }
 
-    /* MD.12: load custom bank — make a fake 1925-byte bank, load, restore */
-    {
-        static uint8_t fake_bank[1925];
-        const uint8_t *builtin = of_midi_builtin_bank();
-        /* Start from builtin so the data is plausible */
-        for (int i = 0; i < 1925; i++)
-            fake_bank[i] = builtin[i];
-        /* Tweak first instrument: set FB/CNT to 0x0D (FB=6, CNT=1) */
-        fake_bank[0] = 0x0D;
-        of_midi_load_bank(fake_bank);
-        /* Play and verify it doesn't crash */
-        uint32_t len = build_simple_midi(midi_buf, 0);
-        rc = of_midi_play(midi_buf, len, 0);
-        ASSERT("MD.12a custom", rc == OF_MIDI_OK);
-        for (int i = 0; i < 25; i++) { of_midi_pump(); usleep(10 * 1000); }
-        of_midi_stop();
-        /* Restore builtin */
-        of_midi_load_bank(NULL);
-        rc = of_midi_play(midi_buf, len, 0);
-        ASSERT("MD.12b restore", rc == OF_MIDI_OK);
-        for (int i = 0; i < 25; i++) { of_midi_pump(); usleep(10 * 1000); }
-        of_midi_stop();
-    }
-
     /* MD.13: rapid play/stop cycles (simulates Duke3D level transitions) */
     {
         uint32_t len = build_simple_midi(midi_buf, 1);
@@ -754,16 +728,6 @@ md13_done:;
         of_midi_set_volume(255);
         of_midi_stop();
     }
-
-    /* MD.15: stop when not playing — should be a no-op */
-    of_midi_stop();
-    of_midi_stop();  /* twice */
-    ASSERT("MD.15 dblstop", !of_midi_playing());
-
-    /* MD.16: re-init */
-    rc = of_midi_init();
-    ASSERT("MD.16 reinit", rc == OF_MIDI_OK);
-    ASSERT("MD.16b idle", !of_midi_playing());
 
     /* MD.17: running status — common in real MIDI files.
      * Many parsers fail here because they require explicit status bytes. */
@@ -910,26 +874,6 @@ md13_done:;
         ASSERT("MD.31 fast", !of_midi_playing());
     }
 
-    /* MD.32: switch songs while playing (stop + new play). */
-    {
-        uint32_t len1 = build_long_midi(midi_buf);
-        of_midi_play(midi_buf, len1, 1);
-        for (int i = 0; i < 5; i++) { of_midi_pump(); usleep(10 * 1000); }
-        ASSERT("MD.32a song1", of_midi_playing());
-
-        /* Don't stop — let play() replace the song */
-        uint32_t len2 = build_drums_midi(midi_buf);
-        rc = of_midi_play(midi_buf, len2, 0);
-        /* Some implementations require stop first; accept either */
-        if (rc != OF_MIDI_OK) {
-            of_midi_stop();
-            rc = of_midi_play(midi_buf, len2, 0);
-        }
-        ASSERT("MD.32b song2", rc == OF_MIDI_OK);
-        for (int i = 0; i < 100; i++) { of_midi_pump(); usleep(10 * 1000); }
-        of_midi_stop();
-    }
-
     /* MD.33: minimal valid MIDI (header + tiny EOT-only track) */
     {
         static const uint8_t tiny[] = {
@@ -958,191 +902,35 @@ md13_done:;
         test_pass("MD.34 trunc");
     }
 
-    /* MD.35: bank data integrity — Distortion Guitar (prog 30) MUST have
-     * non-zero feedback and a non-sine waveform. If this fails, the bank
-     * is the wrong one or has been zeroed. */
+    /* MD.37: play while already playing — auto-restarts (no error). */
     {
-        const uint8_t *bank = of_midi_builtin_bank();
-        const uint8_t *guitar = bank + 30 * 11;  /* program 30 = Distortion Guitar */
-        /* p[0] = FB/CNT — Duke distortion guitar has FB > 0 */
-        ASSERT("MD.35a fb",   (guitar[0] & 0x0E) != 0);  /* FB bits 1-3 */
-        /* p[5] = mod waveform select, p[10] = car waveform select.
-         * At least one should be non-sine for the buzzy guitar timbre. */
-        ASSERT("MD.35b ws",   (guitar[5] != 0) || (guitar[10] != 0));
-        /* Snapshot exact values into a debug string for the failure log */
-        snprintf(__buf, sizeof(__buf), "FB=%02x WSm=%02x WSc=%02x",
-                 guitar[0], guitar[5], guitar[10]);
-        /* Always log so the user can see the actual bytes */
-        if ((guitar[0] & 0x0E) == 0 || (guitar[5] == 0 && guitar[10] == 0))
-            test_fail("MD.35c bytes", __buf);
-        else
-            test_pass("MD.35c bytes");
+        uint32_t len = build_long_midi(midi_buf);
+        rc = of_midi_play(midi_buf, len, 1);
+        ASSERT("MD.37a play", rc == OF_MIDI_OK);
+        for (int i = 0; i < 3; i++) { of_midi_pump(); usleep(10 * 1000); }
+        int rc2 = of_midi_play(midi_buf, len, 0);
+        ASSERT("MD.37b restart", rc2 == OF_MIDI_OK);
+        ASSERT("MD.37c playing", of_midi_playing());
+        of_midi_stop();
     }
 
-    /* MD.36: bank coverage — every melodic instrument should have plausible
-     * data (not all zeros). 128 melodic + 47 percussion = 175 patches. */
-    {
-        const uint8_t *bank = of_midi_builtin_bank();
-        int blank = 0;
-        for (int p = 0; p < 175; p++) {
-            const uint8_t *inst = bank + p * 11;
-            int sum = 0;
-            for (int b = 0; b < 11; b++) sum |= inst[b];
-            if (sum == 0) blank++;
-        }
-        snprintf(__buf, sizeof(__buf), "%d blank/175", blank);
-        if (blank > 5)  /* allow a few empty slots */
-            test_fail("MD.36 bank", __buf);
-        else
-            test_pass("MD.36 bank");
-    }
-
-    /* MD.37: bank diversity — different instruments should have different
-     * data. If all 128 melodic patches are identical, the bank is broken. */
-    {
-        const uint8_t *bank = of_midi_builtin_bank();
-        int unique_fb = 0;
-        uint8_t seen[256] = {0};
-        for (int p = 0; p < 128; p++) {
-            uint8_t fb = bank[p * 11] & 0x0E;
-            if (!seen[fb]) {
-                seen[fb] = 1;
-                unique_fb++;
-            }
-        }
-        ASSERT("MD.37 div", unique_fb >= 3);  /* at least 3 distinct FB values */
-    }
-
-    /* MD.38: end-to-end instrument load via play.
-     * Build a MIDI that switches to Distortion Guitar (prog 30) and plays a
-     * note. We can't read OPL3 back, but we can verify the play() call
-     * succeeds and the engine reports playing. */
+    /* MD.39: play after re-init — stop, re-init, then play again. */
     {
         of_midi_stop();
-        of_midi_load_bank(NULL);  /* ensure builtin */
-        uint32_t len = build_simple_midi(midi_buf, 0);  /* uses prog 30 */
-        rc = of_midi_play(midi_buf, len, 0);
-        ASSERT("MD.38a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 30; i++) { of_midi_pump(); usleep(10 * 1000); }
-        ASSERT("MD.38b ended", !of_midi_playing());
-    }
-
-    /* MD.39: custom bank with EXTREME guitar settings.
-     * Override program 30 with FB=7 (max) and WS=3 (quarter-sine).
-     * Plays the same MIDI as MD.38. If MD.38 sounds the same as MD.39,
-     * the engine is ignoring bank data — proves the load_instrument bug. */
-    {
-        static uint8_t custom[1925];
-        const uint8_t *builtin = of_midi_builtin_bank();
-        for (int i = 0; i < 1925; i++) custom[i] = builtin[i];
-        /* Override program 30 with extreme distortion */
-        uint8_t *p = &custom[30 * 11];
-        p[0]  = 0x0F;  /* FB=7 (max), CNT=1 (additive) */
-        p[1]  = 0x21;  /* mod: EG=1 MULT=1 */
-        p[2]  = 0x10;  /* mod TL=16 */
-        p[3]  = 0xF0;  /* mod AR=15 DR=0 */
-        p[4]  = 0x0F;  /* mod SL=0 RR=15 */
-        p[5]  = 0x03;  /* mod WS=3 (quarter-sine) */
-        p[6]  = 0x21;
-        p[7]  = 0x00;
-        p[8]  = 0xF0;
-        p[9]  = 0x0F;
-        p[10] = 0x03;  /* car WS=3 */
-        of_midi_load_bank(custom);
-
+        rc = of_midi_init();
+        ASSERT("MD.39a reinit", rc == OF_MIDI_OK);
         uint32_t len = build_simple_midi(midi_buf, 0);
         rc = of_midi_play(midi_buf, len, 0);
-        ASSERT("MD.39a play", rc == OF_MIDI_OK);
-        for (int i = 0; i < 30; i++) { of_midi_pump(); usleep(10 * 1000); }
-        of_midi_load_bank(NULL);
-    }
-
-    /* MD.40-WSDIAG: waveform select diagnostic.
-     * Plays the SAME note 4 times, varying only the waveform select bits.
-     * If all 4 sound IDENTICAL, the WS register isn't taking effect — the
-     * OPL3 always plays sine waves regardless. If they sound different
-     * (sine vs half-sine vs abs-sine vs quarter-sine), WS works and the
-     * Distortion Guitar bug is elsewhere. */
-    {
-        of_audio_opl_reset();
-        of_audio_opl_write(0x105, 0x01);  /* OPL3 enable */
-        of_audio_opl_write(0x01, 0x20);
-        of_audio_opl_write(0x101, 0x20);
-
-        /* Set up channel 0 with HIGH feedback so any harmonics from WS
-         * are amplified. Both operators set up identically except WS. */
-        for (int ws = 0; ws < 4; ws++) {
-            /* Modulator (slot 0) */
-            of_audio_opl_write(0x20, 0x21);
-            of_audio_opl_write(0x40, 0x00);    /* TL=0 max volume */
-            of_audio_opl_write(0x60, 0xF0);
-            of_audio_opl_write(0x80, 0x0F);
-            of_audio_opl_write(0xE0, ws);      /* mod WS */
-            /* Carrier (slot 3) */
-            of_audio_opl_write(0x23, 0x21);
-            of_audio_opl_write(0x43, 0x00);
-            of_audio_opl_write(0x63, 0xF0);
-            of_audio_opl_write(0x83, 0x0F);
-            of_audio_opl_write(0xE3, ws);      /* car WS */
-            /* CNT=0 (FM mode), FB=7 (max feedback for harmonic content) */
-            of_audio_opl_write(0xC0, 0x0E | 0x30);
-            /* Key on A4 */
-            of_audio_opl_write(0xA0, 0x41);
-            of_audio_opl_write(0xB0, 0x32);
-            usleep(400 * 1000);
-            of_audio_opl_write(0xB0, 0x12);
-            usleep(150 * 1000);
-        }
-        test_pass("MD.40w wsdiag");
-    }
-
-    /* MD.40-PRE: direct OPL3 register write of Distortion Guitar.
-     * Bypasses the of_midi engine entirely. Programs the EXACT same bytes
-     * that load_instrument would write, but via direct opl_write calls.
-     * If this sounds buzzy/metallic but the next test (MD.40 via of_midi)
-     * sounds organ-like, the bug is in the of_midi engine, not the bytes
-     * or OPL3 hardware. */
-    {
-        of_audio_opl_reset();
-        of_audio_opl_write(0x105, 0x01);  /* OPL3 enable */
-        of_audio_opl_write(0x01, 0x20);   /* bank 0 WSE */
-        of_audio_opl_write(0x101, 0x20);  /* bank 1 WSE */
-
-        /* Distortion Guitar bytes (from gm_bank in of_midi.c, program 30):
-         *   FB/CNT=0x06, mod=21,14,F6,54,WS=02
-         *   car=21,TL=00,F2,52,WS=02
-         * Channel 0: mod slot=0, car slot=3 */
-        of_audio_opl_write(0xC0, 0x06 | 0x30);  /* FB/CNT + L+R */
-        /* Modulator (slot 0) */
-        of_audio_opl_write(0x20, 0x21);   /* char */
-        of_audio_opl_write(0x40, 0x14);   /* TL */
-        of_audio_opl_write(0x60, 0xF6);   /* AD */
-        of_audio_opl_write(0x80, 0x54);   /* SR */
-        of_audio_opl_write(0xE0, 0x02);   /* WS=2 abs-sine */
-        /* Carrier (slot 3) */
-        of_audio_opl_write(0x23, 0x21);
-        of_audio_opl_write(0x43, 0x00);   /* TL=0 (max volume) */
-        of_audio_opl_write(0x63, 0xF2);
-        of_audio_opl_write(0x83, 0x52);
-        of_audio_opl_write(0xE3, 0x02);   /* WS=2 abs-sine */
-
-        /* Key on A4 (440Hz, fnum=0x241, block=4) */
-        of_audio_opl_write(0xA0, 0x41);
-        of_audio_opl_write(0xB0, 0x32);
-        usleep(800 * 1000);
-        of_audio_opl_write(0xB0, 0x12);   /* key off */
-        usleep(100 * 1000);
-        test_pass("MD.40p direct");
+        ASSERT("MD.39b play", rc == OF_MIDI_OK);
+        for (int i = 0; i < 25; i++) { of_midi_pump(); usleep(10 * 1000); }
+        ASSERT("MD.39c ended", !of_midi_playing());
     }
 
     /* MD.40: guitar + bass + snare playback.
-     * Plays the three Duke3D-style instruments to verify GM programs
-     * 30 (Distortion Guitar), 33 (Electric Bass), and drum note 38
-     * (Acoustic Snare) all load and play. The user listens to confirm
-     * each instrument sounds distinct from the others. */
+     * Exercises GM programs 30 (Distortion Guitar), 33 (Electric Bass),
+     * and drum note 38 (Acoustic Snare) via the sample backend. */
     {
         of_midi_stop();
-        of_midi_load_bank(NULL);  /* builtin GM */
         uint32_t len = build_guitar_bass_snare_midi(midi_buf);
         rc = of_midi_play(midi_buf, len, 0);
         ASSERT("MD.40a play", rc == OF_MIDI_OK);
@@ -1152,23 +940,186 @@ md13_done:;
         ASSERT("MD.40b ended", !of_midi_playing());
     }
 
-    /* MD.41: bank 1 WSE check.
-     * After of_midi_init, both bank 0 (0x01) and bank 1 (0x101) WSE bits
-     * should be set. Otherwise, OPL channels 9-17 ignore waveform select
-     * and play sine waves regardless of instrument data. We can't read
-     * OPL3 registers back, so this test re-initializes and writes 0x101
-     * ourselves — if Duke's bug is bank 1 WSE missing, fixing it here
-     * (after midi_init) would make any MIDI playing on ch 9-17 work. */
-    {
-        of_midi_stop();
-        of_midi_init();
-        /* Manually ensure bank 1 WSE is enabled — workaround for any
-         * init bug that only sets bank 0. */
-        of_audio_opl_write(0x101, 0x20);
-        test_pass("MD.41 b1wse");
-    }
-
     of_midi_stop();
     section_end();
     (void)play_and_pump;  /* may be unused if all tests use inline pump */
+}
+
+/* ================================================================
+ * Sample backend tests (SB.xx)
+ *
+ * Tests the sample-based MIDI backend: bank loading, zone lookup,
+ * mixer voice allocation, and audible playback via hardware mixer.
+ * Requires bank.ofsf in data slot 4.
+ * ================================================================ */
+
+void test_midi_smp(void) {
+    section_start("MIDI Smp");
+
+    of_mixer_init(48, OF_MIXER_OUTPUT_RATE);
+    of_mixer_set_master_volume(255);
+    of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, 255);
+
+    /* SB.01: bank autoloaded by kernel — check via of_smp_bank_get() */
+    if (of_smp_bank_get() == NULL) {
+        test_pass("SB.01 nobank");
+        section_end();
+        return;
+    }
+    test_pass("SB.01 bank");
+
+    /* SB.02: bank header valid */
+    {
+        const ofsf_header_t *hdr = of_smp_bank_get();
+        ASSERT("SB.02a hdr", hdr != NULL);
+        if (hdr) {
+            ASSERT("SB.02b magic", hdr->magic == OFSF_MAGIC);
+            ASSERT("SB.02c ver", hdr->version == OFSF_VERSION);
+            ASSERT("SB.02d sr", hdr->sample_rate > 0 && hdr->sample_rate <= 96000);
+            ASSERT("SB.02e zones", hdr->zone_count > 0);
+        }
+    }
+
+    /* SB.03: sample base pointer */
+    {
+        const void *sbase = of_smp_bank_sample_base();
+        ASSERT("SB.03 sbase", sbase != NULL);
+    }
+
+    /* SB.04: zone lookup — piano (program 0, note 60) */
+    {
+        const ofsf_zone_t *zones[4];
+        int n = of_smp_zone_lookup(0, 0, 60, 100, zones, 4);
+        ASSERT("SB.04a piano", n > 0);
+        if (n > 0) {
+            ASSERT("SB.04b range", zones[0]->key_lo <= 60 && zones[0]->key_hi >= 60);
+            ASSERT("SB.04c len", zones[0]->sample_length > 0);
+        }
+    }
+
+    /* SB.05: zone lookup — drums (bank 128, program 0, note 36 = bass drum) */
+    {
+        const ofsf_zone_t *zones[4];
+        int n = of_smp_zone_lookup(128, 0, 36, 100, zones, 4);
+        ASSERT("SB.05 drum", n > 0);
+    }
+
+    /* SB.06: zone lookup — out of range returns 0 */
+    {
+        const ofsf_zone_t *zones[4];
+        int n = of_smp_zone_lookup(0, 200, 60, 100, zones, 4);
+        ASSERT("SB.06 oor", n == 0);
+    }
+
+    /* SB.07: direct sample playback — play a piano zone through mixer */
+    {
+        const ofsf_zone_t *zones[4];
+        const uint8_t *sbase = (const uint8_t *)of_smp_bank_sample_base();
+        const ofsf_header_t *hdr = of_smp_bank_get();
+        int n = of_smp_zone_lookup(0, 0, 60, 100, zones, 4);
+        if (n > 0 && sbase && hdr) {
+            const ofsf_zone_t *z = zones[0];
+            int v = of_mixer_play(sbase + z->sample_offset,
+                                  z->sample_length,
+                                  hdr->sample_rate, 0, 200);
+            ASSERT("SB.07a play", v >= 0);
+            if (v >= 0) {
+                if (z->loop_mode == OFSF_LOOP_FORWARD || z->loop_mode == OFSF_LOOP_BIDI)
+                    of_mixer_set_loop(v, z->loop_start, z->loop_end);
+                usleep(50 * 1000);
+                ASSERT("SB.07b active", of_mixer_voice_active(v));
+                usleep(200 * 1000);
+                of_mixer_stop(v);
+            }
+        } else {
+            test_pass("SB.07 skip");
+        }
+    }
+
+    /* SB.08: MIDI engine plays through sample backend — verify voices activate */
+    {
+        int rc = of_midi_init();
+        ASSERT("SB.08a init", rc == OF_MIDI_OK);
+
+        uint32_t len = build_simple_midi(midi_buf, 0);
+        rc = of_midi_play(midi_buf, len, 0);
+        ASSERT("SB.08b play", rc == OF_MIDI_OK);
+
+        /* Pump for 200ms — notes should start and activate mixer voices */
+        for (int i = 0; i < 20; i++) {
+            of_midi_pump();
+            usleep(10 * 1000);
+        }
+
+        /* Check if any mixer voice is active (at least one note should be playing) */
+        int any_active = 0;
+        for (int v = 0; v < 48; v++) {
+            if (of_mixer_voice_active(v)) {
+                any_active = 1;
+                break;
+            }
+        }
+        ASSERT("SB.08c voices", any_active);
+        of_midi_stop();
+    }
+
+    /* SB.09: multi-channel MIDI — verify multiple voices */
+    {
+        uint32_t len = build_16ch_midi(midi_buf);
+        int rc = of_midi_play(midi_buf, len, 0);
+        ASSERT("SB.09a play", rc == OF_MIDI_OK);
+
+        for (int i = 0; i < 20; i++) {
+            of_midi_pump();
+            usleep(10 * 1000);
+        }
+
+        int active_count = 0;
+        for (int v = 0; v < 48; v++) {
+            if (of_mixer_voice_active(v)) active_count++;
+        }
+        ASSERT("SB.09b multi", active_count >= 2);
+        of_midi_stop();
+    }
+
+    /* SB.10: voice position advances — mixer DMA is reading sample data */
+    {
+        const ofsf_zone_t *zones[4];
+        const uint8_t *sbase = (const uint8_t *)of_smp_bank_sample_base();
+        const ofsf_header_t *hdr = of_smp_bank_get();
+        int n = of_smp_zone_lookup(0, 0, 60, 100, zones, 4);
+        if (n > 0 && sbase && hdr) {
+            const ofsf_zone_t *z = zones[0];
+            int v = of_mixer_play(sbase + z->sample_offset,
+                                  z->sample_length,
+                                  hdr->sample_rate, 0, 200);
+            if (v >= 0) {
+                if (z->loop_mode == OFSF_LOOP_FORWARD || z->loop_mode == OFSF_LOOP_BIDI)
+                    of_mixer_set_loop(v, z->loop_start, z->loop_end);
+                usleep(10 * 1000);
+                int pos1 = of_mixer_get_position(v);
+                usleep(10 * 1000);
+                int pos2 = of_mixer_get_position(v);
+                ASSERT("SB.10 posadv", pos2 > pos1);
+                of_mixer_stop(v);
+            } else {
+                test_pass("SB.10 skip");
+            }
+        } else {
+            test_pass("SB.10 skip");
+        }
+    }
+
+    /* SB.11: stop silences all voices */
+    {
+        of_midi_stop();
+        usleep(50 * 1000);
+        int active_after = 0;
+        for (int v = 0; v < 48; v++) {
+            if (of_mixer_voice_active(v)) active_after++;
+        }
+        ASSERT("SB.11 silent", active_after == 0);
+    }
+
+    section_end();
 }

@@ -13,6 +13,9 @@
  */
 
 #include "of.h"
+#include "of_smp_bank.h"
+#include "of_smp_voice.h"
+#include "of_awe.h"
 #include <time.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -58,6 +61,13 @@ static diag_inst_t diag_inst[] = {
     { "Drum: Crash Cymbal",         -1, 9, 49, {0}, 0 },
 };
 #define DIAG_INST_COUNT  (sizeof(diag_inst)/sizeof(diag_inst[0]))
+#define RAW_MAX_LAYERS   4
+#define RAW_COPY_BYTES   (256 * 1024)
+
+static int raw_voice_ids[RAW_MAX_LAYERS] = { -1, -1, -1, -1 };
+static int16_t *raw_copy_bufs[RAW_MAX_LAYERS];
+static int raw_use_copy;
+static int midi_ready;
 
 static int vlq_append(uint8_t *p, int *t, uint32_t v) {
     int n = 0;
@@ -101,7 +111,7 @@ static void build_diag_inst(diag_inst_t *d) {
     track[t++] = 0; track[t++] = 0xB0 | d->channel; track[t++] = 7; track[t++] = 127;
 
     /* Sustained note for ~2 seconds (384 ticks at 120 BPM, 96 tpq) */
-    track[t++] = 0; track[t++] = 0x90 | d->channel; track[t++] = d->note; track[t++] = 110;
+    track[t++] = 0; track[t++] = 0x90 | d->channel; track[t++] = d->note; track[t++] = 100;
     vlq_append(track, &t, 384);
     track[t++] = 0x80 | d->channel; track[t++] = d->note; track[t++] = 0;
 
@@ -124,139 +134,155 @@ static void build_all_diag(void) {
         build_diag_inst(&diag_inst[i]);
 }
 
-/* ================================================================
- * RAW OPL3 mode — bypasses of_midi entirely.
- * Programs OPL3 channel 0 directly with extreme parameter variations
- * so the user can hear if FB, WS, CNT are taking effect.
- * ================================================================ */
-typedef struct {
-    const char *name;
-    uint8_t mod_char;  /* 0x20: AM/VIB/EGT/KSR/MULT */
-    uint8_t mod_tl;    /* 0x40: KSL/TL */
-    uint8_t mod_ad;    /* 0x60: AR/DR */
-    uint8_t mod_sr;    /* 0x80: SL/RR */
-    uint8_t mod_ws;    /* 0xE0: WS */
-    uint8_t car_char;  /* 0x23 */
-    uint8_t car_tl;    /* 0x43 */
-    uint8_t car_ad;    /* 0x63 */
-    uint8_t car_sr;    /* 0x83 */
-    uint8_t car_ws;    /* 0xE3 */
-    uint8_t fb_cnt;    /* 0xC0: feedback + connection */
-} raw_patch_t;
-
-static const raw_patch_t raw_patches[] = {
-    /* Pure sine carrier, no modulator (CNT=1 additive, mod TL=63 silent) */
-    { "RAW: pure sine",
-      0x21, 0x3F, 0xF0, 0x0F, 0x00,
-      0x21, 0x00, 0xF0, 0x0F, 0x00,
-      0x01 },  /* CNT=1, FB=0 */
-
-    /* Sine carrier with FM modulation, no feedback */
-    { "RAW: FM no fb",
-      0x21, 0x10, 0xF0, 0x0F, 0x00,
-      0x21, 0x00, 0xF0, 0x0F, 0x00,
-      0x00 },  /* CNT=0, FB=0 */
-
-    /* FM with max feedback (FB=7) — should sound very buzzy */
-    { "RAW: FM max fb",
-      0x21, 0x10, 0xF0, 0x0F, 0x00,
-      0x21, 0x00, 0xF0, 0x0F, 0x00,
-      0x0E },  /* CNT=0, FB=7 */
-
-    /* Quarter-sine waveform on carrier — should sound very different */
-    { "RAW: car WS=3",
-      0x21, 0x3F, 0xF0, 0x0F, 0x00,
-      0x21, 0x00, 0xF0, 0x0F, 0x03,
-      0x01 },  /* CNT=1 additive, only car heard */
-
-    /* Half-sine carrier */
-    { "RAW: car WS=1",
-      0x21, 0x3F, 0xF0, 0x0F, 0x00,
-      0x21, 0x00, 0xF0, 0x0F, 0x01,
-      0x01 },
-
-    /* Abs-sine carrier */
-    { "RAW: car WS=2",
-      0x21, 0x3F, 0xF0, 0x0F, 0x00,
-      0x21, 0x00, 0xF0, 0x0F, 0x02,
-      0x01 },
-
-    /* Distortion Guitar (program 30 from of_midi bank) — direct write */
-    { "RAW: dist guitar bnk",
-      0x21, 0x14, 0xF6, 0x54, 0x02,
-      0x21, 0x00, 0xF2, 0x52, 0x02,
-      0x06 },  /* FB=3, CNT=0 */
-
-    /* Distortion guitar from DOOM GENMIDI.OP2 (program 30, known good) */
-    { "RAW: doom dist gtr",
-      0x33, 0x0A, 0xF1, 0xC5, 0x00,
-      0x11, 0x00, 0xF1, 0xC5, 0x00,
-      0x0E },  /* FB=7, CNT=0 */
-
-    /* Aggressive square-ish sound with max FB and WS=3 quarter-sine */
-    { "RAW: aggr square",
-      0x21, 0x10, 0xF0, 0x07, 0x03,
-      0x21, 0x00, 0xF0, 0x07, 0x03,
-      0x0E },  /* FB=7, CNT=0 */
-
-    /* Plain sine carrier with HIGH feedback — should be very buzzy */
-    { "RAW: hi fb sine",
-      0x21, 0x00, 0xF0, 0x07, 0x00,
-      0x21, 0x00, 0xF0, 0x07, 0x00,
-      0x0E },  /* FB=7, CNT=0 */
-
-    /* High mod TL = 0 (max modulation depth), FB=7 — extreme metallic */
-    { "RAW: ext metallic",
-      0x21, 0x00, 0xF0, 0x0F, 0x00,
-      0x21, 0x00, 0xF0, 0x0F, 0x00,
-      0x0E },
-
-    /* Percussive envelope test: EGT=0 (percussive), fast release */
-    { "RAW: percussive",
-      0x01, 0x00, 0xF0, 0x0F, 0x00,  /* EGT=0 */
-      0x01, 0x00, 0xF0, 0x0F, 0x00,  /* EGT=0 */
-      0x01 },
-
-    /* Sustained vs same params with EGT=1 */
-    { "RAW: sustained",
-      0x21, 0x00, 0xF0, 0x05, 0x00,  /* EGT=1, RR=5 */
-      0x21, 0x00, 0xF0, 0x05, 0x00,
-      0x01 },
-};
-#define RAW_PATCH_COUNT  (sizeof(raw_patches)/sizeof(raw_patches[0]))
-
-static void raw_program_ch0(const raw_patch_t *p) {
-    /* Modulator slot 0 */
-    of_audio_opl_write(0x20, p->mod_char);
-    of_audio_opl_write(0x40, p->mod_tl);
-    of_audio_opl_write(0x60, p->mod_ad);
-    of_audio_opl_write(0x80, p->mod_sr);
-    of_audio_opl_write(0xE0, p->mod_ws);
-    /* Carrier slot 3 */
-    of_audio_opl_write(0x23, p->car_char);
-    of_audio_opl_write(0x43, p->car_tl);
-    of_audio_opl_write(0x63, p->car_ad);
-    of_audio_opl_write(0x83, p->car_sr);
-    of_audio_opl_write(0xE3, p->car_ws);
-    /* FB/CNT + L+R output */
-    of_audio_opl_write(0xC0, p->fb_cnt | 0x30);
+static void raw_stop_all(void) {
+    for (int i = 0; i < RAW_MAX_LAYERS; i++) {
+        if (raw_voice_ids[i] >= 0) {
+            of_mixer_stop(raw_voice_ids[i]);
+            raw_voice_ids[i] = -1;
+        }
+    }
 }
 
-static int raw_block = 4;  /* configurable octave */
-
-static void raw_play_a4(void) {
-    /* A note at the configured block.
-     * Fnum=0x241 always corresponds to A in the chosen octave.
-     * Block=4 should be A4=440Hz. Lower blocks = lower octaves. */
-    of_audio_opl_write(0xA0, 0x41);
-    /* B0 layout: KON[5] | BLOCK[4:2] | FNUM_HI[1:0]
-     * Fnum=0x241 → high bits = 0b10. */
-    uint8_t b0 = 0x20 | ((raw_block & 0x07) << 2) | 0x02;
-    of_audio_opl_write(0xB0, b0);
+static int16_t *raw_copy_buf_get(int layer) {
+    if (layer < 0 || layer >= RAW_MAX_LAYERS)
+        return 0;
+    if (!raw_copy_bufs[layer])
+        raw_copy_bufs[layer] = (int16_t *)of_mixer_alloc_samples(RAW_COPY_BYTES);
+    return raw_copy_bufs[layer];
 }
 
-static void raw_key_off(void) {
-    of_audio_opl_write(0xB0, 0x12);
+static int ensure_midi_ready(void) {
+    if (midi_ready)
+        return 0;
+
+    int rc = of_midi_init();
+    if (rc < 0) {
+        printf("\033[12;2H MIDI init failed rc=%d          ", rc);
+        return rc;
+    }
+
+    midi_ready = 1;
+    return 0;
+}
+
+static void raw_play_inst(int idx, int note) {
+    const ofsf_zone_t *zones[RAW_MAX_LAYERS];
+    const ofsf_header_t *hdr = of_smp_bank_get();
+    const uint8_t *sbase = (const uint8_t *)of_smp_bank_sample_base();
+    int bank = (diag_inst[idx].channel == 9) ? 128 : 0;
+    int program = (diag_inst[idx].program >= 0) ? diag_inst[idx].program : 0;
+    int played = 0;
+
+    if (note < 0) note = 0;
+    if (note > 127) note = 127;
+
+    raw_stop_all();
+
+    int n = 0;
+    if (hdr && sbase)
+        n = of_smp_zone_lookup(bank, program, note, 100, zones, RAW_MAX_LAYERS);
+
+    printf("\033[12;2H Raw src: %-6s                           ",
+           raw_use_copy ? "copy" : "bank");
+    printf("\033[14;2H Raw note=%3d bank=%3d prog=%3d zones=%d          ",
+           note, bank, program, n);
+
+    for (int i = 0; i < n; i++) {
+        const int16_t *sample_ptr = (const int16_t *)(sbase + zones[i]->sample_offset);
+        uint32_t sample_count = zones[i]->sample_length;
+        uint32_t sample_bytes = sample_count * sizeof(int16_t);
+        const int16_t *play_ptr = sample_ptr;
+
+        if (raw_use_copy) {
+            int16_t *copy_buf = raw_copy_buf_get(i);
+            if (!copy_buf || sample_bytes > RAW_COPY_BYTES) {
+                printf("\033[15;2H Raw copy fail: layer=%d bytes=%u       ", i, (unsigned)sample_bytes);
+                continue;
+            }
+            memcpy(copy_buf, sample_ptr, sample_bytes);
+            play_ptr = copy_buf;
+        }
+
+        int v = of_mixer_play((const uint8_t *)play_ptr,
+                              sample_count,
+                              hdr->sample_rate,
+                              0, 220);
+        if (v < 0)
+            continue;
+        raw_voice_ids[played++] = v;
+        of_mixer_set_group(v, OF_MIXER_GROUP_MUSIC);
+        if (zones[i]->loop_mode == OFSF_LOOP_FORWARD || zones[i]->loop_mode == OFSF_LOOP_BIDI) {
+            of_mixer_set_loop(v, zones[i]->loop_start, zones[i]->loop_end);
+            if (zones[i]->loop_mode == OFSF_LOOP_BIDI)
+                of_mixer_set_bidi(v, 1);
+        }
+    }
+
+    printf("\033[15;2H Raw voices: %d/%d                      ", played, n);
+}
+
+
+/* AWE smoke-test — Phase 1 validated.  Mirrors raw_play_inst's API
+ * but routes the note-on through AWE's register file + NOTE_ON FSM
+ * instead of of_mixer_play.  Uses voice 47 so it doesn't collide with
+ * the SW voice allocator (SMP_MAX_VOICES = 28, of_mixer allocator
+ * skips scratch voice 31). */
+#define AWE_TEST_VOICE  47
+
+static void awe_play_inst(int idx, int note) {
+    const ofsf_zone_t *zones[1];
+    const ofsf_header_t *hdr = of_smp_bank_get();
+    const uint8_t *sbase = (const uint8_t *)of_smp_bank_sample_base();
+    int bank = (diag_inst[idx].channel == 9) ? 128 : 0;
+    int program = (diag_inst[idx].program >= 0) ? diag_inst[idx].program : 0;
+
+    if (note < 0) note = 0;
+    if (note > 127) note = 127;
+    if (!hdr || !sbase) return;
+
+    int n = of_smp_zone_lookup(bank, program, note, 100, zones, 1);
+    if (n == 0) {
+        printf("\033[12;2H AWE: no zone for note=%d                    ", note);
+        return;
+    }
+    const ofsf_zone_t *z = zones[0];
+
+    of_awe_voice_stop(AWE_TEST_VOICE);
+
+    awe_voice_t v;
+    memset(&v, 0, sizeof(v));
+    v.base            = sbase + z->sample_offset;
+    v.length          = z->sample_length;
+    v.loop_start      = z->loop_start;
+    v.loop_end        = z->loop_end;
+    v.loop_mode       = z->loop_mode;
+    v.interp_mode     = AWE_INTERP_LINEAR;
+    v.fmt16           = 1;
+    v.midi_channel    = (uint8_t)diag_inst[idx].channel;
+    v.voice_base_vol  = 200;
+    v.pan_base        = z->pan;
+    v.base_rate       = (uint32_t)(((uint64_t)hdr->sample_rate << 16) / 48000u);
+    v.initial_fc      = z->initial_fc;
+    v.initial_q       = z->initial_q;
+
+    /* Phase 3 DAHDSR — pass the OFSF-v3 baked params through so AWE's
+     * ramp0 FSM produces the same envelope shape the SW path does. */
+    v.vol_delay_ticks   = z->vol_delay_ticks;
+    v.vol_attack_rate   = z->vol_attack_rate;
+    v.vol_hold_ticks    = z->vol_hold_ticks;
+    v.vol_decay_rate    = z->vol_decay_rate;
+    v.vol_sustain_level = z->vol_sustain_level;
+    v.vol_release_ticks = z->vol_release_ticks;
+
+    of_awe_set_hw_envelope(1);   /* flip global flag on */
+    of_awe_voice_load(AWE_TEST_VOICE, &v);
+    of_awe_voice_trigger(AWE_TEST_VOICE);
+
+    printf("\033[12;2H AWE: v%d note=%d len=%u loop=%u  active=%llx tick=%u ",
+           AWE_TEST_VOICE, note, (unsigned)z->sample_length,
+           (unsigned)z->loop_mode,
+           (unsigned long long)of_awe_active_mask(),
+           (unsigned)of_awe_tick_count());
 }
 
 __attribute__((unused))
@@ -281,126 +307,310 @@ static int load_midi_file(void) {
     return 0;
 }
 
+/* Mode: 0 = MIDI file player, 1 = instrument diagnostic,
+ *       2 = raw sample (direct mixer), 3 = AWE smoke-test (Phase 1) */
+#define MODE_PLAY  0
+#define MODE_DIAG  1
+#define MODE_RAW   2
+#define MODE_AWE   3
+#define MODE_COUNT 4
+
 int main(void) {
     printf("\033[2J\033[H");
-    printf("    openfpgaOS MIDI Diagnostic\n");
-    printf("    ==========================\n\n");
+    printf("    openfpgaOS MIDI Demo\n");
+    printf("    ====================\n\n");
 
     build_all_diag();
-    printf(" Built %u inst + %u raw\n",
-           (unsigned)DIAG_INST_COUNT, (unsigned)RAW_PATCH_COUNT);
 
-    int rc = of_midi_init();
-    if (rc < 0) {
-        printf(" MIDI init failed! rc=%d\n", rc);
+    /* Initialize mixer — required by the sample-based MIDI backend */
+    of_mixer_init(48, OF_MIXER_OUTPUT_RATE);
+    of_mixer_set_master_volume(255);
+    of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, 255);
+    of_mixer_set_group_volume(OF_MIXER_GROUP_SFX, 255);
+
+    /* Sample bank is auto-loaded by the kernel at boot — no init call
+     * is needed. If no .ofsf was staged, of_smp_bank_get() returns NULL. */
+    const ofsf_header_t *bhdr = of_smp_bank_get();
+    if (!bhdr) {
+        printf(" No SoundFont found!\n");
+        printf(" Place a .ofsf in a data slot\n");
         while (1) {}
     }
+    printf(" Bank loaded (%.1f KB)\n",
+           bhdr->sample_data_size / 1024.0f);
 
-    printf("\n LEFT/RIGHT  = prev/next\n");
-    printf(" UP/DOWN     = midi/raw mode\n");
-    printf(" X/Y         = octave down/up (raw)\n");
-    printf(" START       = auto-advance toggle\n");
-    printf(" A           = replay current\n");
-    printf(" L1/R1       = volume\n\n");
+    /* Try to load MIDI file from data slot 3 */
+    int have_midi = (load_midi_file() == 0);
+    if (have_midi)
+        printf(" MIDI file: %u bytes\n", (unsigned)midi_len);
+    else
+        printf(" No MIDI file in slot 3\n");
 
-    int idx = 0;
-    int raw_mode = 0;       /* 0 = of_midi instruments, 1 = raw OPL3 patches */
-    int auto_advance = 1;
+    printf(" %u diagnostic instruments\n", (unsigned)DIAG_INST_COUNT);
+
+    int mode = have_midi ? MODE_PLAY : MODE_DIAG;
     int volume = 255;
+    int paused = 0;
+    int idx = 0;
+    int auto_advance = 1;
+    int raw_octave = 0;
     uint32_t note_start_ms = 0;
+    uint32_t last_probe_ms = 0;
 
-    /* Start the first instrument */
-    of_midi_play(diag_inst[idx].buf, diag_inst[idx].len, 0);
-    note_start_ms = of_time_ms();
-    printf("\033[14;2H >>> %-30s\n", diag_inst[idx].name);
+    printf("\n SELECT=switch mode  L1/R1=volume\n");
+    printf(" Play: START=pause A=restart\n");
+    printf(" Diag: LEFT/RIGHT=prev/next START=auto A=replay\n");
+    printf(" Raw:  LEFT/RIGHT=prev/next START=src X/Y=octave\n\n");
+
+    of_input_state_t state;
+    memset(&state, 0, sizeof(state));
+    goto enter_mode;
 
     while (1) {
         of_input_poll();
-        of_input_state_t state;
         of_input_state(0, &state);
 
-        int change_inst = -1;
-        int max_idx = raw_mode ? RAW_PATCH_COUNT : DIAG_INST_COUNT;
-
-        if (state.buttons_pressed & OF_BTN_RIGHT) {
-            change_inst = (idx + 1) % max_idx;
-        }
-        if (state.buttons_pressed & OF_BTN_LEFT) {
-            change_inst = (idx + max_idx - 1) % max_idx;
-        }
-        if (state.buttons_pressed & OF_BTN_A) {
-            change_inst = idx;
-        }
-        if (state.buttons_pressed & (OF_BTN_UP | OF_BTN_DOWN)) {
-            /* Toggle mode */
-            if (raw_mode) raw_key_off();
-            else of_midi_stop();
-            raw_mode = !raw_mode;
+        /* SELECT = switch mode */
+        if (state.buttons_pressed & OF_BTN_SELECT) {
+            if (midi_ready)
+                of_midi_stop();
+            raw_stop_all();
+            paused = 0;
             idx = 0;
-            change_inst = 0;
-            printf("\033[13;2H MODE: %-20s", raw_mode ? "RAW OPL3 (no midi)" : "MIDI engine");
+            raw_octave = 0;
+
+            /* Cycle: play → diag → raw → awe (skip play if no file) */
+            mode = (mode + 1) % MODE_COUNT;
+            if (mode == MODE_PLAY && !have_midi) mode = MODE_DIAG;
+            if (mode == MODE_AWE) of_awe_voice_stop(AWE_TEST_VOICE);
+
+            /* MODE_PLAY now routes the MIDI file through the AWE
+             * coprocessor via the smp_voice AWE backend.  Any other
+             * mode falls back to SW mixing to keep diag/raw/awe-solo
+             * behaviour unchanged. */
+            smp_voice_enable_awe_backend(mode == MODE_PLAY ? 1 : 0);
+
+            /* Phase 6a global reverb bus — only on in MODE_PLAY since
+             * it mixes into the master output unconditionally. */
+            if (mode == MODE_PLAY) {
+                of_awe_set_reverb_level   (80);   /* wet mix ~30 % */
+                of_awe_set_reverb_feedback(140);  /* moderate tail   */
+            } else {
+                of_awe_set_reverb_level   (0);
+                of_awe_set_reverb_feedback(0);
+            }
+
+enter_mode:
+            printf("\033[10;2H                                       ");
+            if (mode == MODE_PLAY) {
+                printf("\033[10;2H MODE: MIDI File Player");
+                if (ensure_midi_ready() == 0) {
+                    int prc = of_midi_play(midi_buf, midi_len, 1);
+                    printf("\033[14;2H play rc=%d len=%u     ", prc, (unsigned)midi_len);
+                }
+            } else if (mode == MODE_DIAG) {
+                printf("\033[10;2H MODE: Instrument Diagnostic");
+                if (ensure_midi_ready() == 0) {
+                    int prc = of_midi_play(diag_inst[idx].buf, diag_inst[idx].len, 0);
+                    printf("\033[14;2H diag rc=%d len=%u     ", prc, diag_inst[idx].len);
+                    note_start_ms = of_time_ms();
+                }
+            } else if (mode == MODE_RAW) {
+                printf("\033[10;2H MODE: Raw Sample Playback");
+                raw_play_inst(idx, diag_inst[idx].note);
+            } else {
+                printf("\033[10;2H MODE: AWE Coprocessor (Phase 1)");
+                awe_play_inst(idx, diag_inst[idx].note);
+            }
+            printf("\033[11;2H >>> %-30s",
+                   mode == MODE_PLAY ? "Playing MIDI file" : diag_inst[idx].name);
         }
-        if (state.buttons_pressed & OF_BTN_START) {
-            auto_advance = !auto_advance;
-            printf("\033[16;2H Auto: %s   ", auto_advance ? "ON " : "OFF");
-        }
+
+        /* Volume (all modes) */
         if (state.buttons_pressed & OF_BTN_L1) {
-            volume -= 32;
-            if (volume < 0) volume = 0;
-            of_midi_set_volume(volume);
-            printf("\033[17;2H Vol: %3d/255  ", volume);
+            volume -= 32; if (volume < 0) volume = 0;
+            if (mode == MODE_RAW)
+                of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, volume);
+            else
+                of_midi_set_volume(volume);
+            printf("\033[13;2H Vol: %3d/255  ", volume);
         }
         if (state.buttons_pressed & OF_BTN_R1) {
-            volume += 32;
-            if (volume > 255) volume = 255;
-            of_midi_set_volume(volume);
-            printf("\033[17;2H Vol: %3d/255  ", volume);
-        }
-        if (state.buttons_pressed & OF_BTN_X) {
-            raw_block = (raw_block + 7) & 0x07;  /* down */
-            if (raw_block > 7) raw_block = 0;
-            printf("\033[18;2H Octave (block): %d  ", raw_block);
-            change_inst = idx;  /* replay with new octave */
-        }
-        if (state.buttons_pressed & OF_BTN_Y) {
-            raw_block = (raw_block + 1) & 0x07;  /* up */
-            printf("\033[18;2H Octave (block): %d  ", raw_block);
-            change_inst = idx;  /* replay with new octave */
+            volume += 32; if (volume > 255) volume = 255;
+            if (mode == MODE_RAW)
+                of_mixer_set_group_volume(OF_MIXER_GROUP_MUSIC, volume);
+            else
+                of_midi_set_volume(volume);
+            printf("\033[13;2H Vol: %3d/255  ", volume);
         }
 
-        /* Auto-advance after ~2.5s */
-        if (auto_advance && change_inst < 0) {
-            uint32_t now = of_time_ms();
-            if (now - note_start_ms > 2500) {
-                change_inst = (idx + 1) % max_idx;
+        /* Mode-specific controls */
+        if (mode == MODE_PLAY) {
+            if (state.buttons_pressed & OF_BTN_START) {
+                paused = !paused;
+                if (midi_ready) {
+                    if (paused) of_midi_pause(); else of_midi_resume();
+                }
+                printf("\033[12;2H %s   ", paused ? "PAUSED " : "PLAYING");
             }
-        }
-
-        if (change_inst >= 0) {
-            if (raw_mode) {
-                raw_key_off();
-                idx = change_inst;
-                /* Full reset before each patch to clear any lingering
-                 * state from previous patches or modes. */
-                of_audio_opl_reset();
-                of_audio_opl_write(0x105, 0x01);  /* OPL3 enable */
-                of_audio_opl_write(0x01, 0x20);   /* bank 0 WSE */
-                of_audio_opl_write(0x101, 0x20);  /* bank 1 WSE */
-                raw_program_ch0(&raw_patches[idx]);
-                raw_play_a4();
-                printf("\033[14;2H                                       ");
-                printf("\033[14;2H >>> %s\n", raw_patches[idx].name);
-            } else {
-                of_midi_stop();
-                idx = change_inst;
-                of_midi_play(diag_inst[idx].buf, diag_inst[idx].len, 0);
-                printf("\033[14;2H                                       ");
-                printf("\033[14;2H >>> %s\n", diag_inst[idx].name);
+            if (state.buttons_pressed & OF_BTN_A) {
+                if (ensure_midi_ready() == 0) {
+                    of_midi_stop();
+                    of_midi_play(midi_buf, midi_len, 1);
+                    paused = 0;
+                    printf("\033[12;2H RESTART       ");
+                }
             }
-            note_start_ms = of_time_ms();
+        } else if (mode == MODE_DIAG) {
+            int change = -1;
+            if (state.buttons_pressed & OF_BTN_RIGHT)
+                change = (idx + 1) % (int)DIAG_INST_COUNT;
+            if (state.buttons_pressed & OF_BTN_LEFT)
+                change = (idx + (int)DIAG_INST_COUNT - 1) % (int)DIAG_INST_COUNT;
+            if (state.buttons_pressed & OF_BTN_A)
+                change = idx;
+            if (state.buttons_pressed & OF_BTN_START) {
+                auto_advance = !auto_advance;
+                printf("\033[12;2H Auto: %s   ", auto_advance ? "ON " : "OFF");
+            }
+            if (auto_advance && change < 0) {
+                uint32_t now = of_time_ms();
+                if (now - note_start_ms > 2500)
+                    change = (idx + 1) % (int)DIAG_INST_COUNT;
+            }
+            if (change >= 0) {
+                idx = change;
+                if (ensure_midi_ready() == 0) {
+                    of_midi_stop();
+                    of_midi_play(diag_inst[idx].buf, diag_inst[idx].len, 0);
+                    note_start_ms = of_time_ms();
+                }
+                printf("\033[11;2H >>> %-30s", diag_inst[idx].name);
+            }
+        } else if (mode == MODE_RAW) {
+            int change = -1;
+            int replay = 0;
+
+            if (state.buttons_pressed & OF_BTN_RIGHT)
+                change = (idx + 1) % (int)DIAG_INST_COUNT;
+            if (state.buttons_pressed & OF_BTN_LEFT)
+                change = (idx + (int)DIAG_INST_COUNT - 1) % (int)DIAG_INST_COUNT;
+            if (state.buttons_pressed & OF_BTN_A)
+                replay = 1;
+            if (state.buttons_pressed & OF_BTN_START) {
+                raw_use_copy = !raw_use_copy;
+                replay = 1;
+            }
+            if (state.buttons_pressed & OF_BTN_X) {
+                if (raw_octave > -2) raw_octave--;
+                replay = 1;
+            }
+            if (state.buttons_pressed & OF_BTN_Y) {
+                if (raw_octave < 2) raw_octave++;
+                replay = 1;
+            }
+
+            if (change >= 0) {
+                idx = change;
+                raw_octave = 0;
+                replay = 1;
+                printf("\033[11;2H >>> %-30s", diag_inst[idx].name);
+            }
+
+            if (replay)
+                raw_play_inst(idx, diag_inst[idx].note + raw_octave * 12);
+        } else if (mode == MODE_AWE) {
+            int change = -1;
+            int replay = 0;
+
+            if (state.buttons_pressed & OF_BTN_RIGHT)
+                change = (idx + 1) % (int)DIAG_INST_COUNT;
+            if (state.buttons_pressed & OF_BTN_LEFT)
+                change = (idx + (int)DIAG_INST_COUNT - 1) % (int)DIAG_INST_COUNT;
+            if (state.buttons_pressed & OF_BTN_A)
+                replay = 1;
+            if (state.buttons_pressed & OF_BTN_X) {
+                if (raw_octave > -2) raw_octave--;
+                replay = 1;
+            }
+            if (state.buttons_pressed & OF_BTN_Y) {
+                if (raw_octave < 2) raw_octave++;
+                replay = 1;
+            }
+
+            if (change >= 0) {
+                idx = change;
+                raw_octave = 0;
+                replay = 1;
+                printf("\033[11;2H >>> %-30s", diag_inst[idx].name);
+            }
+
+            if (replay)
+                awe_play_inst(idx, diag_inst[idx].note + raw_octave * 12);
         }
 
-        of_midi_pump();
+        /* Tick-cost probe: print stats every ~1 s.
+         * Budget is 2000 us (500 Hz tick rate).
+         *
+         * of_midi_pump() is now driven by the machine-timer ISR at 500 Hz
+         * (installed by of_midi_play), so printf stalls on the main thread
+         * no longer starve the mixer.  We must NOT call of_midi_pump() from
+         * here — doing so would race the ISR on M/voice state. */
+        uint32_t now_ms = of_time_ms();
+        if (now_ms - last_probe_ms >= 1000) {
+            last_probe_ms = now_ms;
+            smp_tick_stats_t s;
+            smp_voice_tick_get_stats(&s);
+            printf("\033[17;2H tick max=%4u us last=%4u us spikes=%u/%u peak_v=%u  ",
+                   (unsigned)s.cycles_max, (unsigned)s.cycles_last,
+                   (unsigned)s.spike_count, (unsigned)s.tick_count,
+                   (unsigned)s.active_peak);
+            printf("\033[18;2H stages: sus=%u rel=%u dec=%u held=%u          ",
+                   (unsigned)s.stage_sustain, (unsigned)s.stage_release,
+                   (unsigned)s.stage_decay, (unsigned)s.sustain_held);
+            /* Per-channel active voice count + GM program number.
+             * Each channel prints as "Cc=Vp" where c=channel (0-F hex),
+             * V=voice count, p=program number.  Channels with 0 voices
+             * are hidden so only the currently-producing channels show. */
+            char chbuf[128];
+            int clen = 0;
+            for (int ch = 0; ch < 16 && clen < (int)sizeof(chbuf) - 12; ch++) {
+                if (s.ch_active[ch] == 0) continue;
+                clen += snprintf(chbuf + clen, sizeof(chbuf) - clen,
+                                 "%X:%u/%d ", ch,
+                                 (unsigned)s.ch_active[ch],
+                                 of_midi_get_program(ch));
+            }
+            printf("\033[19;2H ch(v/prg): %-80s", chbuf);
+            /* A/B/C instrumentation — MMIO + pump-interval + cutoff-delta.
+             * mmio: how many HW writes actually fired in the last second
+             *   (after the cache-skip guards).  Saturation shows up here.
+             * pump: intervals between of_midi_pump() calls; "brst" counts
+             *   pumps that fired >1 tick (ticks bursting) and "over"
+             *   counts pumps that blew the tick_budget (catch-up dropped).
+             * dFC: max single-tick cutoff jump in Q0.16 (0..65535); big
+             *   numbers → bigger SVF transients / audible zipper. */
+            unsigned pmin = (s.pump_interval_min_us == 0xFFFFFFFFu)
+                              ? 0u : s.pump_interval_min_us;
+            /* Phase 2: sample AWE's 1 kHz tick counter once per probe
+             * interval.  At 1 s cadence the delta should be ~1000. */
+            static uint32_t last_awe_tick;
+            uint32_t awe_tick = of_awe_tick_count();
+            uint32_t awe_dt   = awe_tick - last_awe_tick;
+            last_awe_tick = awe_tick;
+            printf("\033[20;2H mmio: filt=%5u rate=%5u vol=%5u  awe_tick=%u (+%u) ",
+                   (unsigned)s.filter_writes,
+                   (unsigned)s.rate_writes,
+                   (unsigned)s.vol_writes,
+                   (unsigned)awe_tick, (unsigned)awe_dt);
+            printf("\033[21;2H pump: n=%5u int=%u..%uus brst=%u over=%u      ",
+                   (unsigned)s.pump_count,
+                   pmin, (unsigned)s.pump_interval_max_us,
+                   (unsigned)s.pump_burst_count,
+                   (unsigned)s.pump_budget_exceeded);
+            smp_voice_tick_reset_stats();
+        }
+
         usleep(1 * 1000);
     }
 

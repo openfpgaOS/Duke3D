@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "of_midi.h"
+#include "of_smp_voice.h"
 #include "../audiolib/music.h"
 
 /* GRP file system functions (BUILD engine) */
@@ -50,6 +51,22 @@ int MUSIC_Init(int SoundCard, int Address)
 
     if (!midi_initialized) {
         of_midi_init();
+        /* Match Doom's i_stubsnd.c::opl_Init exactly: SW voice engine,
+         * AWE backend OFF, reverb at FPGA reset default (0 = bypass).
+         *
+         * AWE off:  the AWE coprocessor's shared voice_state_ram +
+         * multi-writer voice_tbl mux + PITCH_COMPOSE stage collide with
+         * SFX writes to the same mixer voice slots, producing the
+         * "distorted from the first note" symptom.  SW path runs
+         * envelope / LFO / filter at 1 kHz on the CPU and writes mixer
+         * regs from one place — no contention with d3d_sound_play.
+         *
+         * Reverb untouched:  Doom's i_stubsnd.c documents that
+         * mididemo's (80,140) reverb sums past the mixer accumulator
+         * headroom on dense sustained music and clips hard.  Duke3D's
+         * soundtrack is the same shape as Doom's; keep wet at 0 until
+         * the mixer adds compression instead of the >>2 + clamp. */
+        smp_voice_enable_awe_backend(0);
         midi_initialized = 1;
     }
     return MUSIC_Ok;
@@ -73,7 +90,10 @@ void MUSIC_SetMaxFMMidiChannel(int channel)
 
 void MUSIC_SetVolume(int volume)
 {
-    /* Duke3D volume is 0-255 */
+    /* Duke3D volume is 0-255 — passed through unchanged.  With AWE
+     * off and reverb at 0 (matching Doom's setup) the dry mix has
+     * enough headroom that the engine's default ÷2 in master_volume
+     * shouldn't clip the mixer accumulator on Duke3D's soundtrack. */
     if (volume < 0) volume = 0;
     if (volume > 255) volume = 255;
     midi_volume = volume;
@@ -208,13 +228,17 @@ void MUSIC_RerouteMidiChannel(int channel,
     (void)function;
 }
 
-/* Load Duke3D's DMX 2-op timbre bank (d3dtimbr.tmb).
- * Converts the sparse 13-byte-per-entry TMB format to the engine's
- * 26-byte WOPL layout and overlays onto the built-in GM bank. */
+/* DMX/TMB timbre banks were an OPL3-era hook: d3dtimbr.tmb supplied
+ * 2-op FM patches that of_midi overlaid onto the built-in GM set.  The
+ * SDK's MIDI engine is now SoundFont-based — it renders notes through
+ * the sample-voice path against the .ofsf loaded by the kernel at boot —
+ * so there is no longer a concept of "override one program with an FM
+ * timbre".  The game still calls this during startup; silently ignore
+ * it.  Change your .ofsf if you want different instruments. */
 void MUSIC_RegisterTimbreBank(uint8_t *timbres, unsigned int size)
 {
-    if (timbres && size >= 13 && midi_initialized)
-        of_midi_load_bank_dmx(timbres, size);
+    (void)timbres;
+    (void)size;
 }
 
 /* ---- PlayMusic: load MIDI from GRP and play ------------------------ */

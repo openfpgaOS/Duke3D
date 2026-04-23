@@ -1,13 +1,17 @@
 /*
- * of_smp_tables.c -- precomputed tables for sample-based MIDI engine
+ * of_smp_tables.c -- precomputed tables and SF2 unit-conversion helpers.
+ *
+ * Shared between the SW voice engine (runtime) and the offline
+ * sf2_to_ofsf converter so baked OFSF v3 zone fields are bit-identical
+ * to whatever the runtime would have computed at note-on.
  *
  * cents_to_mult: one octave (1200 cents) of pitch multipliers.
  * Octave shifts handled by caller via bit shifts.
- *
- * smp_timecents_to_ticks: convert SF2 timecent values to 1 kHz tick counts.
  */
 
 #include <stdint.h>
+
+#include "of_smp_tables.h"
 
 /* cents_to_mult[c] = 2^(c/1200) * 65536, for c = 0..1199.
  * To get a multiplier for N cents:
@@ -209,21 +213,77 @@ int32_t smp_timecents_to_ticks(int16_t tc)
     return ticks;
 }
 
-/* Convert SF2 centibels attenuation to Q16.16 linear level.
- * 0 cB = 1.0 (0x10000), 960 cB = ~0.0001 */
+/* Q16.16 multiplier for an arbitrary cents value (handles octave folding).
+ * Equivalent to the static cents_to_rate_multiplier helper in the SW voice
+ * engine — extracted so the offline converter can call it. */
+uint32_t smp_cents_to_multiplier(int32_t cents)
+{
+    int octaves = 0;
+    while (cents >= 1200) { cents -= 1200; octaves++; }
+    while (cents <    0)  { cents += 1200; octaves--; }
+
+    uint32_t m = smp_cents_to_mult[cents];
+    if      (octaves > 0) m <<=  octaves;
+    else if (octaves < 0) m >>= -octaves;
+    return m;
+}
+
+/* SF2 centibels of attenuation → Q16.16 linear level (0..0x10000).
+ *
+ *   level = 10^(-cB/200)
+ *         = 2^(-cB * log2(10) / 200)
+ *
+ * Convert cB to negative cents (cB * 1200 / 200 / log2(10) = cB * 3.3219),
+ * fold into octaves, then look up the fractional multiplier and divide.
+ * Matches the formerly-static compute_sustain_level in of_smp_voice.c
+ * exactly so baked sustain levels are bit-identical to the runtime
+ * computation the converter is replacing. */
 int32_t smp_cb_to_level(int16_t cb)
 {
-    if (cb <= 0) return 0x10000;
+    if (cb <=   0) return 0x10000;
     if (cb >= 960) return 0;
-    /* level = 10^(-cB/200)
-     * = 2^(-cB * log2(10)/200)
-     * = 2^(-cB * 3.32193 / 200)
-     * = 2^(-cB * 0.016610)
-     * Approximate with lookup: index = cB, 961 entries
-     * But simpler: use the cents table with conversion.
-     * cB_to_cents = cB * 20 * log2(10) ≈ cB * 33.22
-     * Actually, let's just compute it directly. */
-    /* Linear approximation: good enough for envelope targets.
-     * level = (960 - cB) * 0x10000 / 960 */
-    return (int32_t)(960 - cb) * 0x10000 / 960;
+
+    /* neg_cents = cB * 1200 / 200 * log2(10) = cB * 3.3219...
+     * Use the integer factor 3322/1000 for repeatable fixed-point. */
+    int32_t neg_cents = (int32_t)cb * 3322 / 1000;
+    int octaves = neg_cents / 1200;
+    int rem     = neg_cents - octaves * 1200;
+    if (rem < 0) { rem += 1200; octaves--; }
+
+    uint32_t mult = smp_cents_to_mult[rem];
+    /* level = 0x10000 / 2^octaves / (mult/65536)
+     *       = (0x10000 << 16) / (mult << octaves)
+     * Compute in 64-bit, shift, clamp. */
+    uint64_t level = ((uint64_t)0x10000 << 16) / mult;
+    int shift = octaves;
+    if (shift >= 16) return 0;
+    if (shift >  0)  level >>= shift;
+    if (level > 0x10000) level = 0x10000;
+    return (int32_t)level;
+}
+
+/* SF2 LFO frequency in absolute cents → Q16.16 phase increment per
+ * 1 kHz tick.  Reference frequency 8.176 Hz at cents=0 (SF2 spec).
+ *
+ *   freq_hz       = 8.176 * 2^(cents/1200)
+ *   phase_per_ms  = freq_hz * 65536 / 1000        (Q16.16 wraps at 0x10000)
+ *
+ * 8.176 * 65536 = 535822.336 → integer 535822.
+ * Matches lfo_init in of_smp_voice.c byte-for-byte. */
+uint32_t smp_lfo_freq_cents_to_rate(int16_t cents)
+{
+    uint32_t mult = smp_cents_to_multiplier(cents);
+    uint32_t freq_fp16 = (uint32_t)(((uint64_t)535822u * mult) >> 16);
+    uint32_t rate = freq_fp16 / 1000u;
+    if (rate < 1) rate = 1;
+    return rate;
+}
+
+/* SF2 initialAttenuation cB → 0..255 linear scale.
+ * Matches the per-voice compute_vol_lr formula. */
+uint8_t smp_cb_to_attn_scale(int16_t cb)
+{
+    if (cb <=   0) return 255;
+    if (cb >= 960) return 0;
+    return (uint8_t)((255 * (960 - cb)) / 960);
 }

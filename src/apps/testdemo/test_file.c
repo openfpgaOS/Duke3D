@@ -367,18 +367,16 @@ void test_posix_file_io(void) {
             for (int i = 0; i < 32; i++) {
                 if (r1[i] != r2[i]) { d = i; break; }
             }
-            snprintf(__buf, sizeof(__buf), "diff@%d: %02x!=%02x hdr0=%02x",
-                     d, r1[d], r2[d], hdr[0]);
+            /* Encode the r1=hdr / r2=hdr diagnostic into the failure
+             * detail itself so it lands in the paged summary instead
+             * of bleeding into the column layout via stray printfs. */
+            int r1ok = (memcmp(r1, hdr, 16) == 0);
+            int r2ok = (memcmp(r2, hdr, 16) == 0);
+            snprintf(__buf, sizeof(__buf), "d@%d %02x!=%02x %s%s",
+                     d, r1[d], r2[d],
+                     r1ok ? "r1ok" : "r1NO",
+                     r2ok ? " r2ok" : " r2NO");
             test_fail("seek0 data", __buf);
-            /* Also check if r1 matches original header */
-            if (memcmp(r1, hdr, 16) == 0)
-                printf("\n    r1=hdr OK ");
-            else
-                printf("\n    r1!=hdr ");
-            if (memcmp(r2, hdr, 16) == 0)
-                printf("r2=hdr OK ");
-            else
-                printf("r2!=hdr ");
         } else {
             test_pass("seek0 data");
         }
@@ -592,13 +590,42 @@ void test_lseek_large_read(void) {
     ASSERT("open", fd >= 0);
     if (fd < 0) { section_end(); return; }
 
+    /* DIAG: allocate first, then emit a single short line with everything.
+     * Keeping it to one printf avoids UART ring overflow during bursts,
+     * and the short format ensures it flushes even if a crash follows. */
+    const struct of_capabilities *caps = of_get_caps();
+    uint32_t hbase = caps->heap_base;
+    uint32_t hend  = caps->heap_base + caps->heap_size;
+
     uint8_t *buf1 = malloc(65536);
+    printf("\n[SL1]b1=%p h=%08x..%08x\n", (void*)buf1, hbase, hend);
+    usleep(100000);
+
     uint8_t *buf2 = malloc(65536);
+    printf("[SL2]b2=%p\n", (void*)buf2);
+    usleep(100000);
+
     ASSERT("alloc", buf1 != NULL && buf2 != NULL);
     if (!buf1 || !buf2) { free(buf1); free(buf2); close(fd); section_end(); return; }
 
+    /* Canary writes at byte 0 and byte 65535 of each buffer — if these
+     * fault (cause 7), malloc returned a pointer that straddles the
+     * heap edge. No DMA involvement. */
+    buf1[0] = 0x11;
+    printf("[SL3]b1[0]ok\n");
+    usleep(100000);
+    buf1[65535] = 0x11;
+    printf("[SL4]b1[end]ok\n");
+    usleep(100000);
+    buf2[0] = 0x22;
+    buf2[65535] = 0x22;
+    printf("[SL5]b2 ok, into read\n");
+    usleep(100000);
+
     /* Read 64KB to fill and refill read-ahead multiple times */
     int r1 = read(fd, buf1, 65536);
+    printf("[SL6]r1=%d\n", r1);
+    usleep(100000);
     ASSERT_EQ("read 64K", r1, 65536);
 
     /* Seek to offset 1024 (within first read-ahead window) */
@@ -725,10 +752,12 @@ void test_file_limit(void) {
     section_start("File Limit");
 
     /*
-     * Stripped-down fopen/fclose cycle counter.
-     * The investigation says the CPU hard-stalls after ~35 cycles,
-     * correlated with time (~2-3s after boot).  Print every iteration
-     * with a timestamp so we see the exact limit.
+     * Stripped-down fopen/fclose cycle counter.  Earlier investigation
+     * noted "CPU hard-stalls after ~35 cycles" but that was actually
+     * a terminal-scroll bug in the instrumentation itself — a '\n'
+     * in the per-iteration trace was causing of_term_scroll() to
+     * trip an unrelated sync-burst hazard.  Without the '\n' emit
+     * (no trace at all) the loop runs to completion cleanly.
      */
     const int MAX_CYCLES = 100;
     int i;

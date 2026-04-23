@@ -51,8 +51,14 @@ MIDI_SRCS = Game/src/midi/midi_of.c
 SHIM_SRCS = posix_shim.c d3d_audio.c d3d_save.c
 
 # SDK helper sources -- duke3d's midi_of.c calls of_midi_* which lives
-# in the SDK's of_midi.c (opt-in via $(OF_MIDI_SRC) defined in sdk.mk).
-SDK_SRCS = $(OF_MIDI_SRC)
+# in the SDK's of_midi.c.  The MIDI engine now delegates note rendering
+# to the sample-voice engine (smp_voice), which reads the auto-loaded
+# SoundFont via of_smp_bank + of_smp_tables, so all four translation
+# units have to come along.
+SDK_SRCS = $(OF_MIDI_SRC) \
+           $(SDK_DIR)/of_smp_bank.c \
+           $(SDK_DIR)/of_smp_voice.c \
+           $(SDK_DIR)/of_smp_tables.c
 
 SRCS = $(ENGINE_SRCS) $(GAME_SRCS) $(AUDIOLIB_SRCS) $(CONSOLE_SRCS) $(MIDI_SRCS) $(SHIM_SRCS) $(SDK_SRCS)
 
@@ -95,6 +101,8 @@ release: $(OBJ_DIR)/app.elf
 	@cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin $$(ls -d $(OUT)/Cores/*/)/
 	@mkdir -p $$(ls -d $(OUT)/Assets/*/)/common
 	@cp $(RUNTIME)/os.bin $$(ls -d $(OUT)/Assets/*/)/common/
+	@# SoundFont bank — auto-loaded by the kernel and used by of_midi
+	@cp $(RUNTIME)/bank.ofsf $$(ls -d $(OUT)/Assets/*/)/common/ 2>/dev/null || true
 	@cp $< $$(ls -d $(OUT)/Assets/*/)/common/$(APP).elf
 	@echo "Ready: build/$(APP)/"
 

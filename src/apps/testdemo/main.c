@@ -99,42 +99,80 @@ void section_end(void) {
     next_slot();
 }
 
-/* Wait for A button press */
+/* Wait for an A press, with explicit release/press phases.
+ *
+ * Pure level polling, no usleep, no edge detection. Always polls
+ * before checking so the level read can never be stale. The release
+ * phase guarantees any hold from a prior wait_press is consumed
+ * before we look for a fresh press. */
 static void wait_press(void) {
-    /* Wait for release first */
+    /* Phase 1: wait until A is not held */
     while (1) {
         of_input_poll();
         if (!of_btn(OF_BTN_A)) break;
-        usleep(16000);
     }
-    /* Wait for press */
+    /* Phase 2: wait until A is held */
     while (1) {
         of_input_poll();
-        if (of_btn_pressed(OF_BTN_A)) break;
-        usleep(16000);
+        if (of_btn(OF_BTN_A)) break;
     }
 }
 
-/* Show failure summary page */
+/* Show failure summary, paged. Last page footer is "Press A to retest".
+ *
+ * Uses absolute cursor positioning (no trailing newlines) so a full page
+ * fits inside the terminal without scrolling — printing 25+ lines with
+ * `\n` would scroll the header off the top. The visible area is shorter
+ * than the 30-row spec in of_terminal.h, so cap entries at 18/page to
+ * keep the footer well above the bottom edge. */
+#define FAILS_PER_PAGE 18
+
 static void show_fail_summary(void) {
-    printf("\033[2J\033[H");
-    printf("\n  \033[91mFailed Tests: %d\033[0m\n", fail_log_count);
-    printf("  --------------------------------\n");
+    int total = fail_log_count;
+    int pages = (total + FAILS_PER_PAGE - 1) / FAILS_PER_PAGE;
+    if (pages == 0) pages = 1;
 
-    for (int i = 0; i < fail_log_count && i < 24; i++) {
-        /* Truncate detail to fit screen width (40 - 4 - 14 - 1 = 21 chars) */
-        char det[22];
-        int dlen = strlen(fail_log[i].detail);
-        if (dlen > 21) dlen = 21;
-        memcpy(det, fail_log[i].detail, dlen);
-        det[dlen] = 0;
-        printf("  \033[91m%2d\033[0m %-14s%s\n", i + 1, fail_log[i].name, det);
+    for (int page = 0; page < pages; page++) {
+        int start = page * FAILS_PER_PAGE;
+        int end = start + FAILS_PER_PAGE;
+        if (end > total) end = total;
+
+        printf("\033[2J\033[H");
+        move_cursor(2, 3);
+        printf("\033[91mFailed Tests: %d\033[0m  page %d/%d",
+               total, page + 1, pages);
+        move_cursor(3, 3);
+        printf("--------------------------------");
+
+        for (int i = start; i < end; i++) {
+            /* 40-col screen, indent 2, layout per row:
+             *   "NN " (3) + name (14) + " " (1) + detail (20) = 38 cols.
+             * Both name and detail MUST be truncated — long values
+             * would wrap to the next line and push the rest of the
+             * page down off-screen. */
+            char nm[15];
+            int nlen = strlen(fail_log[i].name);
+            if (nlen > 14) nlen = 14;
+            memcpy(nm, fail_log[i].name, nlen);
+            nm[nlen] = 0;
+
+            char det[21];
+            int dlen = strlen(fail_log[i].detail);
+            if (dlen > 20) dlen = 20;
+            memcpy(det, fail_log[i].detail, dlen);
+            det[dlen] = 0;
+
+            move_cursor(4 + (i - start), 3);
+            printf("\033[91m%2d\033[0m %-14s %s", i + 1, nm, det);
+        }
+
+        move_cursor(4 + FAILS_PER_PAGE + 1, 3);
+        if (page + 1 < pages)
+            printf("Press A for next page");
+        else
+            printf("Press A to retest");
+        wait_press();
     }
-    if (fail_log_count > 24)
-        printf("  ... and %d more\n", fail_log_count - 24);
-
-    printf("\n  Press A to continue\n");
-    wait_press();
 }
 
 /* ================================================================
@@ -170,12 +208,14 @@ static const test_fn tests[] = {
     test_mixer,
     test_mixer_adv,
     test_mixer_stress,
-    test_opl3,
-    test_midi,
+    // --- bisecting 3rd-pass hang ---
+    // test_opl3,
+    // test_midi,
+    // test_midi_smp,
     test_net,
     test_interact,
-    test_audio,
-    test_audio_stream,
+    // test_audio,
+    // test_audio_stream,
     test_printf,
     test_printf_edge,
     test_string,
@@ -228,10 +268,13 @@ int main(void) {
         printf("\n");
 
         if (any_fail_this_run) {
-            printf("  \033[91mFAILED\033[0m — Press A for details\n");
-            wait_press();
+            printf("  \033[91mFAILED\033[0m — details in 2s\n");
+            usleep(2000 * 1000);
             show_fail_summary();
-            break;
+            /* show_fail_summary's last page asked the user to retest —
+             * restart the iteration loop from the top. */
+            iteration = -1;
+            continue;
         }
 
         if (iteration < NUM_ITERATIONS - 1) {

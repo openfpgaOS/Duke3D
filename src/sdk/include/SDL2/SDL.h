@@ -637,6 +637,12 @@ static inline SDL_AudioDeviceID SDL_OpenAudioDevice(const char *device,
         int allowed_changes) {
     (void)device; (void)iscapture; (void)allowed_changes;
     of_audio_init();
+    /* Route the caller's sample rate through the software mixer's stream
+     * voice.  Without this of_audio_write samples play back at a default
+     * 48 kHz 1:1 regardless of desired->freq, so 22 kHz Doom output
+     * pitch-shifts up to sound chipmunk-y.  stream_open reconfigures
+     * swmixer voice 31 to consume the ring at the requested rate. */
+    if (desired && desired->freq > 0) of_audio_stream_open(desired->freq);
     if (desired->callback) {
         __sdl_audio_cb = desired->callback;
         __sdl_audio_userdata = desired->userdata;

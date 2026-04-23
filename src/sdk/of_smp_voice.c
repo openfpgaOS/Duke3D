@@ -5,21 +5,26 @@
 
 #include "include/of_smp_voice.h"
 #include "include/of_smp_bank.h"
+#include "include/of_smp_tables.h"
 #include "include/of_mixer.h"
 #include "include/of_cache.h"
 #include "include/of_timer.h"
 #include "include/of_services.h"
-
-/* From of_smp_tables.c */
-extern const uint32_t smp_cents_to_mult[1200];
-extern int32_t smp_timecents_to_ticks(int16_t tc);
+#include "include/of_fastram.h"
+#include <string.h>
 
 /* ------------------------------------------------------------------ */
 /* Static state                                                       */
 /* ------------------------------------------------------------------ */
 
-static smp_voice_t voices[SMP_MAX_VOICES];
-static uint32_t tick_counter;
+/* Voice + channel state pinned to BRAM (OF_FASTDATA → .app_fastdata for
+ * SDK apps, .fastdata for OS) — smp_voice_tick runs from the 1 kHz
+ * timer ISR and writes these every tick.  ISR SDRAM stores race with
+ * GPU/bridge bus traffic (see fence comment in start.S::_trap_entry);
+ * pinning to BRAM breaks the race. */
+
+static OF_FASTDATA smp_voice_t voices[SMP_MAX_VOICES];
+static OF_FASTDATA uint32_t    tick_counter;
 
 /* ------------------------------------------------------------------ */
 /* Tick-cost probe (Task #10)                                         */
@@ -29,33 +34,106 @@ static uint32_t tick_counter;
  * of_time_us(), which would nest-trap when smp_voice_tick runs from
  * the MIDI timer ISR). Stats are in microseconds. */
 
-static uint32_t tick_us_max;
-static uint32_t tick_us_last;
-static uint32_t tick_spike_count;
-static uint32_t tick_stat_count;
-static uint8_t  tick_active_peak;
-static uint8_t  tick_stage_sustain;
-static uint8_t  tick_stage_release;
-static uint8_t  tick_stage_decay;
-static uint8_t  tick_sustain_held;
-static uint8_t  tick_ch_active[16];
+/* Stats are incremented from the timer ISR — keep in BRAM with the rest
+ * of the ISR-touched state so we don't reintroduce the SDRAM race. */
+static OF_FASTDATA uint32_t tick_us_max;
+static OF_FASTDATA uint32_t tick_us_last;
+static OF_FASTDATA uint32_t tick_spike_count;
+static OF_FASTDATA uint32_t tick_stat_count;
+static OF_FASTDATA uint8_t  tick_active_peak;
+static OF_FASTDATA uint8_t  tick_stage_sustain;
+static OF_FASTDATA uint8_t  tick_stage_release;
+static OF_FASTDATA uint8_t  tick_stage_decay;
+static OF_FASTDATA uint8_t  tick_sustain_held;
+static OF_FASTDATA uint8_t  tick_ch_active[16];
 
 /* A/B/C instrumentation counters — see smp_tick_stats_t for descriptions.
- * These are incremented at actual HW-write sites (post-cache) and from
+ * Incremented at actual HW-write sites (post-cache) and from
  * smp_voice_tick_record_pump(), then snapshotted by get_stats and zeroed
- * by reset_stats. */
-static uint32_t stat_filter_writes;
-static uint32_t stat_rate_writes;
-static uint32_t stat_vol_writes;
-static uint32_t stat_pump_count;
-static uint32_t stat_pump_interval_max_us;
-static uint32_t stat_pump_interval_min_us = 0xFFFFFFFFu;
-static uint32_t stat_pump_burst_count;
-static uint32_t stat_pump_budget_exceeded;
-static uint16_t stat_cutoff_delta_max;
+ * by reset_stats.  All in BRAM: the writes happen in the ISR. */
+static OF_FASTDATA uint32_t stat_filter_writes;
+static OF_FASTDATA uint32_t stat_rate_writes;
+static OF_FASTDATA uint32_t stat_vol_writes;
+static OF_FASTDATA uint32_t stat_pump_count;
+static OF_FASTDATA uint32_t stat_pump_interval_max_us;
+static OF_FASTDATA uint32_t stat_pump_interval_min_us = 0xFFFFFFFFu;
+static OF_FASTDATA uint32_t stat_pump_burst_count;
+static OF_FASTDATA uint32_t stat_pump_budget_exceeded;
+static OF_FASTDATA uint16_t stat_cutoff_delta_max;
 
 /* 2 ms budget = 500 Hz tick rate. */
 #define SMP_TICK_SPIKE_US  2000u
+
+/* ------------------------------------------------------------------ */
+/* Mixer-write trace (OF_TRACE_MIXER_WRITES)                          */
+/* ------------------------------------------------------------------ */
+
+#ifdef OF_TRACE_MIXER_WRITES
+
+/* ~640 KB ring at 20 B/entry.  Enough to hold ~0.7 s of a dense drum
+ * MIDI with every rate/vol/filter write captured, at which point the
+ * ring wraps.  Short-clip bit-identical diffs are the intended use
+ * case; the stats counters remain for aggregate checks on long runs. */
+#define SMP_TRACE_CAP 32768u
+
+static smp_mixer_trace_entry_t smp_trace_buf[SMP_TRACE_CAP];
+static uint32_t smp_trace_next;   /* next write index in ring */
+static uint32_t smp_trace_total;  /* monotonic entries recorded (wraps never) */
+
+static void smp_mixer_trace_log(uint8_t op, int voice,
+                                uint32_t a0, uint32_t a1, uint32_t a2)
+{
+    uint32_t idx = smp_trace_next;
+    smp_trace_next = (idx + 1u) % SMP_TRACE_CAP;
+
+    smp_mixer_trace_entry_t *e = &smp_trace_buf[idx];
+    e->seq   = smp_trace_total++;
+    e->op    = op;
+    e->voice = (uint8_t)voice;
+    e->_pad  = 0;
+    e->arg0  = a0;
+    e->arg1  = a1;
+    e->arg2  = a2;
+}
+
+#define SMP_TRACE(op, v, a, b, c) smp_mixer_trace_log((op), (v), (a), (b), (c))
+
+void smp_mixer_trace_reset(void)
+{
+    smp_trace_next  = 0;
+    smp_trace_total = 0;
+}
+
+uint32_t smp_mixer_trace_total(void) { return smp_trace_total; }
+
+uint32_t smp_mixer_trace_dump(smp_mixer_trace_entry_t *out, uint32_t max)
+{
+    if (!out || max == 0) return 0;
+
+    uint32_t total = smp_trace_total;
+    uint32_t count = total > SMP_TRACE_CAP ? SMP_TRACE_CAP : total;
+    if (count > max) count = max;
+
+    uint32_t start = total > SMP_TRACE_CAP ? smp_trace_next : 0;
+    for (uint32_t i = 0; i < count; i++) {
+        out[i] = smp_trace_buf[(start + i) % SMP_TRACE_CAP];
+    }
+    return count;
+}
+
+#else  /* !OF_TRACE_MIXER_WRITES */
+
+#define SMP_TRACE(op, v, a, b, c) ((void)0)
+
+void     smp_mixer_trace_reset(void)                                   { }
+uint32_t smp_mixer_trace_total(void)                                   { return 0; }
+uint32_t smp_mixer_trace_dump(smp_mixer_trace_entry_t *out, uint32_t max)
+{
+    (void)out; (void)max;
+    return 0;
+}
+
+#endif /* OF_TRACE_MIXER_WRITES */
 
 void smp_voice_tick_get_stats(smp_tick_stats_t *out)
 {
@@ -115,20 +193,22 @@ void smp_voice_tick_record_pump(uint32_t elapsed_us, int ticks_fired,
 }
 
 /* Per-channel state (16 MIDI channels) */
-static int ch_volume[16];       /* CC7  (0-127) */
-static int ch_expression[16];   /* CC11 (0-127) */
-static int ch_pan[16];          /* CC10 (0-127, 64=center) */
-static int ch_bend[16];         /* -8192..+8191 */
-static int ch_mod_depth[16];    /* CC1  (0-127) */
-static int ch_sustain[16];      /* CC64 on/off */
-static int ch_brightness[16];   /* CC74 (0-127) */
-static int ch_resonance[16];    /* CC71 (0-127) */
-static int master_vol = 255;
+static OF_FASTDATA int ch_volume[16];        /* CC7  (0-127) */
+static OF_FASTDATA int ch_expression[16];    /* CC11 (0-127) */
+static OF_FASTDATA int ch_pan[16];           /* CC10 (0-127, 64=center) */
+static OF_FASTDATA int ch_bend[16];          /* -8192..+8191 */
+static OF_FASTDATA int ch_mod_depth[16];     /* CC1  (0-127) */
+static OF_FASTDATA int ch_sustain[16];       /* CC64 on/off */
+static OF_FASTDATA int ch_brightness[16];    /* CC74 (0-127) */
+static OF_FASTDATA int ch_resonance[16];     /* CC71 (0-127) */
+static OF_FASTDATA int ch_reverb_send[16];   /* CC91 (0-127), default 40 = GM tasteful default */
+static OF_FASTDATA int ch_chorus_send[16];   /* CC93 (0-127), default 0 */
+static OF_FASTDATA int master_vol = 255;
 
 /* Cached mixer state to avoid redundant CDC writes */
-static uint32_t prev_rate[SMP_MAX_VOICES];
-static int      prev_vol_l[SMP_MAX_VOICES];
-static int      prev_vol_r[SMP_MAX_VOICES];
+static OF_FASTDATA uint32_t prev_rate[SMP_MAX_VOICES];
+static OF_FASTDATA int      prev_vol_l[SMP_MAX_VOICES];
+static OF_FASTDATA int      prev_vol_r[SMP_MAX_VOICES];
 
 /* Voices pending steal (waiting for hardware fade-out) */
 #define STEAL_PENDING -2
@@ -143,21 +223,6 @@ static int      prev_vol_r[SMP_MAX_VOICES];
 /* Fixed-point helpers                                                */
 /* ------------------------------------------------------------------ */
 
-static uint32_t cents_to_rate_multiplier(int32_t cents)
-{
-    /* Handle octave + remainder decomposition.
-     * smp_cents_to_mult covers 0..1199 cents (one octave).
-     * Result is Q16.16: 0x10000 = multiply by 1.0 */
-    int octaves = 0;
-    while (cents >= 1200) { cents -= 1200; octaves++; }
-    while (cents < 0)     { cents += 1200; octaves--; }
-
-    uint32_t m = smp_cents_to_mult[cents];
-    if (octaves > 0) m <<= octaves;
-    else if (octaves < 0) m >>= (-octaves);
-    return m;
-}
-
 static int32_t triangle_wave(int32_t phase)
 {
     /* phase is Q16.16 wrapping at 0x10000.
@@ -171,62 +236,33 @@ static int32_t triangle_wave(int32_t phase)
         return (phase << 2) - 0x40000;          /* -0x10000..0 */
 }
 
-static int32_t compute_sustain_level(int16_t centibels)
-{
-    /* SF2 sustainVolEnv is centibels of attenuation.
-     * 0 cB = full volume (0x10000), 1000 cB = -100 dB ≈ silence.
-     * level = 10^(-cB/200) = 2^(-cB * log2(10) / 200)
-     *       = 2^(-cB * 0.01661)
-     * Convert to negative cents: neg_cents = cB * 1661 / 100
-     * Then use cents_to_mult for the fractional part. */
-    if (centibels <= 0)    return 0x10000;
-    if (centibels >= 960)  return 0;
-
-    /* neg_cents = centibels * 3.3219 (log2(10) * 10) */
-    int32_t neg_cents = (int32_t)centibels * 3322 / 1000;
-    int octaves = neg_cents / 1200;
-    int rem = neg_cents - octaves * 1200;
-    if (rem < 0) { rem += 1200; octaves--; }
-
-    /* level = 0x10000 / 2^octaves / cents_to_mult[rem] * 65536 */
-    uint32_t mult = smp_cents_to_mult[rem];
-    /* 0x10000 * 65536 / mult >> octaves, but avoid 64-bit overflow */
-    uint64_t level = ((uint64_t)0x10000 << 16) / mult;
-    int shift = octaves; /* positive = attenuate */
-    if (shift >= 16) return 0;
-    if (shift > 0) level >>= shift;
-    if (level > 0x10000) level = 0x10000;
-    return (int32_t)level;
-}
-
 /* ------------------------------------------------------------------ */
 /* Envelope helpers                                                   */
 /* ------------------------------------------------------------------ */
 
-static void env_init(env_state_t *e, int16_t delay_tc, int16_t attack_tc,
-                     int16_t hold_tc, int16_t decay_tc, int16_t sustain_cb,
-                     int16_t release_tc)
+/* All SF2-unit conversions are pre-baked into the OFSF v3 zone
+ * (ticks, per-tick rates, and Q16.16 sustain levels) by sf2_to_ofsf.
+ * env_init / env_advance just copy those baked fields into the per-voice
+ * env_state_t; the arithmetic is identical to what this code used to do
+ * at every transition but happens once offline instead of per voice. */
+
+static void env_init(env_state_t *e, uint32_t delay_ticks,
+                     uint32_t attack_rate)
 {
     e->level = 0;
     e->target = 0;
 
-    int32_t delay_ticks = smp_timecents_to_ticks(delay_tc);
     if (delay_ticks > 0) {
         e->stage = ENV_DELAY;
-        e->timer = delay_ticks;
+        e->timer = (int32_t)delay_ticks;
         e->rate = 0;
         return;
     }
 
-    int32_t atk = smp_timecents_to_ticks(attack_tc);
-    if (atk < 1) atk = 1;
     e->stage = ENV_ATTACK;
-    e->rate = 0x10000 / atk;
-    if (e->rate < 1) e->rate = 1;
+    e->rate = (int32_t)attack_rate;
     e->target = 0x10000;
     e->timer = 0;
-
-    (void)hold_tc; (void)decay_tc; (void)sustain_cb; (void)release_tc;
 }
 
 static void env_advance(env_state_t *e, const ofsf_zone_t *z, int is_vol)
@@ -238,12 +274,9 @@ static void env_advance(env_state_t *e, const ofsf_zone_t *z, int is_vol)
 
     case ENV_DELAY:
         if (--e->timer <= 0) {
-            int16_t atk = is_vol ? z->vol_attack : z->mod_attack;
-            int32_t atk_ticks = smp_timecents_to_ticks(atk);
-            if (atk_ticks < 1) atk_ticks = 1;
+            uint32_t atk_rate = is_vol ? z->vol_attack_rate : z->mod_attack_rate;
             e->stage = ENV_ATTACK;
-            e->rate = 0x10000 / atk_ticks;
-            if (e->rate < 1) e->rate = 1;
+            e->rate = (int32_t)atk_rate;
             e->target = 0x10000;
         }
         return;
@@ -252,11 +285,10 @@ static void env_advance(env_state_t *e, const ofsf_zone_t *z, int is_vol)
         e->level += e->rate;
         if (e->level >= 0x10000) {
             e->level = 0x10000;
-            int16_t hold = is_vol ? z->vol_hold : z->mod_hold;
-            int32_t hold_ticks = smp_timecents_to_ticks(hold);
+            uint32_t hold_ticks = is_vol ? z->vol_hold_ticks : z->mod_hold_ticks;
             if (hold_ticks > 0) {
                 e->stage = ENV_HOLD;
-                e->timer = hold_ticks;
+                e->timer = (int32_t)hold_ticks;
                 e->rate = 0;
             } else {
                 goto start_decay;
@@ -267,15 +299,11 @@ static void env_advance(env_state_t *e, const ofsf_zone_t *z, int is_vol)
     case ENV_HOLD:
         if (--e->timer <= 0) {
 start_decay: ;
-            int16_t decay = is_vol ? z->vol_decay : z->mod_decay;
-            int16_t sus   = is_vol ? z->vol_sustain : z->mod_sustain;
-            int32_t decay_ticks = smp_timecents_to_ticks(decay);
-            if (decay_ticks < 1) decay_ticks = 1;
-            int32_t sus_level = compute_sustain_level(sus);
+            uint32_t sus_level  = is_vol ? z->vol_sustain_level : z->mod_sustain_level;
+            uint32_t decay_rate = is_vol ? z->vol_decay_rate    : z->mod_decay_rate;
             e->stage = ENV_DECAY;
-            e->target = sus_level;
-            e->rate = (e->level - sus_level) / decay_ticks;
-            if (e->rate < 1) e->rate = 1;
+            e->target = (int32_t)sus_level;
+            e->rate = (int32_t)decay_rate;
         }
         return;
 
@@ -301,17 +329,16 @@ start_decay: ;
     }
 }
 
-static void env_start_release(env_state_t *e, int16_t release_tc)
+static void env_start_release(env_state_t *e, uint32_t release_ticks)
 {
     if (e->stage == ENV_OFF || e->stage == ENV_DONE)
         return;
 
-    int32_t rel_ticks = smp_timecents_to_ticks(release_tc);
-    if (rel_ticks < 1) rel_ticks = 1;
+    if (release_ticks < 1) release_ticks = 1;
 
     e->stage = ENV_RELEASE;
     e->target = 0;
-    e->rate = e->level / rel_ticks;
+    e->rate = e->level / (int32_t)release_ticks;
     if (e->rate < 1) e->rate = 1;
 }
 
@@ -319,26 +346,14 @@ static void env_start_release(env_state_t *e, int16_t release_tc)
 /* LFO helpers                                                        */
 /* ------------------------------------------------------------------ */
 
-static void lfo_init(lfo_state_t *l, int16_t delay_tc, int16_t freq_cents)
+static void lfo_init(lfo_state_t *l, uint32_t delay_ticks, uint32_t rate)
 {
+    /* Delay ticks and per-tick phase increment are pre-baked in the
+     * OFSF v3 zone (smp_timecents_to_ticks + smp_lfo_freq_cents_to_rate
+     * applied offline by sf2_to_ofsf).  No conversion needed here. */
     l->phase = 0;
-    l->delay_ticks = smp_timecents_to_ticks(delay_tc);
-    if (l->delay_ticks < 0) l->delay_ticks = 0;
-
-    /* freq_cents is absolute cents (SF2 spec):
-     *   frequency (Hz) = 8.176 * 2^(freq_cents / 1200)
-     *
-     * LFO phase is Q16.16 wrapping at 0x10000 per cycle, advanced at 1 kHz
-     * (effective — env_advance / lfo_advance runs twice per 500 Hz outer
-     * tick).  So per-advance phase increment = freq * 65536 / 1000.
-     *
-     * 8.176 Hz in Q16.16 ≈ 535822 = 0x82D0E.  Historical bug: the
-     * constant used to be 0x82D1 (33489 ≈ 8.176 * 4096, i.e. Q20.12)
-     * which made every LFO run ~16x too slow — a 6 Hz vibrato wobbled
-     * at 0.4 Hz and effect-heavy patches sounded like "timing is wrong". */
-    uint32_t mult = cents_to_rate_multiplier(freq_cents);
-    uint32_t freq_fp16 = (uint32_t)(((uint64_t)535822u * mult) >> 16);
-    l->rate = (int32_t)(freq_fp16 / 1000);
+    l->delay_ticks = (int32_t)delay_ticks;
+    l->rate = (int32_t)rate;
     if (l->rate < 1) l->rate = 1;
 }
 
@@ -442,6 +457,7 @@ static void voice_force_off(int idx)
     smp_voice_t *v = &voices[idx];
     if (v->mixer_voice >= 0) {
         of_mixer_set_vol_lr(v->mixer_voice, 0, 0);
+        SMP_TRACE(SMP_TRACE_OP_VOL_LR, v->mixer_voice, 0, 0, 0);
         of_mixer_set_volume_ramp(v->mixer_voice, 4);
     }
     v->active = STEAL_PENDING;
@@ -487,26 +503,16 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
     if (env_vol > 255) env_vol = 255;
     if (env_vol < 0)   env_vol = 0;
 
-    /* velocity: 0..127 -> 0..255 (simple scale) */
-    int vel_scale = (v->velocity * 2) + 1;
-    if (vel_scale > 255) vel_scale = 255;
-
     /* channel volume: (CC7 * CC11) / 127 -> 0..127 */
     int ch = v->midi_ch;
     int ch_vol_combined = (ch_volume[ch] * ch_expression[ch]) / 127;
 
-    /* initial attenuation: 0..960 centibels -> linear scale 0..255 */
-    int attn_scale = 255;
-    if (v->zone && v->zone->initial_attn > 0) {
-        int cb = v->zone->initial_attn;
-        if (cb >= 960) cb = 960;
-        attn_scale = (255 * (960 - cb)) / 960;
-    }
-
-    /* combined: (env * vel * attn * ch * master) >> shifts -> 0..255 */
+    /* Design-doc compose: VOICE_BASE_VOL × RAMP0_LEVEL × CH_VOL × CH_EXPR × MASTER.
+     * voice_base_vol (0..255) = (vel_scale × initial_attn_scale) >> 8, baked at
+     * note-on so this function does one less multiply per tick AND matches the
+     * AWE fabric's compose arithmetic verbatim (Phase 3 bit-identical). */
     int32_t vol = env_vol;
-    vol = (vol * vel_scale) >> 8;
-    vol = (vol * attn_scale) >> 8;
+    vol = (vol * v->voice_base_vol) >> 8;
     vol = (vol * ch_vol_combined) >> 7;
     vol = (vol * master_vol) >> 8;
     if (vol > 255) vol = 255;
@@ -547,6 +553,8 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
  * Skip the HW write when the integer-rounded HW cutoff value is unchanged:
  * cents-level jitter often collapses to the same Q0.16 HW number, and a
  * redundant write still perturbs the filter on the HW side. */
+// TODO(audio_review): Software filter update logic is running, but the mixer RTL
+// does not implement it. The filter control stack is carrying cost without hardware behavior.
 static void filter_update(smp_voice_t *v)
 {
     const ofsf_zone_t *z = v->zone;
@@ -584,7 +592,7 @@ static void filter_update(smp_voice_t *v)
      * fc_hz = 8.176 * 2^(fc_cents/1200)
      * cutoff_hw = (fc_hz / 24000) * 65535  (Nyquist = 24 kHz)
      * 8.176 Hz * 65536 / 24000 ≈ 22.36 → use 22 as integer approx */
-    uint32_t fc_mult = cents_to_rate_multiplier(fc16);
+    uint32_t fc_mult = smp_cents_to_multiplier(fc16);
     uint32_t cutoff_hw = (uint32_t)(((uint64_t)fc_mult * 22) >> 16);
     if (cutoff_hw > 65535) cutoff_hw = 65535;
 
@@ -607,6 +615,8 @@ static void filter_update(smp_voice_t *v)
     v->cur_cutoff_hw = new_hw;
 
     of_mixer_set_filter(v->mixer_voice, (int)cutoff_hw, q_hw, 1);
+    SMP_TRACE(SMP_TRACE_OP_FILTER, v->mixer_voice,
+              (uint32_t)cutoff_hw, (uint32_t)q_hw, 1u);
     stat_filter_writes++;
 }
 
@@ -643,9 +653,17 @@ static uint32_t compute_pitch(smp_voice_t *v)
     if (cents_offset > 12000) cents_offset = 12000;
     if (cents_offset < -12000) cents_offset = -12000;
 
-    uint32_t mult = cents_to_rate_multiplier(cents_offset);
+    uint32_t mult = smp_cents_to_multiplier(cents_offset);
     return (uint32_t)(((uint64_t)v->base_rate_fp16 * mult) >> 16);
 }
+
+/* ------------------------------------------------------------------ */
+/* AWE backend retired — preserve ABI stubs for apps that still call  */
+/* smp_voice_enable_awe_backend / smp_voice_awe_backend_enabled.      */
+/* ------------------------------------------------------------------ */
+
+void smp_voice_enable_awe_backend(int on)       { (void)on; }
+int  smp_voice_awe_backend_enabled(void)        { return 0; }
 
 /* ------------------------------------------------------------------ */
 /* Public API                                                         */
@@ -667,6 +685,8 @@ void smp_voice_init(void)
         ch_sustain[i]    = 0;
         ch_brightness[i] = 64;
         ch_resonance[i]  = 0;
+        ch_reverb_send[i] = 40;   /* GM tasteful default ~31 % wet */
+        ch_chorus_send[i] = 0;
     }
 
     master_vol = 255;
@@ -680,6 +700,28 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
         return -1;
 
     kill_exclusive_class(midi_ch, zone->exclusive_class);
+
+    /* Same-channel same-note stealing: if this MIDI note is already
+     * sounding on this channel (envelope hasn't reached ENV_DONE),
+     * force-release the old voice before allocating a fresh one.
+     * Without this, rapid retriggers of the same note (common for
+     * sustained guitar/pad parts in Doom's MIDI) stack N copies of the
+     * same pitch at slightly different envelope phases — sounds like
+     * chorus/phaser/reverb instead of clean retrigger.  Drum channel
+     * (ch 9) is skipped because percussion zones often WANT overlap
+     * (hi-hat bounce etc.) and use SF2 exclusive_class for cutoffs
+     * when needed. */
+    if (midi_ch != 9) {
+        for (int i = 0; i < SMP_MAX_VOICES; i++) {
+            smp_voice_t *ov = &voices[i];
+            if (ov->active && ov->active != STEAL_PENDING &&
+                ov->midi_ch == midi_ch && ov->note == note &&
+                ov->vol_env.stage != ENV_DONE) {
+                env_start_release(&ov->vol_env, ov->zone->vol_release_ticks);
+                env_start_release(&ov->mod_env, ov->zone->mod_release_ticks);
+            }
+        }
+    }
 
     int idx = voice_alloc();
     if (idx < 0)
@@ -696,6 +738,19 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     v->mixer_voice = -1;
     v->age = tick_counter;
 
+    /* Pre-bake voice_base_vol = (vel_scale × initial_attn_scale) >> 8.
+     * One u8 field now replaces the two multiplies the old compute_vol_lr
+     * did per tick, and matches the awe_voice_t.voice_base_vol the AWE
+     * fabric reads from voice-state RAM (Phase 3 onward). */
+    {
+        int vel_scale = (velocity * 2) + 1;
+        if (vel_scale > 255) vel_scale = 255;
+        int attn_scale = zone ? zone->initial_attn_scale : 255;
+        int bv = (vel_scale * attn_scale) >> 8;
+        if (bv > 255) bv = 255;
+        v->voice_base_vol = (uint8_t)bv;
+    }
+
     /* Compute base playback rate:
      * rate = (sample_rate / 48000) * 2^((note - root + coarse)*100 + fine) / 1200)
      * We split into the sample_rate ratio and the pitch offset. */
@@ -706,7 +761,7 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     int32_t total_cents = ((int32_t)note - (int32_t)zone->root_key) * 100
                         + (int32_t)zone->coarse_tune * 100
                         + (int32_t)zone->fine_tune;
-    uint32_t pitch_mult = cents_to_rate_multiplier(total_cents);
+    uint32_t pitch_mult = smp_cents_to_multiplier(total_cents);
     v->base_rate_fp16 = (uint32_t)(((uint64_t)base_fp16 * pitch_mult) >> 16);
 
     /* Compute sample address.
@@ -719,8 +774,11 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
 
     int mhv = of_mixer_play(sample_ptr, zone->sample_length, sr, 0, 200);
     if (mhv < 0) { v->active = 0; return -1; }
+
+
     v->mixer_voice = mhv;
     of_mixer_set_rate_raw(mhv, v->base_rate_fp16);
+    SMP_TRACE(SMP_TRACE_OP_RATE, mhv, v->base_rate_fp16, 0, 0);
     stat_rate_writes++;
 
     /* Loop setup */
@@ -754,18 +812,12 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
 
     of_mixer_set_group(mhv, OF_MIXER_GROUP_MUSIC);
 
-    /* Initialize envelopes */
-    env_init(&v->vol_env,
-             zone->vol_delay, zone->vol_attack, zone->vol_hold,
-             zone->vol_decay, zone->vol_sustain, zone->vol_release);
+    /* Initialize envelopes and LFOs from pre-baked OFSF v3 fields. */
+    env_init(&v->vol_env, zone->vol_delay_ticks, zone->vol_attack_rate);
+    env_init(&v->mod_env, zone->mod_delay_ticks, zone->mod_attack_rate);
 
-    env_init(&v->mod_env,
-             zone->mod_delay, zone->mod_attack, zone->mod_hold,
-             zone->mod_decay, zone->mod_sustain, zone->mod_release);
-
-    /* Initialize LFOs */
-    lfo_init(&v->mod_lfo, zone->mod_lfo_delay, zone->mod_lfo_freq);
-    lfo_init(&v->vib_lfo, zone->vib_lfo_delay, zone->vib_lfo_freq);
+    lfo_init(&v->mod_lfo, zone->mod_lfo_delay_ticks, zone->mod_lfo_rate);
+    lfo_init(&v->vib_lfo, zone->vib_lfo_delay_ticks, zone->vib_lfo_rate);
 
     /* Initial filter state.
      *
@@ -794,12 +846,14 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
             if (fc > 13500) fc = 13500;
             int16_t q16 = zone->initial_q + (int16_t)(ch_resonance[midi_ch] * 8);
             if (q16 > 960) q16 = 960;
-            uint32_t fc_mult = cents_to_rate_multiplier(fc);
+            uint32_t fc_mult = smp_cents_to_multiplier(fc);
             uint32_t cutoff_hw = (uint32_t)(((uint64_t)fc_mult * 22) >> 16);
             if (cutoff_hw > 65535) cutoff_hw = 65535;
             int q_hw = 255 - (q16 * 255 / 960);
             if (q_hw < 8) q_hw = 8;
             of_mixer_set_filter(mhv, (int)cutoff_hw, q_hw, 1);
+            SMP_TRACE(SMP_TRACE_OP_FILTER, mhv,
+                      (uint32_t)cutoff_hw, (uint32_t)q_hw, 1u);
             stat_filter_writes++;
             /* Cache the fc we actually wrote so tick() only rewrites on
              * a real change. */
@@ -810,6 +864,7 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
             /* Bypass the filter — enable=0 ensures a prior voice's
              * cutoff doesn't bleed into this one. */
             of_mixer_set_filter(mhv, 65535, 8, 0);
+            SMP_TRACE(SMP_TRACE_OP_FILTER, mhv, 65535u, 8u, 0u);
             stat_filter_writes++;
             v->cur_cutoff_hw = 65535;
         }
@@ -822,6 +877,7 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     int vl, vr;
     compute_vol_lr(v, &vl, &vr);
     of_mixer_set_vol_lr(mhv, vl, vr);
+    SMP_TRACE(SMP_TRACE_OP_VOL_LR, mhv, (uint32_t)vl, (uint32_t)vr, 0);
     stat_vol_writes++;
     prev_vol_l[idx] = vl;
     prev_vol_r[idx] = vr;
@@ -842,8 +898,8 @@ void smp_voice_note_off(int midi_ch, int note)
         if (ch_sustain[midi_ch]) {
             v->sustain_held = 1;
         } else {
-            env_start_release(&v->vol_env, v->zone->vol_release);
-            env_start_release(&v->mod_env, v->zone->mod_release);
+            env_start_release(&v->vol_env, v->zone->vol_release_ticks);
+            env_start_release(&v->mod_env, v->zone->mod_release_ticks);
         }
     }
 }
@@ -887,38 +943,29 @@ void smp_voice_tick(void)
             }
         }
 
-        /* Envelopes and LFOs advance twice per outer tick (effective
-         * 1 kHz), but we must also sample pitch at 1 kHz — writing RATE
-         * only once per outer tick produces an audible 2 ms staircase
-         * on fast pitch modulation (short mod_env_to_pitch sweeps, fast
-         * vibratos, snappy pitch bends).  HW RATE snaps (no ramp), so
-         * we interleave a mid-tick compute_pitch between the two halves
-         * of the advance sequence.  Volume is handled only at the end
-         * because the mixer already ramps between VOL writes. */
+        /* Caller fires this tick at 1 kHz (every 1 ms — matches
+         * of_smp_tables.c's envelope baking).  Advance envelopes
+         * and LFOs ONCE per call.  The previous "advance twice
+         * per call" pattern existed because the pump used to fire
+         * at 500 Hz and the inner double-step compensated to reach
+         * effective 1 kHz; with 1 kHz pump the second pass would
+         * make envelopes 2× too fast (snappy attacks, premature
+         * releases). */
         env_advance(&v->vol_env, z, 1);
         env_advance(&v->mod_env, z, 0);
         lfo_advance(&v->mod_lfo);
         lfo_advance(&v->vib_lfo);
 
-        /* Mid-tick pitch update (1 kHz sampling) */
         if (v->mixer_voice >= 0 && v->vol_env.stage != ENV_DONE) {
             uint32_t rate_mid = compute_pitch(v);
             if (rate_mid != prev_rate[i]) {
                 of_mixer_set_rate_raw(v->mixer_voice, rate_mid);
+                SMP_TRACE(SMP_TRACE_OP_RATE, v->mixer_voice, rate_mid, 0, 0);
                 prev_rate[i] = rate_mid;
                 stat_rate_writes++;
             }
-            /* Mid-tick filter update — run at 1 kHz (matches pitch) so
-             * cents-level cutoff sweeps from mod_lfo_to_filter /
-             * mod_env_to_filter change in smaller steps and produce
-             * smaller SVF state-variable transients. */
             filter_update(v);
         }
-
-        env_advance(&v->vol_env, z, 1);
-        env_advance(&v->mod_env, z, 0);
-        lfo_advance(&v->mod_lfo);
-        lfo_advance(&v->vib_lfo);
 
         if (v->vol_env.stage == ENV_DONE) {
             if (v->mixer_voice >= 0)
@@ -934,6 +981,8 @@ void smp_voice_tick(void)
         if (vl != prev_vol_l[i] || vr != prev_vol_r[i] ||
             rate != prev_rate[i]) {
             of_mixer_set_voice_raw(v->mixer_voice, rate, vl, vr);
+            SMP_TRACE(SMP_TRACE_OP_VOICE_RAW, v->mixer_voice,
+                      rate, (uint32_t)vl, (uint32_t)vr);
             /* set_voice_raw coalesces rate + vol; count each independently
              * changed field so the stats reflect the underlying load. */
             if (rate != prev_rate[i]) stat_rate_writes++;
@@ -997,8 +1046,8 @@ void smp_voice_update_sustain(int midi_ch, int sustain_on)
             if (v->active && v->active != STEAL_PENDING &&
                 v->midi_ch == midi_ch && v->sustain_held) {
                 v->sustain_held = 0;
-                env_start_release(&v->vol_env, v->zone->vol_release);
-                env_start_release(&v->mod_env, v->zone->mod_release);
+                env_start_release(&v->vol_env, v->zone->vol_release_ticks);
+                env_start_release(&v->mod_env, v->zone->mod_release_ticks);
             }
         }
     }
@@ -1009,6 +1058,22 @@ void smp_voice_update_filter(int midi_ch, int brightness, int resonance)
     if (midi_ch < 0 || midi_ch > 15) return;
     ch_brightness[midi_ch] = brightness;
     ch_resonance[midi_ch]  = resonance;
+}
+
+void smp_voice_update_reverb_send(int midi_ch, int send_0_127)
+{
+    if (midi_ch < 0 || midi_ch > 15) return;
+    if (send_0_127 < 0)   send_0_127 = 0;
+    if (send_0_127 > 127) send_0_127 = 127;
+    ch_reverb_send[midi_ch] = send_0_127;
+}
+
+void smp_voice_update_chorus_send(int midi_ch, int send_0_127)
+{
+    if (midi_ch < 0 || midi_ch > 15) return;
+    if (send_0_127 < 0)   send_0_127 = 0;
+    if (send_0_127 > 127) send_0_127 = 127;
+    ch_chorus_send[midi_ch] = send_0_127;
 }
 
 void smp_voice_all_off(int midi_ch)

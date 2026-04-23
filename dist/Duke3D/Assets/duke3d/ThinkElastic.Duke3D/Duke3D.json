@@ -12,11 +12,11 @@
             },
             {
                 "id": 2,
-                "filename": "mididemo.elf"
+                "filename": "duke3d.elf"
             },
             {
                 "id": 3,
-                "filename": "music.mid"
+                "filename": "duke3d.grp"
             },
             {
                 "id": 4,

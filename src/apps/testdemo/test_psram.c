@@ -1,18 +1,44 @@
 #include "test.h"
+#include "of_mixer.h"
 #include <time.h>
 
-/* PSRAM / SRAM memory map (cached CPU-side addresses)
- * CRAM0 cached:    0x30000000 – 0x30FFFFFF (16 MB)
- * CRAM1 uncached:  0x39000000 – 0x39FFFFFF (16 MB, bridge-accessible)
- * SRAM:            0x3A000000 – 0x3A03FFFF (256 KB)
+/* PSRAM / SRAM memory map.
  *
- * Uncached mirror: base | 0x08000000  (bypasses D-cache)
- * e.g. CRAM0 uncached = 0x38000000
- */
-#define CRAM0_CACHED_BASE   0x30000000  /* CRAM0 cached base */
-#define CRAM0_UNCACHED_BASE 0x38000000  /* CRAM0 uncached base */
+ * CRAM0 is strictly i_axi-only on the data plane (see
+ * GenOpenFpgaVexii.scala — CRAM0 is excluded from the d_axi PMA so
+ * the D$ can never reach it; that's the prerequisite for sync-burst
+ * CRAM0 refills to not corrupt under multi-master contention).
+ * Apps that need to touch CRAM0 as data MUST use the uncached alias
+ * 0x38xxxxxx, which routes through p_axi (uncached IO bus).  A
+ * cached 0x30xxxxxx store will trap with "store access fault".
+ *
+ *   CRAM0 cached:    0x30000000 – 0x30FFFFFF (16 MB) — I-fetch only
+ *   CRAM0 uncached:  0x38000000 – 0x38FFFFFF (16 MB) — d/IO access
+ *   CRAM1 uncached:  0x39000000 – 0x39FFFFFF (16 MB, bridge-accessible)
+ *   SRAM:            0x3A000000 – 0x3A03FFFF (256 KB)
+ *
+ * CRAM1 is FULLY partitioned by the OS:
+ *   0x000000 – 0x27FFFF  saves (10 slots × 256 KB) — bridge-persisted
+ *   0x280000 – 0x28FFFF  FTAB (filename table) — bridge-written
+ *   0x290000 – 0x2FFFFF  file-IO scratch (~448 KB)
+ *   0x300000 – 0x3FFFFF  I/O cache
+ *   0x400000 – 0xEFFFFF  audio samples (11 MB)
+ *   0xF00000 – 0xFFFFFF  AUDIO_SCRATCH_CRAM1 (1 MB) — mixer scratch
+ *
+ * Picking ANY region the bridge / mixer / file layer touches is
+ * non-idempotent across iterations: the original test wrote slot 0
+ * (saves) which the bridge then re-read on the next pass; the unused
+ * tail turned out to be the audio scratch buffer.
+ *
+ * file-IO scratch is the only region that is (a) not bridge-managed
+ * and (b) only touched during user-initiated file ops. test_psram_memory
+ * runs BEFORE any file test, so its readback can't race the OS — and
+ * between iterations the test's own pattern is the last write to land. */
+#define CRAM0_CACHED_BASE   0x30000000  /* I-fetch only */
+#define CRAM0_UNCACHED_BASE 0x38000000  /* d-side access */
 #define CRAM0_TEST_OFFSET   0x00800000  /* 8 MB offset — avoids slot table at base */
 #define CRAM1_UNCACHED_BASE 0x39000000  /* CRAM1 uncached (bridge-accessible) */
+#define CRAM1_TEST_OFFSET   0x00290000  /* file-IO scratch — see comment above */
 #define SRAM_BASE           0x3A000000  /* On-chip SRAM */
 
 /* SDRAM region used to evict D-cache lines (must not overlap app code/data) */
@@ -21,9 +47,25 @@
 void test_psram_memory(void) {
     section_start("PSRAM Mem");
 
-    volatile uint32_t *cram0 = (volatile uint32_t *)(CRAM0_CACHED_BASE + CRAM0_TEST_OFFSET);
-    volatile uint32_t *cram1 = (volatile uint32_t *)CRAM1_UNCACHED_BASE;
-    volatile uint32_t *sram  = (volatile uint32_t *)SRAM_BASE;
+    /* This whole test bangs on hardcoded CRAM/SRAM addresses that
+     * only exist on the Pocket target. On any other platform we
+     * skip cleanly so the suite still completes. */
+    if (of_get_caps()->platform_id != OF_PLATFORM_POCKET) {
+        test_pass("not pocket");
+        section_end();
+        return;
+    }
+
+    /* DIAGNOSTIC: stop any lingering mixer voices to isolate whether the
+     * CRAM1 hang on iteration 2+ is caused by mixer state bleed-through.
+     * If this makes the hang go away, mixer is the culprit. */
+    of_mixer_stop_all();
+
+    /* Use the uncached alias for all CRAM0 data-plane traffic — the
+     * cached alias (0x30xxxxxx) is i_axi-only under the current PMA. */
+    volatile uint32_t *cram0 = (volatile uint32_t *)(CRAM0_UNCACHED_BASE + CRAM0_TEST_OFFSET);
+    volatile uint32_t *cram1 = (volatile uint32_t *)(CRAM1_UNCACHED_BASE + CRAM1_TEST_OFFSET);
+    // SRAM removed — GPU-exclusive (Z-buffer)
 
     cram0[0] = 0xDEADBEEF;
     cram0[1] = 0xCAFEBABE;
@@ -72,29 +114,54 @@ void test_psram_memory(void) {
     ASSERT("cram1 w/r[1]", cram1[1] == 0x9ABCDEF0);
 
     {
+        /* Snapshot the test region so the test is fully idempotent.
+         * No CRAM1 region is truly idle across iterations: saves are
+         * bridge-persisted, file-IO scratch and I/O cache are touched
+         * by file ops, samples are touched by the mixer, the audio
+         * scratch tail is touched by the streamer. Whatever was here
+         * before us is restored on the way out, and the OS sees no
+         * disturbance from one iteration to the next.
+         *
+         * 16 KB lives in BSS (SDRAM), not on the BRAM stack. */
+        static uint32_t cram1_save[4096];
+        for (uint32_t i = 0; i < 4096; i++)
+            cram1_save[i] = cram1[i];
+
         int ok = 1;
+        uint32_t fail_at = 0, fail_exp = 0, fail_got = 0;
         for (uint32_t i = 0; i < 4096; i++)
             cram1[i] = ~i;
         for (uint32_t i = 0; i < 4096; i++) {
-            if (cram1[i] != ~i) { ok = 0; break; }
+            uint32_t got = cram1[i];
+            uint32_t exp = ~i;
+            if (got != exp) {
+                ok = 0;
+                fail_at = i;
+                fail_exp = exp;
+                fail_got = got;
+                break;
+            }
         }
-        ASSERT("cram1 16K", ok);
+
+        /* Restore original contents BEFORE asserting so the failure
+         * detail printf doesn't allocate / call into anything that
+         * might re-touch CRAM1 with the test pattern still in place. */
+        for (uint32_t i = 0; i < 4096; i++)
+            cram1[i] = cram1_save[i];
+
+        if (ok) {
+            test_pass("cram1 16K");
+        } else {
+            snprintf(__buf, sizeof(__buf),
+                     "@%lu e%08lx g%08lx",
+                     (unsigned long)fail_at,
+                     (unsigned long)fail_exp,
+                     (unsigned long)fail_got);
+            test_fail("cram1 16K", __buf);
+        }
     }
 
-    sram[0] = 0xFEEDFACE;
-    sram[1] = 0xBAADF00D;
-    ASSERT("sram w/r[0]", sram[0] == 0xFEEDFACE);
-    ASSERT("sram w/r[1]", sram[1] == 0xBAADF00D);
-
-    {
-        int ok = 1;
-        for (int i = 0; i < 256; i++)
-            sram[i] = (uint32_t)i * 0x01010101;
-        for (int i = 0; i < 256; i++) {
-            if (sram[i] != (uint32_t)i * 0x01010101) { ok = 0; break; }
-        }
-        ASSERT("sram 1K", ok);
-    }
+    // SRAM tests removed — SRAM is GPU-exclusive (Z-buffer)
 
     {
         cram1[0] = 0x11111111;
@@ -104,7 +171,7 @@ void test_psram_memory(void) {
     }
 
     {
-        volatile uint8_t *cram0_b = (volatile uint8_t *)(CRAM0_CACHED_BASE + CRAM0_TEST_OFFSET);
+        volatile uint8_t *cram0_b = (volatile uint8_t *)(CRAM0_UNCACHED_BASE + CRAM0_TEST_OFFSET);
         cram0[0] = 0x00000000;
         cram0_b[1] = 0xAB;
         ASSERT("byte write", (cram0[0] & 0x0000FF00) == 0x0000AB00);
@@ -129,6 +196,18 @@ void test_psram_memory(void) {
 void test_cram0_256k(void) {
     section_start("CRAM0 256K");
 
+    if (of_get_caps()->platform_id != OF_PLATFORM_POCKET) {
+        test_pass("not pocket");
+        section_end();
+        return;
+    }
+
+    /* CRAM0 is i_axi-only under the current PMA — all data-plane
+     * access uses the 0x38xxxxxx uncached alias, which routes through
+     * p_axi.  The cached→uncached write-then-read pattern used to
+     * verify D-cache writeback is no longer meaningful on this target
+     * (cached writes trap with store-access-fault). */
+
     /* Uncached 32-bit write then read */
     {
         volatile uint32_t *u = (volatile uint32_t *)(CRAM0_UNCACHED_BASE + CRAM0_TEST_OFFSET);
@@ -138,23 +217,14 @@ void test_cram0_256k(void) {
         ASSERT("uc w/r", v == 0xDEAD1234);
     }
 
-    /* Write via cached alias, read via uncached alias to bypass D-cache.
-     * This tests whether PSRAM writeback actually reaches the chip. */
-    volatile uint32_t *cram0_c = (volatile uint32_t *)(CRAM0_CACHED_BASE + CRAM0_TEST_OFFSET);
     volatile uint32_t *cram0_u = (volatile uint32_t *)(CRAM0_UNCACHED_BASE + CRAM0_TEST_OFFSET);
     const uint32_t count = 256 * 1024 / 4;  /* 65536 words = 256KB */
 
-    /* Write pass: XOR pattern via cached alias */
+    /* XOR pattern: write + read back via uncached alias */
     for (uint32_t i = 0; i < count; i++)
-        cram0_c[i] = i ^ 0xA5A5A5A5;
-
-    /* Flush D-cache: read 128KB from SDRAM to evict all dirty lines */
-    volatile char *evict = (volatile char *)SDRAM_EVICT_BASE;
-    for (uint32_t i = 0; i < 131072; i += 64)
-        (void)evict[i];
+        cram0_u[i] = i ^ 0xA5A5A5A5;
     __asm__ volatile("fence" ::: "memory");
 
-    /* Read-back via UNCACHED alias — goes directly to PSRAM */
     {
         int ok = 1;
         uint32_t fail_addr = 0, fail_exp = 0, fail_got = 0;
@@ -181,16 +251,11 @@ void test_cram0_256k(void) {
         }
     }
 
-    /* Write pass 2: inverted index via cached */
+    /* Inverted index pattern */
     for (uint32_t i = 0; i < count; i++)
-        cram0_c[i] = ~i;
-
-    /* Flush D-cache again */
-    for (uint32_t i = 0; i < 131072; i += 64)
-        (void)evict[i];
+        cram0_u[i] = ~i;
     __asm__ volatile("fence" ::: "memory");
 
-    /* Read-back pass 2 via uncached */
     {
         int ok = 1;
         uint32_t fail_addr = 0, fail_exp = 0, fail_got = 0;
