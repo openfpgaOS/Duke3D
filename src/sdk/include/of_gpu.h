@@ -25,6 +25,7 @@ extern "C" {
 
 #ifndef OF_PC
 #include "of_caps.h"
+#include "of_cache.h"   /* of_cache_clean_range() — used by palookup upload */
 #endif
 
 /* ================================================================
@@ -77,12 +78,14 @@ typedef enum {
  * Span Flags
  * ================================================================ */
 
-#define OF_GPU_SPAN_COLORMAP    (1 << 0)
-#define OF_GPU_SPAN_COLUMN      (1 << 1)
-#define OF_GPU_SPAN_SKIP_ZERO   (1 << 2)
-#define OF_GPU_SPAN_DEPTH_TEST  (1 << 3)
-#define OF_GPU_SPAN_DEPTH_WRITE (1 << 4)
-#define OF_GPU_SPAN_PERSP       (1 << 5)
+#define OF_GPU_SPAN_COLORMAP     (1 << 0)
+#define OF_GPU_SPAN_COLUMN       (1 << 1)
+#define OF_GPU_SPAN_SKIP_ZERO    (1 << 2)
+#define OF_GPU_SPAN_DEPTH_TEST   (1 << 3)
+#define OF_GPU_SPAN_DEPTH_WRITE  (1 << 4)
+#define OF_GPU_SPAN_PERSP        (1 << 5)
+#define OF_GPU_SPAN_TRANSLUC     (1 << 6)
+#define OF_GPU_SPAN_TRANSLUC_REV (1 << 7)
 
 /* ================================================================
  * Data Structures
@@ -98,8 +101,14 @@ typedef struct {
     uint8_t  flags;
     int16_t  fb_stride;
     uint16_t tex_width;
-    uint8_t  tex_shift;
-    uint8_t  tex_bits;
+    /* POT wrap masks (tex_w - 1 / tex_h - 1).  0 means "no wrap" — the
+     * legacy default and what the formerly-reserved word 8 carried.
+     * Set both to (tex_w-1) and (tex_h-1) to reproduce BUILD/Quake-style
+     * shift-mode wrap inside the GPU's multiply-mode addressing.  Both
+     * dimensions must be powers of two.  Renamed from the dead
+     * tex_shift/tex_bits fields that fed the retired shift-mode path. */
+    uint16_t tex_w_mask;
+    uint16_t tex_h_mask;
     uint32_t z_addr;
     int32_t  zi;
     int32_t  zistep;
@@ -151,8 +160,11 @@ static uint32_t _gpu_base;
 #define GPU_STATUS              OF_GPU_REG(0x14)  /* R: {30'b0, ring_empty, busy} */
 #define GPU_FENCE_REACHED       OF_GPU_REG(0x18)  /* R: last completed fence token */
 #define GPU_STAT_PIXELS         OF_GPU_REG(0x1C)  /* R: pixel counter */
-#define GPU_CMAP_ADDR           OF_GPU_REG(0x20)  /* W: colormap write address (auto-inc) */
-#define GPU_CMAP_DATA           OF_GPU_REG(0x24)  /* W: colormap write data (byte) */
+#define GPU_CMAP_ADDR           OF_GPU_REG(0x20)  /* W: cmap/transluc write address (auto-inc).
+                                                      * bit 31 = target select (0=cmap, 1=transluc[]),
+                                                      * bits [14:0] = byte address within target. */
+#define GPU_CMAP_DATA           OF_GPU_REG(0x24)  /* W: cmap/transluc write data (32-bit word, addr += 4) */
+#define GPU_TRANSLUC_TARGET     (1u << 31)        /* OR into GPU_CMAP_ADDR to select transluc[] target */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
 #define GPU_STAT_SPANS          OF_GPU_REG(0x2C)  /* R: span counter */
 
@@ -163,17 +175,49 @@ static uint32_t _gpu_base;
 #define GPU_CMD_NOP             0x01
 #define GPU_CMD_FENCE           0x02
 #define GPU_CMD_CLEAR           0x10
+#define GPU_CMD_CLEAR_RECT      0x11  /* 3-word payload: start byte addr,
+                                       * {w,h}, {pad,color}. Color's low
+                                       * byte is replicated 4× per FB
+                                       * word, matching CMD_CLEAR. */
 #define GPU_CMD_SET_TEXTURE     0x20
 #define GPU_CMD_SET_DEPTH_FUNC  0x21
-#define GPU_CMD_SET_BLEND       0x22
 #define GPU_CMD_SET_FB          0x23
 #define GPU_CMD_SET_ZB          0x24
-#define GPU_CMD_SET_SHADE       0x25
-#define GPU_CMD_SET_ALPHA_REF   0x26
+#define GPU_CMD_SET_COLORMAP_ID 0x28  /* 1-word payload: [3:0] = palookup slot */
 #define GPU_CMD_DRAW_TRIANGLES  0x30
-/* 0x31 (indexed draw) removed — expand indices on CPU and emit DRAW_TRIANGLES. */
 #define GPU_CMD_DRAW_SPAN       0x40
-#define GPU_CMD_DRAW_SPANS      0x41
+/* Reserved opcodes — do not reuse:
+ *   0x22 SET_BLEND      — no combine path in the datapath
+ *   0x25 SET_SHADE      — Gouraud gradient dropped in the FMax push
+ *   0x26 SET_ALPHA_REF  — no alpha test in the datapath
+ *   0x27 SET_SKIP_ZERO  — used internally by the triangle path
+ *   0x31 DRAW_INDEXED   — expand indices CPU-side and emit per-triangle
+ *   0x41 DRAW_SPANS     — half-implemented batch; emit N separate spans
+ *   0x42 DRAW_SPRITE    — 2-triangle sprite is cheaper and rotates */
+
+/* ================================================================
+ * Palookup (colormap) layout in SDRAM — must match gpu_core.v's
+ * PALOOKUP_BASE / PALOOKUP_STRIDE constants.
+ *
+ * Each slot holds a Quake/BUILD-shape shade × texel table.  Slot 0
+ * is the default (used by callers that don't issue CMD_SET_COLORMAP_ID,
+ * preserving single-palookup compatibility).  Up to 16 slots; the
+ * GPU reads palookup[slot][shade][texel] from
+ *   GPU_AXI_BASE + 0x100000 + slot*0x4000 + shade*256 + texel
+ * via gpu_tex_cache port B (the prior on-chip cmap_bram is retired).
+ *
+ * The CPU-visible address depends on how the target maps the GPU's
+ * AXI M0 into the CPU address space — apps should obtain it via the
+ * runtime caps descriptor and add the per-slot offset.  These
+ * constants encode the GPU-side AXI offset (0x100000) and per-slot
+ * stride; the kernel's caps descriptor adds the per-target physical
+ * base.  The lookup is target-portable as long as the kernel
+ * advertises a `palookup_base` field that maps the same 26-bit
+ * GPU AXI offset.
+ * ================================================================ */
+#define OF_GPU_PALOOKUP_AXI_OFFSET 0x00100000u  /* GPU AXI M0 byte addr of slot 0 */
+#define OF_GPU_PALOOKUP_STRIDE     0x00004000u  /* 16 KB per slot */
+#define OF_GPU_PALOOKUP_SLOTS      16
 
 /* ================================================================
  * Ring Buffer State (app-side)
@@ -204,10 +248,28 @@ static inline void _gpu_ring_ensure(uint32_t bytes) {
         ;
 }
 
+/* Mirror counter of GPU_RING_DATA writes — compared against the
+ * hardware's GPU_DBG_RINGWR (MMIO 0x38) to detect lost ring-BRAM
+ * MMIO writes.  Only accurate if nothing else writes GPU_RING_DATA
+ * (colormap upload uses a different register). */
+static uint32_t _gpu_ringwr_count;
+
 /* Write a word to the ring BRAM via MMIO (no cache issues). */
 static inline void _gpu_ring_write(uint32_t w) {
     GPU_RING_DATA = w;
     _gpu_wrptr = (_gpu_wrptr + 4) & _gpu_ring_mask;
+    _gpu_ringwr_count++;
+}
+
+/* Diagnostic: compare the app's submitted-word count against what the
+ * hardware has actually accepted.  If they disagree, some MMIO writes
+ * to GPU_RING_DATA were dropped on the way to the slave — trap
+ * immediately so the trap dump tells us exactly how many are missing. */
+static inline void of_gpu_verify_ringwr(void) {
+    uint32_t hw = *(volatile uint32_t *)0x4A000038u;  /* GPU_DBG_RINGWR */
+    if (hw != _gpu_ringwr_count) {
+        __builtin_trap();
+    }
 }
 
 static inline void _gpu_cmd_header(uint8_t cmd, uint32_t payload_words) {
@@ -234,18 +296,87 @@ static inline void of_gpu_init(void) {
     GPU_CTRL = 1;               /* enable */
 }
 
+/* Upload a palookup table to slot N in SDRAM.  The GPU now reads
+ * palookup bytes through gpu_tex_cache port B (the prior on-chip
+ * cmap_bram was retired); this helper writes the table directly to
+ * the SDRAM region the cache pulls from, then flushes the CPU L1
+ * lines so the GPU sees committed data.  16 KB per slot, up to 16
+ * slots (cf. OF_GPU_PALOOKUP_*).
+ *
+ * Slot selection at draw time is sticky: call of_gpu_set_colormap_id()
+ * to switch.  Reset default is slot 0, so callers that only ever use
+ * one palookup don't need to issue any new commands — the slot-0
+ * wrapper of_gpu_colormap_upload() below preserves the legacy single-
+ * palookup API. */
+static inline void of_gpu_palookup_upload(uint8_t slot, const uint8_t *data,
+                                           uint32_t size) {
+    if (slot >= OF_GPU_PALOOKUP_SLOTS || size > OF_GPU_PALOOKUP_STRIDE) return;
+    uint32_t sdram_base = of_get_caps()->sdram_base;
+    if (sdram_base == 0) return;  /* target without exposed SDRAM */
+    uint8_t *dst = (uint8_t *)(sdram_base
+                              + OF_GPU_PALOOKUP_AXI_OFFSET
+                              + (uint32_t)slot * OF_GPU_PALOOKUP_STRIDE);
+    /* Plain memcpy — palookup uploads are level-load events, not per-
+     * frame.  The of_cache_clean_range that follows ensures the writes
+     * reach SDRAM before the GPU's next tex_cache fill consumes them. */
+    for (uint32_t i = 0; i < size; i++) dst[i] = data[i];
+    of_cache_clean_range(dst, size);
+}
+
+/* Slot 0 wrapper — keeps the legacy of_gpu_colormap_upload() name
+ * working for callers that haven't been updated to multi-slot.  The
+ * GPU's reset default is slot 0, so single-palookup apps are
+ * unchanged. */
 static inline void of_gpu_colormap_upload(const uint8_t *data, uint32_t size) {
-    GPU_CMAP_ADDR = 0;
-    const uint32_t *src32 = (const uint32_t *)data;
-    uint32_t words = size >> 2;
-    for (uint32_t i = 0; i < words; i++)
-        GPU_CMAP_DATA = src32[i];
-    for (uint32_t i = words << 2; i < size; i++)
-        GPU_CMAP_DATA = data[i];
+    of_gpu_palookup_upload(0, data, size);
+}
+
+/* See SDK of_gpu.h for full documentation.  Decimates BUILD's 64 KB
+ * transluc[256][256] to the fabric's 32 KB / 128×256 quantised LUT
+ * (low bit of source axis dropped) during the upload. */
+/* Select the active palookup slot for subsequent SPAN_COLORMAP draws.
+ * Sticky state — stays in effect until the next of_gpu_set_colormap_id().
+ * Default at GPU reset is slot 0 (matching the legacy single-palookup
+ * behaviour). */
+static inline void of_gpu_set_colormap_id(uint8_t slot) {
+    _gpu_cmd_header(GPU_CMD_SET_COLORMAP_ID, 1);
+    _gpu_ring_write((uint32_t)(slot & 0xF));
+}
+
+static inline void of_gpu_translucency_upload(const uint8_t *table, uint32_t size) {
+    if (size != 65536) return;
+    GPU_CMAP_ADDR = GPU_TRANSLUC_TARGET;
+    for (int s7 = 0; s7 < 128; s7++) {
+        const uint8_t *row = &table[(s7 << 1) << 8];
+        const uint32_t *row32 = (const uint32_t *)row;
+        for (int w = 0; w < 64; w++)
+            GPU_CMAP_DATA = row32[w];
+    }
 }
 
 static inline void of_gpu_kick(void) {
     GPU_RING_WRPTR = _gpu_wrptr;
+}
+
+/* Debug-only: verify the kick landed.  Reads GPU_RING_WRPTR back and
+ * traps if the hardware's wrptr doesn't match what we just wrote.  If
+ * a future hang comes back with "gpu_status=0 ring_empty=1 but I just
+ * submitted a fence", calling this right after of_gpu_kick() will
+ * surface a lost MMIO write immediately instead of waiting 2 seconds
+ * for the of_gpu_wait timeout. */
+static inline void of_gpu_kick_verified(void) {
+    /* First: confirm every GPU_RING_DATA write we made actually landed
+     * in the hardware's counter.  Lost ring-BRAM writes are the
+     * primary suspect for the gpudemo freeze — ring_empty goes true
+     * while fence_reached lags because garbage words in ring_bram
+     * look like NOP commands to the GPU and advance rdptr without
+     * ever hitting the fence we submitted. */
+    of_gpu_verify_ringwr();
+    GPU_RING_WRPTR = _gpu_wrptr;
+    uint32_t rb = GPU_RING_WRPTR & 0xFFFF;
+    if (rb != (_gpu_wrptr & 0xFFFF)) {
+        __builtin_trap();
+    }
 }
 
 static inline uint32_t of_gpu_fence(void) {
@@ -257,7 +388,16 @@ static inline uint32_t of_gpu_fence(void) {
 
 static inline uint32_t of_gpu_submit(void) {
     uint32_t token = of_gpu_fence();
-    of_gpu_kick();
+    of_gpu_kick_verified();  /* verified kick: traps if GPU_RING_WRPTR
+                              * readback disagrees with _gpu_wrptr — a
+                              * lost MMIO write or a wrptr-masking bug
+                              * fires an illegal-instruction trap here
+                              * instead of waiting 5 s for of_gpu_wait's
+                              * timeout.  Switched in while chasing the
+                              * gpudemo freeze-after-N-frames issue:
+                              * fence_reached lags app token by exactly
+                              * 4 at trap time, ring_empty = 1 — the
+                              * handoff lost something. */
     return token;
 }
 
@@ -266,8 +406,28 @@ static inline int of_gpu_fence_reached(uint32_t token) {
 }
 
 static inline void of_gpu_wait(uint32_t token) {
-    while (!of_gpu_fence_reached(token))
-        ;
+    /* Bounded spin — if the GPU hangs (fb_acc never flushes, tex cache
+     * stuck in fill, pipeline deadlocked), the old unbounded spin
+     * silently froze the machine with no diagnostic.  Timeout triggers
+     * an illegal-instruction trap so fatal_trap dumps the GPU state;
+     * the registers to inspect on the trap side are:
+     *   GPU_STATUS    (0x14) — main state, pipeline flags, FBSS, tex
+     *   GPU_RING_RDPTR (0x10) — where the GPU last stopped fetching
+     *   GPU_DBG_BADWR  (0x30) — first stray M_WR address (GPU_DEBUG)
+     *
+     * Uses a plain iteration counter rather than a cycle CSR: this
+     * VexiiRiscv build is compiled without --performance-counters so
+     * rdcycle / mcycle both trap illegal-instruction (mtval=0xc8002873
+     * / 0xb8002873 observed).  Iteration count of 50M with a ~10-cycle
+     * body gives roughly ~5 s of wait at 100 MHz — generous enough
+     * that normal fence completions always beat it, tight enough that
+     * a genuine hang surfaces quickly. */
+    uint32_t spins = 50000000u;
+    while (!of_gpu_fence_reached(token)) {
+        if (--spins == 0) {
+            __builtin_trap();  /* → illegal-instruction trap, mcause=2 */
+        }
+    }
 }
 
 static inline void of_gpu_finish(void) {
@@ -310,15 +470,10 @@ static inline void of_gpu_depth_test(of_gpu_depth_func_t func) {
     _gpu_ring_write((uint32_t)func);
 }
 
-static inline void of_gpu_blend(of_gpu_blend_t mode) {
-    _gpu_cmd_header(GPU_CMD_SET_BLEND, 1);
-    _gpu_ring_write((uint32_t)mode);
-}
-
-static inline void of_gpu_alpha_ref(uint8_t ref) {
-    _gpu_cmd_header(GPU_CMD_SET_ALPHA_REF, 1);
-    _gpu_ring_write((uint32_t)ref);
-}
+/* of_gpu_blend / of_gpu_alpha_ref / of_gpu_shade_mode helpers removed
+ * along with their underlying SET_BLEND / SET_ALPHA_REF / SET_SHADE
+ * commands — the datapath never implemented the corresponding combine,
+ * alpha-test, or Gouraud gradient logic. */
 
 static inline void of_gpu_bind_texture(const of_gpu_texture_t *tex) {
     _gpu_cmd_header(GPU_CMD_SET_TEXTURE, 4);
@@ -328,17 +483,30 @@ static inline void of_gpu_bind_texture(const of_gpu_texture_t *tex) {
     _gpu_ring_write((uint32_t)tex->wrap_t);
 }
 
-static inline void of_gpu_shade_mode(int gouraud) {
-    _gpu_cmd_header(GPU_CMD_SET_SHADE, 1);
-    _gpu_ring_write(gouraud ? 1 : 0);
-}
-
 /* ---- Draw commands ---- */
 
 static inline void of_gpu_clear(uint32_t flags, uint16_t color, uint16_t depth) {
     _gpu_cmd_header(GPU_CMD_CLEAR, 2);
     _gpu_ring_write((flags << 16) | color);
     _gpu_ring_write((uint32_t)depth);
+}
+
+/* Clear a rectangular region of the framebuffer to a constant color.
+ * Caller computes the start byte address (fb_base + y*stride + x); the
+ * GPU walks `h` rows × `w` bytes from there, advancing each row by the
+ * active st_fb_stride.  Color's low byte is replicated 4× per FB word
+ * (matches CMD_CLEAR's shape).  Word-aligned full-width strips
+ * (letterbox / status bar) hit the 4-byte fast path; arbitrary x/w
+ * paths byte-strobe the partial-word edges.  Used to retire the last
+ * per-frame CPU memset(frameplace, …) categories — see
+ * project_gpu_owns_framebuffer.md. */
+static inline void of_gpu_clear_rect(uint32_t start_byte_addr,
+                                      uint16_t w, uint16_t h,
+                                      uint8_t color) {
+    _gpu_cmd_header(GPU_CMD_CLEAR_RECT, 3);
+    _gpu_ring_write(start_byte_addr);
+    _gpu_ring_write(((uint32_t)w << 16) | (uint32_t)h);
+    _gpu_ring_write((uint32_t)color);
 }
 
 /*
@@ -358,8 +526,11 @@ static inline void of_gpu_draw_span(const of_gpu_span_t *span) {
                     ((uint32_t)span->flags));
     _gpu_ring_write(((uint32_t)(uint16_t)span->fb_stride << 16) |
                     (uint32_t)span->tex_width);
-    _gpu_ring_write(((uint32_t)span->tex_shift << 8) |
-                    (uint32_t)span->tex_bits);
+    /* Word 8: POT wrap masks (high 16 = T, low 16 = S).  Both = 0
+     * means no wrap (legacy callers).  RTL decodes 0 as 0xFFFF
+     * internally so the addressing pass-through is unchanged. */
+    _gpu_ring_write(((uint32_t)span->tex_h_mask << 16) |
+                    (uint32_t)span->tex_w_mask);
     _gpu_ring_write(span->z_addr);
     _gpu_ring_write((uint32_t)span->zi);
     _gpu_ring_write((uint32_t)span->zistep);
@@ -385,9 +556,38 @@ static inline void _gpu_write_vertex(const of_gpu_vertex_t *v) {
  * Draw triangles from a vertex array.
  * @param verts        Every 3 consecutive vertices form one triangle.
  * @param num_vertices Number of vertices (must be a multiple of 3).
+ *
+ * Emits one CMD_DRAW_TRIANGLES per triangle (1 count word + 3 verts ×
+ * 6 words = 19 payload words each).  Suitable when the surrounding
+ * GPU state changes between triangles (e.g. per-triangle texture).
  */
 static inline void of_gpu_draw_triangles(const of_gpu_vertex_t *verts,
                                           uint32_t num_vertices) {
+    for (uint32_t i = 0; i < num_vertices; i += 3) {
+        _gpu_cmd_header(GPU_CMD_DRAW_TRIANGLES, 19);
+        _gpu_ring_write(3);
+        _gpu_write_vertex(&verts[i + 0]);
+        _gpu_write_vertex(&verts[i + 1]);
+        _gpu_write_vertex(&verts[i + 2]);
+    }
+}
+
+/*
+ * Draw N triangles in a single batched DRAW_TRIANGLES command.
+ *
+ * Payload layout: 1 count word + N × 18 vertex words (6 per vertex).
+ * The GPU FSM renders each triangle as it streams in and re-enters the
+ * payload loop for the next one, so the only difference from the
+ * per-triangle helper above is one cmd_header + cmd_decode pass per
+ * batch instead of per triangle.
+ *
+ * Constraint: every triangle in the batch shares the currently bound
+ * texture and other GPU state.  Group triangles by state and submit
+ * each group as one batch to amortise the command overhead.
+ */
+static inline void of_gpu_draw_triangles_batch(const of_gpu_vertex_t *verts,
+                                                uint32_t num_vertices) {
+    if (num_vertices < 3 || (num_vertices % 3) != 0) return;
     _gpu_cmd_header(GPU_CMD_DRAW_TRIANGLES, 1 + num_vertices * 6);
     _gpu_ring_write(num_vertices);
     for (uint32_t i = 0; i < num_vertices; i++)
