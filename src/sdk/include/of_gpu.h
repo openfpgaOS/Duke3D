@@ -248,28 +248,10 @@ static inline void _gpu_ring_ensure(uint32_t bytes) {
         ;
 }
 
-/* Mirror counter of GPU_RING_DATA writes — compared against the
- * hardware's GPU_DBG_RINGWR (MMIO 0x38) to detect lost ring-BRAM
- * MMIO writes.  Only accurate if nothing else writes GPU_RING_DATA
- * (colormap upload uses a different register). */
-static uint32_t _gpu_ringwr_count;
-
 /* Write a word to the ring BRAM via MMIO (no cache issues). */
 static inline void _gpu_ring_write(uint32_t w) {
     GPU_RING_DATA = w;
     _gpu_wrptr = (_gpu_wrptr + 4) & _gpu_ring_mask;
-    _gpu_ringwr_count++;
-}
-
-/* Diagnostic: compare the app's submitted-word count against what the
- * hardware has actually accepted.  If they disagree, some MMIO writes
- * to GPU_RING_DATA were dropped on the way to the slave — trap
- * immediately so the trap dump tells us exactly how many are missing. */
-static inline void of_gpu_verify_ringwr(void) {
-    uint32_t hw = *(volatile uint32_t *)0x4A000038u;  /* GPU_DBG_RINGWR */
-    if (hw != _gpu_ringwr_count) {
-        __builtin_trap();
-    }
 }
 
 static inline void _gpu_cmd_header(uint8_t cmd, uint32_t payload_words) {
@@ -358,27 +340,6 @@ static inline void of_gpu_kick(void) {
     GPU_RING_WRPTR = _gpu_wrptr;
 }
 
-/* Debug-only: verify the kick landed.  Reads GPU_RING_WRPTR back and
- * traps if the hardware's wrptr doesn't match what we just wrote.  If
- * a future hang comes back with "gpu_status=0 ring_empty=1 but I just
- * submitted a fence", calling this right after of_gpu_kick() will
- * surface a lost MMIO write immediately instead of waiting 2 seconds
- * for the of_gpu_wait timeout. */
-static inline void of_gpu_kick_verified(void) {
-    /* First: confirm every GPU_RING_DATA write we made actually landed
-     * in the hardware's counter.  Lost ring-BRAM writes are the
-     * primary suspect for the gpudemo freeze — ring_empty goes true
-     * while fence_reached lags because garbage words in ring_bram
-     * look like NOP commands to the GPU and advance rdptr without
-     * ever hitting the fence we submitted. */
-    of_gpu_verify_ringwr();
-    GPU_RING_WRPTR = _gpu_wrptr;
-    uint32_t rb = GPU_RING_WRPTR & 0xFFFF;
-    if (rb != (_gpu_wrptr & 0xFFFF)) {
-        __builtin_trap();
-    }
-}
-
 static inline uint32_t of_gpu_fence(void) {
     uint32_t token = _gpu_fence_next++;
     _gpu_cmd_header(GPU_CMD_FENCE, 1);
@@ -388,16 +349,7 @@ static inline uint32_t of_gpu_fence(void) {
 
 static inline uint32_t of_gpu_submit(void) {
     uint32_t token = of_gpu_fence();
-    of_gpu_kick_verified();  /* verified kick: traps if GPU_RING_WRPTR
-                              * readback disagrees with _gpu_wrptr — a
-                              * lost MMIO write or a wrptr-masking bug
-                              * fires an illegal-instruction trap here
-                              * instead of waiting 5 s for of_gpu_wait's
-                              * timeout.  Switched in while chasing the
-                              * gpudemo freeze-after-N-frames issue:
-                              * fence_reached lags app token by exactly
-                              * 4 at trap time, ring_empty = 1 — the
-                              * handoff lost something. */
+    of_gpu_kick();
     return token;
 }
 
