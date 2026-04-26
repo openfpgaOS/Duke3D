@@ -69,7 +69,7 @@ typedef enum {
 #define OF_GPU_SPAN_DEPTH_WRITE  (1 << 4)
 #define OF_GPU_SPAN_PERSP        (1 << 5)
 #define OF_GPU_SPAN_TRANSLUC     (1 << 6)
-#define OF_GPU_SPAN_TRANSLUC_REV (1 << 7)
+/* bit 7 reserved (was OF_GPU_SPAN_TRANSLUC_REV — REV variant dropped) */
 
 /* ================================================================
  * Data Structures
