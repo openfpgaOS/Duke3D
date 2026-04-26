@@ -159,14 +159,12 @@ static uint32_t _gpu_base;
 #define GPU_RING_RDPTR          OF_GPU_REG(0x10)  /* R: GPU read pointer */
 #define GPU_STATUS              OF_GPU_REG(0x14)  /* R: {30'b0, ring_empty, busy} */
 #define GPU_FENCE_REACHED       OF_GPU_REG(0x18)  /* R: last completed fence token */
-#define GPU_STAT_PIXELS         OF_GPU_REG(0x1C)  /* R: pixel counter */
 #define GPU_CMAP_ADDR           OF_GPU_REG(0x20)  /* W: cmap/transluc write address (auto-inc).
                                                       * bit 31 = target select (0=cmap, 1=transluc[]),
                                                       * bits [14:0] = byte address within target. */
 #define GPU_CMAP_DATA           OF_GPU_REG(0x24)  /* W: cmap/transluc write data (32-bit word, addr += 4) */
 #define GPU_TRANSLUC_TARGET     (1u << 31)        /* OR into GPU_CMAP_ADDR to select transluc[] target */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
-#define GPU_STAT_SPANS          OF_GPU_REG(0x2C)  /* R: span counter */
 
 /* ================================================================
  * Command IDs
@@ -352,9 +350,8 @@ static inline void of_gpu_wait(uint32_t token) {
      * silently froze the machine with no diagnostic.  Timeout triggers
      * an illegal-instruction trap so fatal_trap dumps the GPU state;
      * the registers to inspect on the trap side are:
-     *   GPU_STATUS    (0x14) — main state, pipeline flags, FBSS, tex
+     *   GPU_STATUS    (0x14) — busy + ring_empty
      *   GPU_RING_RDPTR (0x10) — where the GPU last stopped fetching
-     *   GPU_DBG_BADWR  (0x30) — first stray M_WR address (GPU_DEBUG)
      *
      * Uses a plain iteration counter rather than a cycle CSR: this
      * VexiiRiscv build is compiled without --performance-counters so
@@ -534,11 +531,6 @@ static inline void of_gpu_draw_triangles_batch(const of_gpu_vertex_t *verts,
     for (uint32_t i = 0; i < num_vertices; i++)
         _gpu_write_vertex(&verts[i]);
 }
-
-/* ---- Statistics ---- */
-
-static inline uint32_t of_gpu_stat_pixels(void) { return GPU_STAT_PIXELS; }
-static inline uint32_t of_gpu_stat_spans(void)  { return GPU_STAT_SPANS; }
 
 #endif /* !OF_PC */
 
