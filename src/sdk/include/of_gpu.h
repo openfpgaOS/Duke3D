@@ -159,11 +159,8 @@ static uint32_t _gpu_base;
 #define GPU_RING_RDPTR          OF_GPU_REG(0x10)  /* R: GPU read pointer */
 #define GPU_STATUS              OF_GPU_REG(0x14)  /* R: {30'b0, ring_empty, busy} */
 #define GPU_FENCE_REACHED       OF_GPU_REG(0x18)  /* R: last completed fence token */
-#define GPU_CMAP_ADDR           OF_GPU_REG(0x20)  /* W: cmap/transluc write address (auto-inc).
-                                                      * bit 31 = target select (0=cmap, 1=transluc[]),
-                                                      * bits [14:0] = byte address within target. */
-#define GPU_CMAP_DATA           OF_GPU_REG(0x24)  /* W: cmap/transluc write data (32-bit word, addr += 4) */
-#define GPU_TRANSLUC_TARGET     (1u << 31)        /* OR into GPU_CMAP_ADDR to select transluc[] target */
+#define GPU_TRANSLUC_ADDR       OF_GPU_REG(0x20)  /* W: byte addr into transluc[] (auto-inc by 4) */
+#define GPU_TRANSLUC_DATA       OF_GPU_REG(0x24)  /* W: 32-bit word into transluc[] */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
 
 /* ================================================================
@@ -314,12 +311,12 @@ static inline void of_gpu_set_colormap_id(uint8_t slot) {
 
 static inline void of_gpu_translucency_upload(const uint8_t *table, uint32_t size) {
     if (size != 65536) return;
-    GPU_CMAP_ADDR = GPU_TRANSLUC_TARGET;
+    GPU_TRANSLUC_ADDR = 0;
     for (int s7 = 0; s7 < 128; s7++) {
         const uint8_t *row = &table[(s7 << 1) << 8];
         const uint32_t *row32 = (const uint32_t *)row;
         for (int w = 0; w < 64; w++)
-            GPU_CMAP_DATA = row32[w];
+            GPU_TRANSLUC_DATA = row32[w];
     }
 }
 
