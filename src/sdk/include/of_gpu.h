@@ -278,18 +278,15 @@ static inline void of_gpu_init(void) {
     GPU_CTRL = 1;               /* enable */
 }
 
-/* Upload a palookup table to slot N in SDRAM.  The GPU now reads
- * palookup bytes through gpu_tex_cache port B (the prior on-chip
- * cmap_bram was retired); this helper writes the table directly to
- * the SDRAM region the cache pulls from, then flushes the CPU L1
- * lines so the GPU sees committed data.  16 KB per slot, up to 16
- * slots (cf. OF_GPU_PALOOKUP_*).
+/* Upload a palookup table to slot N in SDRAM.  The GPU reads palookup
+ * bytes through gpu_tex_cache port B; this helper writes the table
+ * directly to the SDRAM region the cache pulls from, then flushes the
+ * CPU L1 lines so the GPU sees committed data.  16 KB per slot, up to
+ * 16 slots (cf. OF_GPU_PALOOKUP_*).
  *
  * Slot selection at draw time is sticky: call of_gpu_set_colormap_id()
- * to switch.  Reset default is slot 0, so callers that only ever use
- * one palookup don't need to issue any new commands — the slot-0
- * wrapper of_gpu_colormap_upload() below preserves the legacy single-
- * palookup API. */
+ * to switch.  Reset default is slot 0, so single-palookup apps just
+ * call of_gpu_palookup_upload(0, …) and never issue a SET. */
 static inline void of_gpu_palookup_upload(uint8_t slot, const uint8_t *data,
                                            uint32_t size) {
     if (slot >= OF_GPU_PALOOKUP_SLOTS || size > OF_GPU_PALOOKUP_STRIDE) return;
@@ -303,14 +300,6 @@ static inline void of_gpu_palookup_upload(uint8_t slot, const uint8_t *data,
      * reach SDRAM before the GPU's next tex_cache fill consumes them. */
     for (uint32_t i = 0; i < size; i++) dst[i] = data[i];
     of_cache_clean_range(dst, size);
-}
-
-/* Slot 0 wrapper — keeps the legacy of_gpu_colormap_upload() name
- * working for callers that haven't been updated to multi-slot.  The
- * GPU's reset default is slot 0, so single-palookup apps are
- * unchanged. */
-static inline void of_gpu_colormap_upload(const uint8_t *data, uint32_t size) {
-    of_gpu_palookup_upload(0, data, size);
 }
 
 /* See SDK of_gpu.h for full documentation.  Decimates BUILD's 64 KB

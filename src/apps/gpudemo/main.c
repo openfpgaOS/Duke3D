@@ -569,7 +569,7 @@ int main(void) {
     of_gpu_init();
     printf("[gpudemo] gpu_init ok\n");
 
-    of_gpu_colormap_upload(colormap, sizeof(colormap));
+    of_gpu_palookup_upload(0, colormap, sizeof(colormap));
     printf("[gpudemo] colormap uploaded\n");
 
     {
