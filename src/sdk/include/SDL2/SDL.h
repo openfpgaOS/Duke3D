@@ -368,18 +368,40 @@ static inline void SDL_FreePalette(SDL_Palette *p) { (void)p; }
  * Drawing
  * ====================================================================== */
 
+/* GPU bridge — defined in of_sdl_gpu.c.  Pulled in via the SDK link
+ * step (sdk.mk).  Calling it from this header keeps `of_gpu.h`'s
+ * one-TU-per-program invariant intact: the bridge .c file is the only
+ * place that includes `of_gpu.h`. */
+extern int of_sdl_gpu_fill_rect(uint32_t start_byte_addr,
+                                 uint16_t w, uint16_t h,
+                                 uint16_t stride,
+                                 uint8_t  color);
+
 static inline int SDL_FillRect(SDL_Surface *dst, const SDL_Rect *rect,
                                 uint32_t color) {
     uint8_t c = (uint8_t)color;
     if (!dst) return -1;
+    /* Only the framebuffer-backed screen surface can be filled by the
+     * GPU — for CPU-backed offscreen surfaces, fall through to memset. */
+    int is_screen = (dst->pixels == of_video_surface());
+    int x0, y0, x1, y1;
     if (!rect) {
-        memset(dst->pixels, c, (size_t)(dst->pitch * dst->h));
+        x0 = 0; y0 = 0; x1 = dst->w; y1 = dst->h;
+    } else {
+        x0 = rect->x < 0 ? 0 : rect->x;
+        y0 = rect->y < 0 ? 0 : rect->y;
+        x1 = rect->x + rect->w; if (x1 > dst->w) x1 = dst->w;
+        y1 = rect->y + rect->h; if (y1 > dst->h) y1 = dst->h;
+    }
+    if (x1 <= x0 || y1 <= y0) return 0;
+    if (is_screen) {
+        uint32_t fb_byte = (uint32_t)(uintptr_t)dst->pixels
+                         + (uint32_t)(y0 * dst->pitch + x0);
+        of_sdl_gpu_fill_rect(fb_byte,
+                             (uint16_t)(x1 - x0), (uint16_t)(y1 - y0),
+                             (uint16_t)dst->pitch, c);
     } else {
         uint8_t *p = (uint8_t *)dst->pixels;
-        int x0 = rect->x < 0 ? 0 : rect->x;
-        int y0 = rect->y < 0 ? 0 : rect->y;
-        int x1 = rect->x + rect->w; if (x1 > dst->w) x1 = dst->w;
-        int y1 = rect->y + rect->h; if (y1 > dst->h) y1 = dst->h;
         for (int y = y0; y < y1; y++)
             memset(p + y * dst->pitch + x0, c, (size_t)(x1 - x0));
     }
@@ -429,7 +451,11 @@ static inline int SDL_SetRenderDrawColor(SDL_Renderer *r, uint8_t R,
     (void)r; (void)R; (void)g; (void)b; (void)a; return 0;
 }
 static inline int SDL_RenderClear(SDL_Renderer *r) {
-    (void)r; of_video_clear(0); return 0;
+    (void)r;
+    /* GPU-accelerated: clear the active FB via CMD_CLEAR_RECT. */
+    of_sdl_gpu_fill_rect((uint32_t)(uintptr_t)of_video_surface(),
+                         OF_SCREEN_W, OF_SCREEN_H, OF_SCREEN_W, 0);
+    return 0;
 }
 static inline int SDL_RenderCopy(SDL_Renderer *r, SDL_Texture *t,
                                   const SDL_Rect *s, const SDL_Rect *d) {
