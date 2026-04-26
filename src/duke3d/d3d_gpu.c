@@ -596,7 +596,7 @@ void d3d_gpu_tvline(uint8_t *dest, int num_pixels, int shade,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    if (reverse) flags |= OF_GPU_SPAN_TRANSLUC_REV;
+    (void)reverse;  /* OF_GPU_SPAN_TRANSLUC_REV retired in lean Phase 2.1; rev path collapsed to fwd */
     emit_column_span(dest, num_pixels, shade, t, tstep, texture, flags);
 }
 
@@ -617,7 +617,7 @@ void d3d_gpu_tvline2(uint8_t *dest_a, int num_pixels,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    if (reverse) flags |= OF_GPU_SPAN_TRANSLUC_REV;
+    (void)reverse;  /* OF_GPU_SPAN_TRANSLUC_REV retired in lean Phase 2.1; rev path collapsed to fwd */
 
     int32_t ta, tstepa, tb, tstepb;
     to_16_16(vplce_a, vince_a, v_shift, &ta, &tstepa);
@@ -715,7 +715,7 @@ void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    if (reverse) flags |= OF_GPU_SPAN_TRANSLUC_REV;
+    (void)reverse;  /* OF_GPU_SPAN_TRANSLUC_REV retired in lean Phase 2.1; rev path collapsed to fwd */
 
     /* Column-major sprite addressing via swapped S/T:
      *   GPU:  addr = base + t_int * tex_width + s_int
@@ -813,7 +813,7 @@ void d3d_gpu_thline(uint8_t *dest, int num_pixels, int shade_x256,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    if (reverse) flags |= OF_GPU_SPAN_TRANSLUC_REV;
+    (void)reverse;  /* OF_GPU_SPAN_TRANSLUC_REV retired in lean Phase 2.1; rev path collapsed to fwd */
     emit_fwd_hline(dest, num_pixels, shade_x256, i2, i5, asm1, asm2,
                    width_bits, shifter, texture, flags);
 }
