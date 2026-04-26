@@ -194,7 +194,7 @@ static void draw_span_demo(int frame) {
             .tstep     = (64 << 16) / wall_h,        /* T walks down */
             .count     = wall_h,
             .light     = light,
-            .flags     = OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_COLUMN,
+            .flags     = OF_GPU_SPAN_COLORMAP,
             .fb_stride = SCREEN_W,
             .tex_width = 64,
         };
@@ -357,8 +357,6 @@ static void draw_triangle_demo(int frame) {
         of_gpu_texture_t solid_tex = {
             .addr = (uint32_t)(uintptr_t)&face_tex[f / 2],
             .width = 1, .height = 1,
-            .format = OF_GPU_TEXFMT_I8,
-            .wrap_s = OF_GPU_WRAP_REPEAT, .wrap_t = OF_GPU_WRAP_REPEAT,
         };
         of_gpu_bind_texture(&solid_tex);
 

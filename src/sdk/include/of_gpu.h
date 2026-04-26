@@ -58,28 +58,12 @@ typedef enum {
     OF_GPU_DEPTH_NOTEQUAL = 7,
 } of_gpu_depth_func_t;
 
-typedef enum {
-    OF_GPU_BLEND_NONE  = 0,
-    OF_GPU_BLEND_ALPHA = 1,
-    OF_GPU_BLEND_ADD   = 2,
-} of_gpu_blend_t;
-
-typedef enum {
-    OF_GPU_TEXFMT_I8     = 0,
-    OF_GPU_TEXFMT_RGB565 = 1,
-} of_gpu_texfmt_t;
-
-typedef enum {
-    OF_GPU_WRAP_REPEAT = 0,
-    OF_GPU_WRAP_CLAMP  = 1,
-} of_gpu_wrap_t;
-
 /* ================================================================
  * Span Flags
  * ================================================================ */
 
 #define OF_GPU_SPAN_COLORMAP     (1 << 0)
-#define OF_GPU_SPAN_COLUMN       (1 << 1)
+/* bit 1 reserved (was OF_GPU_SPAN_COLUMN — never wired in the RTL) */
 #define OF_GPU_SPAN_SKIP_ZERO    (1 << 2)
 #define OF_GPU_SPAN_DEPTH_TEST   (1 << 3)
 #define OF_GPU_SPAN_DEPTH_WRITE  (1 << 4)
@@ -120,12 +104,9 @@ typedef struct {
 } of_gpu_span_t;
 
 typedef struct {
-    uint32_t        addr;
-    uint16_t        width;
-    uint16_t        height;
-    of_gpu_texfmt_t format;
-    of_gpu_wrap_t   wrap_s;
-    of_gpu_wrap_t   wrap_t;
+    uint32_t addr;
+    uint16_t width;
+    uint16_t height;
 } of_gpu_texture_t;
 
 typedef struct {
@@ -181,14 +162,6 @@ static uint32_t _gpu_base;
 #define GPU_CMD_SET_COLORMAP_ID 0x28  /* 1-word payload: [3:0] = palookup slot */
 #define GPU_CMD_DRAW_TRIANGLES  0x30
 #define GPU_CMD_DRAW_SPAN       0x40
-/* Reserved opcodes — do not reuse:
- *   0x22 SET_BLEND      — no combine path in the datapath
- *   0x25 SET_SHADE      — Gouraud gradient dropped in the FMax push
- *   0x26 SET_ALPHA_REF  — no alpha test in the datapath
- *   0x27 SET_SKIP_ZERO  — used internally by the triangle path
- *   0x31 DRAW_INDEXED   — expand indices CPU-side and emit per-triangle
- *   0x41 DRAW_SPANS     — half-implemented batch; emit N separate spans
- *   0x42 DRAW_SPRITE    — 2-triangle sprite is cheaper and rotates */
 
 /* ================================================================
  * Palookup (colormap) layout in SDRAM — must match gpu_core.v's
@@ -411,11 +384,9 @@ static inline void of_gpu_depth_test(of_gpu_depth_func_t func) {
  * alpha-test, or Gouraud gradient logic. */
 
 static inline void of_gpu_bind_texture(const of_gpu_texture_t *tex) {
-    _gpu_cmd_header(GPU_CMD_SET_TEXTURE, 4);
+    _gpu_cmd_header(GPU_CMD_SET_TEXTURE, 2);
     _gpu_ring_write(tex->addr);
     _gpu_ring_write(((uint32_t)tex->width << 16) | tex->height);
-    _gpu_ring_write(((uint32_t)tex->format << 16) | tex->wrap_s);
-    _gpu_ring_write((uint32_t)tex->wrap_t);
 }
 
 /* ---- Draw commands ---- */

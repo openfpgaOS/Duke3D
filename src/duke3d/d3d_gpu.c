@@ -365,11 +365,9 @@ void d3d_gpu_vline(uint8_t *dest, int num_pixels, int shade,
     int32_t t, tstep;
     to_16_16(vplce, vince, v_shift, &t, &tstep);
 
-    /* OF_GPU_SPAN_COLUMN is vestigial in the current GPU build (per
-     * gpu_architecture.md §1.1) — fb_stride alone selects column vs
-     * row walk now.  emit_column_span sets fb_stride = bytesperline
-     * (320 on this target), so the rasteriser steps one row per
-     * fragment automatically. */
+    /* fb_stride alone selects column vs row walk: emit_column_span
+     * sets fb_stride = bytesperline so the rasteriser steps one row
+     * per fragment automatically. */
     emit_column_span(dest, num_pixels, shade, t, tstep, texture,
                      OF_GPU_SPAN_COLORMAP);
 }
