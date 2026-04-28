@@ -22,10 +22,11 @@ extern "C" {
 
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>     /* malloc — used by of_gpu_init for the batch scratch buffer */
 
 #ifndef OF_PC
 #include "of_caps.h"
-#include "of_cache.h"   /* of_cache_clean_range() — used by palookup upload */
+#include "of_cache.h"   /* of_cache_clean_range() — used by palookup upload + batch */
 #endif
 
 /* ================================================================
@@ -94,6 +95,12 @@ typedef struct {
     uint16_t pad;
     int32_t  s, t;          /* Texture coordinates, 16.16 fixed-point */
     int32_t  w;             /* 1/W for perspective (0x10000 = affine) */
+    /* r = light index into the active palookup slot.  Only `r` of v0
+     * is sampled (flat shading per triangle).  CMD_DRAW_TRIANGLES
+     * fragments ALWAYS route through palookup[colormap_id][r][texel];
+     * any `r` value used MUST have its row populated, or the fragment
+     * renders 0x00.  Convention: load row 0 with identity (cm[i]=i)
+     * so r=0 means "raw textured / unlit". */
     uint8_t  r, g, b, a;   /* Vertex color / light / alpha */
 } of_gpu_vertex_t;          /* 24 bytes = 6 words */
 
@@ -116,12 +123,20 @@ static uint32_t _gpu_base;
 #define GPU_CTRL                OF_GPU_REG(0x00)  /* W: bit0=enable, bit1=soft_reset, bit2=ring_reset */
 #define GPU_RING_WRPTR          OF_GPU_REG(0x04)  /* W: CPU write pointer (byte offset) — kicks GPU */
 #define GPU_RING_DATA           OF_GPU_REG(0x08)  /* W: write next word to ring BRAM (auto-increment) */
+#define GPU_DMA_SRC             OF_GPU_REG(0x0C)  /* W: SDRAM byte address of command buffer to pull */
 #define GPU_RING_RDPTR          OF_GPU_REG(0x10)  /* R: GPU read pointer */
-#define GPU_STATUS              OF_GPU_REG(0x14)  /* R: {30'b0, ring_empty, busy} */
+#define GPU_STATUS              OF_GPU_REG(0x14)  /* R: {29'b0, dma_busy, ring_empty, busy} */
 #define GPU_FENCE_REACHED       OF_GPU_REG(0x18)  /* R: last completed fence token */
+#define GPU_DMA_LEN             OF_GPU_REG(0x1C)  /* W: word count to pull (≤4096) */
 #define GPU_TRANSLUC_ADDR       OF_GPU_REG(0x20)  /* W: byte addr into transluc[] (auto-inc by 4) */
 #define GPU_TRANSLUC_DATA       OF_GPU_REG(0x24)  /* W: 32-bit word into transluc[] */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
+#define GPU_DMA_KICK            OF_GPU_REG(0x2C)  /* W: write 1 to fire DMA pull from (SRC, LEN) */
+
+/* GPU_STATUS bit definitions */
+#define GPU_STATUS_BUSY        0x1u
+#define GPU_STATUS_RING_EMPTY  0x2u
+#define GPU_STATUS_DMA_BUSY    0x4u
 
 /* ================================================================
  * Command IDs
@@ -141,6 +156,22 @@ static uint32_t _gpu_base;
 #define GPU_CMD_SET_COLORMAP_ID 0x28  /* 1-word payload: [3:0] = palookup slot */
 #define GPU_CMD_DRAW_TRIANGLES  0x30
 #define GPU_CMD_DRAW_SPAN       0x40
+/* CMD_DRAW_SPANS_BATCH: header carries `15*N` payload words (no count
+ * word — N derives from header).  Decoder loops the existing CMD_DRAW_SPAN
+ * fragment-pipe path once per 15-word span.  Saves the per-span MMIO
+ * header + (when paired with the doorbell-DMA path) lets the CPU stream
+ * the whole batch as cached scalar stores into SDRAM, then kick the GPU
+ * to pull it via its own AXI master — eliminates the 120 ns/word MMIO
+ * stall that dominates per-span dispatch cost. */
+#define GPU_CMD_DRAW_SPANS_BATCH 0x41
+
+/* Maximum spans per CMD_DRAW_SPANS_BATCH dispatch.  At 15 words/span
+ * that's 1920 words = 7680 bytes per batch — fits comfortably in the
+ * 16 KB ring with room for state-change commands.  of_gpu_draw_spans_batch
+ * splits longer arrays across multiple kicks.  Exposed so callers
+ * (e.g. game-side accumulators) can size their own buffers to flush at
+ * the same boundary the SDK helper uses internally. */
+#define OF_GPU_BATCH_MAX_SPANS  128
 
 /* ================================================================
  * Palookup (colormap) layout in SDRAM — must match gpu_core.v's
@@ -162,9 +193,22 @@ static uint32_t _gpu_base;
  * advertises a `palookup_base` field that maps the same 26-bit
  * GPU AXI offset.
  * ================================================================ */
-#define OF_GPU_PALOOKUP_AXI_OFFSET 0x00100000u  /* GPU AXI M0 byte addr of slot 0 */
+/* GPU AXI M0 byte addr of palookup slot 0.  Was 0x00100000 but that
+ * collided with OF_TARGET_FB1_BASE = 0x10100000, so every FB1 frame
+ * overwrote the palookup table.  Moved to the 3 MB gap between heap
+ * end (0x13400000) and the audio sample pool (0x13700000).  MUST stay
+ * in sync with PALOOKUP_BASE in src/fpga/common/gpu_core.v. */
+#define OF_GPU_PALOOKUP_AXI_OFFSET 0x03400000u
 #define OF_GPU_PALOOKUP_STRIDE     0x00004000u  /* 16 KB per slot */
 #define OF_GPU_PALOOKUP_SLOTS      16
+
+/* Doorbell-DMA scratch region — must live in SDRAM because gpu_core's
+ * m_rd_* AXI master only reaches the SDRAM arbiter (see core_top.v's
+ * sdram_arb instantiation: GPU is m0, no other targets are wired).
+ * Placed right above the palookup window (0x100000..0x140000); 16 KB
+ * reserved leaves headroom over the 7680-byte max batch payload. */
+#define OF_GPU_BATCH_BUF_AXI_OFFSET  0x00140000u
+#define OF_GPU_BATCH_BUF_BYTES       0x00004000u  /* 16 KB reserved */
 
 /* ================================================================
  * Ring Buffer State (app-side)
@@ -176,6 +220,14 @@ static uint32_t _gpu_wrptr;
 static uint32_t _gpu_fence_next;
 
 static const uint32_t _gpu_ring_mask = OF_GPU_RING_SIZE - 1;
+
+/* Doorbell-DMA scratch buffer.  Pinned to a fixed SDRAM offset by
+ * of_gpu_init — gpu_core's m_rd_* AXI master only reaches the SDRAM
+ * arbiter, so the scratch must live in SDRAM.  Apps' malloc heap
+ * starts in CRAM0 territory and would be unreachable to the GPU.
+ * NULL on targets that don't expose SDRAM via caps; the helper then
+ * falls back to per-span MMIO. */
+static uint32_t *_gpu_batch_buf;
 
 /* ---- Internal helpers ---- */
 
@@ -223,6 +275,22 @@ static inline void of_gpu_init(void) {
     GPU_CTRL = 4;               /* ring_reset: clear wr_addr + wrptr + rdptr */
     GPU_RING_WRPTR = 0;
     GPU_CTRL = 1;               /* enable */
+
+    /* Pin the doorbell-DMA scratch buffer at a known SDRAM offset.
+     * gpu_core's m_rd_* AXI master goes only to the SDRAM arbiter
+     * (core_top.v: sdram_arb m0) so the scratch MUST live in SDRAM —
+     * a malloc()'d pointer that early-init resolved to CRAM0 (where
+     * apps' .text/.data live) is unreachable and the DMA would pull
+     * garbage.  Same scheme palookup uses (caps->sdram_base +
+     * OF_GPU_PALOOKUP_AXI_OFFSET); we sit one window above. */
+    {
+        const struct of_capabilities *caps = of_get_caps();
+        if (caps && caps->sdram_base != 0)
+            _gpu_batch_buf = (uint32_t *)(uintptr_t)
+                (caps->sdram_base + OF_GPU_BATCH_BUF_AXI_OFFSET);
+        else
+            _gpu_batch_buf = NULL;   /* helper falls back to per-MMIO */
+    }
 }
 
 /* Upload a palookup table to slot N in SDRAM.  The GPU reads palookup
@@ -237,21 +305,48 @@ static inline void of_gpu_init(void) {
 static inline void of_gpu_palookup_upload(uint8_t slot, const uint8_t *data,
                                            uint32_t size) {
     if (slot >= OF_GPU_PALOOKUP_SLOTS || size > OF_GPU_PALOOKUP_STRIDE) return;
-    uint32_t sdram_base = of_get_caps()->sdram_base;
-    if (sdram_base == 0) return;  /* target without exposed SDRAM */
-    uint8_t *dst = (uint8_t *)(sdram_base
-                              + OF_GPU_PALOOKUP_AXI_OFFSET
-                              + (uint32_t)slot * OF_GPU_PALOOKUP_STRIDE);
-    /* Plain memcpy — palookup uploads are level-load events, not per-
-     * frame.  The of_cache_clean_range that follows ensures the writes
-     * reach SDRAM before the GPU's next tex_cache fill consumes them. */
-    for (uint32_t i = 0; i < size; i++) dst[i] = data[i];
-    of_cache_clean_range(dst, size);
+    const struct of_capabilities *caps = of_get_caps();
+    if (caps->sdram_base == 0) return;  /* target without exposed SDRAM */
+    /* Write through the uncached SDRAM alias so the bytes hit DRAM
+     * directly — no D-cache pollution, no flush dependency.  The GPU's
+     * tex_cache port B reads the same physical bytes via AXI; on the
+     * first fill it sees the committed data unconditionally.
+     *
+     * Use 32-bit word writes, not single-byte writes.  Pocket's SDRAM
+     * controller passes wstrb through, but the 16-bit PHY behind it
+     * resolves byte-strobed writes via a read-modify-write path that
+     * has produced "palookup mostly zeros" symptoms in practice — the
+     * GPU then sees a near-uniform table and every pixel resolves to
+     * the same palette index regardless of (texel, shade), which reads
+     * on screen as a uniform colour with no fade.  Full-word writes
+     * sidestep the RMW path; the SDRAM slave's [25:2] address decode
+     * means consecutive uint32_t writes hit consecutive SDRAM words.
+     *
+     * The prior cached + cache_clean version had the same class of
+     * stale-data bug; uncached alias is the right destination, just
+     * in 32-bit chunks rather than bytes. */
+    uint32_t cached_base = caps->sdram_base
+                         + OF_GPU_PALOOKUP_AXI_OFFSET
+                         + (uint32_t)slot * OF_GPU_PALOOKUP_STRIDE;
+    volatile uint32_t *dst = (volatile uint32_t *)(uintptr_t)
+        ((cached_base - caps->sdram_base) + caps->sdram_uncached_base);
+    const uint32_t *src = (const uint32_t *)data;
+    uint32_t words = size >> 2;
+    for (uint32_t i = 0; i < words; i++) dst[i] = src[i];
+    /* Tail bytes (size not a multiple of 4) — fold into a final word
+     * so we still write every byte the caller passed.  Pad the unused
+     * lanes with zero rather than skipping, so the SDRAM word is
+     * fully defined regardless of whatever was there before. */
+    uint32_t tail = size & 3u;
+    if (tail) {
+        uint32_t w = 0;
+        const uint8_t *tb = data + (words << 2);
+        for (uint32_t i = 0; i < tail; i++)
+            w |= ((uint32_t)tb[i]) << (i * 8);
+        dst[words] = w;
+    }
 }
 
-/* See SDK of_gpu.h for full documentation.  Decimates BUILD's 64 KB
- * transluc[256][256] to the fabric's 32 KB / 128×256 quantised LUT
- * (low bit of source axis dropped) during the upload. */
 /* Select the active palookup slot for subsequent SPAN_COLORMAP draws.
  * Sticky state — stays in effect until the next of_gpu_set_colormap_id().
  * Default at GPU reset is slot 0 (matching the legacy single-palookup
@@ -261,6 +356,9 @@ static inline void of_gpu_set_colormap_id(uint8_t slot) {
     _gpu_ring_write((uint32_t)(slot & 0xF));
 }
 
+/* Decimates BUILD's 64 KB transluc[256][256] to the fabric's 32 KB
+ * / 128×256 quantised LUT (low bit of source axis dropped) during the
+ * upload. */
 static inline void of_gpu_translucency_upload(const uint8_t *table, uint32_t size) {
     if (size != 65536) return;
     GPU_TRANSLUC_ADDR = 0;
@@ -413,6 +511,142 @@ static inline void of_gpu_draw_span(const of_gpu_span_t *span) {
     _gpu_ring_write((uint32_t)span->zi_step);
 }
 
+/* Encode one span into 15 words (the same field layout as of_gpu_draw_span's
+ * payload, sans header).  Used by the batch helper to build the SDRAM
+ * scratch buffer at scalar-store speed. */
+static inline void _gpu_encode_span(uint32_t *p, const of_gpu_span_t *s) {
+    p[0]  = s->fb_addr;
+    p[1]  = s->tex_addr;
+    p[2]  = (uint32_t)s->s;
+    p[3]  = (uint32_t)s->t;
+    p[4]  = (uint32_t)s->sstep;
+    p[5]  = (uint32_t)s->tstep;
+    p[6]  = ((uint32_t)s->count << 16) | ((uint32_t)s->light << 8) |
+            (uint32_t)s->flags;
+    p[7]  = ((uint32_t)(uint16_t)s->fb_stride << 16) | (uint32_t)s->tex_width;
+    p[8]  = ((uint32_t)s->tex_h_mask << 16) | (uint32_t)s->tex_w_mask;
+    p[9]  = (uint32_t)s->sdivz;
+    p[10] = (uint32_t)s->tdivz;
+    p[11] = (uint32_t)s->zi_persp;
+    p[12] = (uint32_t)s->sdivz_step;
+    p[13] = (uint32_t)s->tdivz_step;
+    p[14] = (uint32_t)s->zi_step;
+}
+
+/* of_gpu_draw_spans_batch — submit N spans in one go.
+ *
+ * Same per-span semantics as of_gpu_draw_span; the spans are processed
+ * back-to-back through the existing fragment pipeline.  No state is
+ * shared between spans — callers must emit any SET_FB / SET_TEXTURE /
+ * SET_COLORMAP_ID etc. before the batch.
+ *
+ * Fast path (default): builds the entire batch in an SDRAM scratch
+ * buffer using cached scalar stores (~5 ns/word), flushes the populated
+ * range, then writes one CMD_DRAW_SPANS_BATCH header into the ring and
+ * kicks the GPU's doorbell-DMA puller.  GPU streams the buffer via its
+ * own AXI master while the CPU is free to do other work.  Per-span
+ * cost: 15 cached stores ≈ 75 ns vs 16 MMIO writes × 120 ns = 1920 ns
+ * — about 25× faster, plus the CPU is no longer stalled on the AXI bus.
+ *
+ * Fallback (scratch malloc failed at init): emits N standalone
+ * CMD_DRAW_SPAN commands via per-word MMIO.  Slower but correct.
+ *
+ * Caps the batch at OF_GPU_BATCH_MAX_SPANS spans per kick — longer
+ * arrays split across multiple kicks.  No upper bound on the total
+ * `count`; throughput is amortised. */
+static inline void of_gpu_draw_spans_batch(const of_gpu_span_t *spans,
+                                            int count) {
+    if (count <= 0 || spans == NULL) return;
+
+    if (_gpu_batch_buf == NULL) {
+        /* Fallback: emit N standalone spans via MMIO. */
+        for (int i = 0; i < count; i++)
+            of_gpu_draw_span(&spans[i]);
+        return;
+    }
+
+    while (count > 0) {
+        int n = (count > OF_GPU_BATCH_MAX_SPANS) ? OF_GPU_BATCH_MAX_SPANS
+                                                  : count;
+        uint32_t payload_words = (uint32_t)(15 * n);
+
+        /* TEMP TRACE: log every batch (first 12 only, so we don't
+         * flood UART) — index, ring state before kick, free space.
+         * If the batches show ring overflow or rdptr stalls, the
+         * fence-wait hang's root cause will be obvious. */
+        static int _of_gpu_batch_idx = 0;
+        if (_of_gpu_batch_idx < 30) {
+            extern int printf(const char *, ...);
+            uint32_t rdptr_now = GPU_RING_RDPTR;
+            uint32_t free_bytes = (rdptr_now - _gpu_wrptr - 4) & _gpu_ring_mask;
+            printf("[batch%d] n=%d payload=%u rdptr=0x%04x sdk_wrptr=0x%04x ring_wrptr=0x%04x free=%u dma=%u\n",
+                   _of_gpu_batch_idx, n, (unsigned)payload_words,
+                   (unsigned)rdptr_now, (unsigned)_gpu_wrptr,
+                   (unsigned)GPU_RING_WRPTR, (unsigned)free_bytes,
+                   (unsigned)((GPU_STATUS >> 2) & 1));
+            _of_gpu_batch_idx++;
+        }
+
+        /* Build the batch in cached SDRAM at scalar-store speed.  The
+         * `wait for DMA at end of helper` policy below guarantees the
+         * scratch buffer is free for reuse before we get here. */
+        for (int i = 0; i < n; i++)
+            _gpu_encode_span(&_gpu_batch_buf[i * 15], &spans[i]);
+
+        /* Force the populated range out of L1 so the GPU's m_rd_*
+         * AXI master sees committed bytes.  cbo.flush (writeback +
+         * invalidate) is required on this VexiiRiscv config — cbo.clean
+         * alone has been observed to leave dirty lines in L1, and the
+         * GPU reads DRAM directly (not through the CPU's cache).
+         * Same rationale as bank_preload's flush of the SF2 sample
+         * blob before handing it to the audio mixer. */
+        of_cache_flush_range(_gpu_batch_buf, payload_words * 4);
+
+        /* Reserve enough ring space for header + DMA-streamed payload.
+         * Write the header word via MMIO; this advances ring_wr_addr in
+         * the BRAM but does NOT publish ring_wrptr — we let the DMA's
+         * end-of-kick pulse publish header + payload atomically.  This
+         * avoids a race where the decoder fetches the header and runs
+         * into ring BRAM cells the DMA hasn't filled yet. */
+        _gpu_ring_ensure((1 + payload_words) * 4);
+        _gpu_ring_write(((uint32_t)GPU_CMD_DRAW_SPANS_BATCH << 24) |
+                        payload_words);
+
+        /* Arm and fire the DMA puller.  When DMA finishes the last
+         * sub-burst, the GPU FSM lifts ring_wrptr to the post-DMA
+         * ring_wr_addr — exposing the full command (header + payload)
+         * to the decoder in a single atomic step. */
+        GPU_DMA_SRC  = (uint32_t)(uintptr_t)_gpu_batch_buf;
+        GPU_DMA_LEN  = payload_words;
+        GPU_DMA_KICK = 1;
+
+        /* Track the words the DMA will write — keep _gpu_wrptr in sync
+         * with the GPU's eventual ring_wrptr so subsequent
+         * _gpu_ring_ensure calls compute free space correctly. */
+        _gpu_wrptr = (_gpu_wrptr + payload_words * 4) & _gpu_ring_mask;
+
+        /* Wait for the DMA pull to complete before returning.  Critical:
+         * the DMA shares ring_wr_addr with CPU MMIO writes (port-A mux
+         * picks DMA when both fire same cycle).  If the caller issues
+         * any ring write — fence in of_gpu_finish, SET_FB / SET_TEXTURE
+         * for the next frame, etc. — while DMA is still streaming, the
+         * CPU's data gets overwritten by DMA payload.  Drain takes
+         * ~23 µs per max-size batch at 100 MHz; minor next to the ~100
+         * µs of CPU compute typically waiting for the next batch.  The
+         * GPU rasteriser already started consuming as DMA published
+         * partial data — this wait is for the DMA fetch path, not for
+         * the render itself, so CPU/GPU parallelism is preserved. */
+        while (GPU_STATUS & GPU_STATUS_DMA_BUSY)
+            ;
+
+        /* No after-dma trace; one-shot guard removed (we trace every
+         * batch above instead). */
+
+        spans += n;
+        count -= n;
+    }
+}
+
 static inline void _gpu_write_vertex(const of_gpu_vertex_t *v) {
     _gpu_ring_write(((uint32_t)(uint16_t)v->x << 16) | (uint16_t)v->y);
     _gpu_ring_write(((uint32_t)v->z << 16));
@@ -446,7 +680,7 @@ static inline void of_gpu_draw_triangles(const of_gpu_vertex_t *verts,
 /*
  * Draw N triangles in a single batched DRAW_TRIANGLES command.
  *
- * Payload layout: 1 count word + N × 18 vertex words (6 per vertex).
+ * Payload layout: 1 count word + N × 6 vertex words (6 words per vertex).
  * The GPU FSM renders each triangle as it streams in and re-enters the
  * payload loop for the next one, so the only difference from the
  * per-triangle helper above is one cmd_header + cmd_decode pass per

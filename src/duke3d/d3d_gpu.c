@@ -19,7 +19,24 @@
 #include <string.h>
 
 int d3d_gpu_present  = 0;
-int d3d_gpu_use_spans = 0;   /* Master switch.  Set to 0 BEFORE the
+/* Diagnostic flag — when set to 1 (e.g. via debugger), d3d_gpu_submit_span
+ * counts the would-be span but skips the actual submit, isolating per-span
+ * CPU formatting cost from dispatch + GPU rasterisation cost.  Frame is
+ * visually wrong while set; [perf-rooms] render time reveals the upper
+ * bound on what batching could save. */
+int d3d_gpu_skip_submit = 0;
+int d3d_gpu_span_count  = 0;
+/* Snapshot of the just-finished frame's span count.  The [perf-rooms]
+ * line prints this AFTER d3d_gpu_set_fb has reset the live counter,
+ * so we copy the value into _last just before reset. */
+int d3d_gpu_span_count_last = 0;
+/* Batch-flush counter: how many times d3d_gpu_flush_batch fired this
+ * frame.  Tells us whether batches are filling up (efficient — high
+ * spans-per-flush) or being broken up by state changes (small
+ * batches = high overhead per span). */
+int d3d_gpu_batch_flushes = 0;
+int d3d_gpu_batch_flushes_last = 0;
+int d3d_gpu_use_spans = 1;   /* Master switch.  Set to 0 BEFORE the
                               * first frame to disable the GPU
                               * entirely: d3d_gpu_init() bails so
                               * d3d_gpu_present stays 0, every helper
@@ -29,10 +46,13 @@ int d3d_gpu_use_spans = 0;   /* Master switch.  Set to 0 BEFORE the
                               * run unmodified.  Used for the GPU-on
                               * vs GPU-off A/B perf test. */
 
-/* Cached framebuffer base + stride so the per-span helpers don't have
- * to chase the BUILD globals every call. */
+/* Cached framebuffer base for the GPU-disabled CPU-fallback path.
+ * Stride is read from BUILD's bytesperline at submit time: setviewtotile
+ * (low-detail mode, tilted/rotated screen blits) flips bytesperline
+ * mid-frame between screen stride and tile stride, and a stale cache
+ * here would land vline writes on every other tile row. */
 static uint8_t *fb_base;
-static int      fb_stride;   /* pixels per scanline */
+extern int32_t  bytesperline;   /* BUILD's live row stride in bytes */
 
 /* Multi-palookup state.  The fabric now holds up to 16 palookups in
  * SDRAM (one per slot), reachable via gpu_tex_cache port B; CPU
@@ -49,16 +69,12 @@ static const uint8_t *gpu_pal_base_of_slot[D3D_GPU_PAL_SLOTS];
 static int            gpu_pal_next_slot;     /* number of slots in use */
 static int            gpu_current_slot;      /* GPU's active slot mirror, -1 = unset */
 
-/* Deferred GPU-tex-cache invalidate is now unconditional once per
- * frame (see d3d_gpu_set_fb).  The dirty flag stayed in the API as
- * a hint hook for callers that want to forcibly mark mid-frame, but
- * d3d_gpu_set_fb invalidates regardless — covering every BUILD path
- * that mutates tile bytes (loadtile, copytilepiece, allocache shuffles,
- * animated-tile data updates, runtime-built HUD/weapon sprites)
- * without having to chase each one individually.  Cache walk is
- * ~10 µs at 100 MHz; the GPU tex cache only helps within a frame, so
- * across-frame invalidate costs us nothing in steady state. */
-static volatile int gpu_tex_dirty;
+/* GPU texture-cache invalidate is unconditional at every frame
+ * boundary in d3d_gpu_set_fb — covers every BUILD path that mutates
+ * tile bytes without having to hook each one.  Cache walk is ~10 µs
+ * at 100 MHz; the tex cache only helps within a frame so an
+ * across-frame invalidate costs nothing in steady state.
+ * d3d_gpu_mark_tex_dirty is kept as an ABI no-op for tiles.c. */
 
 void d3d_gpu_init(void)
 {
@@ -81,15 +97,84 @@ void d3d_gpu_init(void)
     of_gpu_init();
     d3d_gpu_present = 1;
     printf("[d3d_gpu] GPU init ok (base=0x%08x)\n", (unsigned)caps->gpu_base);
+    /* Sanity probes for the doorbell-DMA scratch buffer: it MUST live
+     * in SDRAM (gpu_core's m_rd_* only reaches the SDRAM arbiter).  If
+     * this prints a CRAM0 address (very low value, typical 0x000xxxxx)
+     * the GPU can't read it and the batch path will pull garbage. */
+    extern uint32_t *_gpu_batch_buf;
+    printf("[d3d_gpu] batch_buf=%p sdram_base=0x%08x\n",
+           (void *)_gpu_batch_buf, (unsigned)caps->sdram_base);
+    /* Round-trip probe: write a sentinel through the cached pointer,
+     * flush, then read back through the uncached SDRAM alias.  If the
+     * read shows the sentinel, the cached store + cbo.flush actually
+     * reach DRAM (where the GPU's m_rd_* will read from).  If it shows
+     * something else, our flush is broken or the buffer isn't in
+     * SDRAM at all. */
+    if (_gpu_batch_buf) {
+        _gpu_batch_buf[0] = 0xDEADBEEFu;
+        of_cache_flush_range(_gpu_batch_buf, 4);
+        volatile uint32_t *uncached =
+            (volatile uint32_t *)of_uncached(_gpu_batch_buf);
+        printf("[d3d_gpu] batch_buf[0] readback (uncached) = 0x%08x\n",
+               (unsigned)uncached[0]);
+    }
+}
+
+/* Span batch accumulator.
+ *
+ * BUILD's wall + sprite renderers issue one of_gpu_span_t per pixel
+ * column at frame rate.  Submitting each through of_gpu_draw_span
+ * costs ~16 MMIO writes × ~120 ns = 2.3 µs per span — at ~1850 spans
+ * per frame that's 4.3 ms of pure dispatch, half the per-frame budget
+ * at 60 Hz.  Accumulating up to OF_GPU_BATCH_MAX_SPANS spans then
+ * shipping them via of_gpu_draw_spans_batch (which uses the GPU's
+ * doorbell-DMA puller) cuts that to ~170 µs total because the build
+ * is now cached scalar stores, not blocking AXI writes.  CPU is
+ * freed for game logic / next-frame prep while the GPU drains the
+ * buffer via its own AXI master.
+ *
+ * Flush points (anything that changes shared GPU state which spans
+ * later in the batch could see if dispatched out of order):
+ *   - of_gpu_set_colormap_id() switching palookup slots — see
+ *     d3d_gpu_shade_for; both sites flush before the SET.
+ *   - End of frame (d3d_gpu_flush / d3d_gpu_drain).
+ *   - Buffer full (= OF_GPU_BATCH_MAX_SPANS).
+ *
+ * fb_addr / tex_addr are baked into each span at submit time so a
+ * change of FB or texture between spans does NOT need a flush. */
+static of_gpu_span_t span_buf[OF_GPU_BATCH_MAX_SPANS];
+static int           span_buf_count;
+
+static inline void d3d_gpu_flush_batch(void) {
+    if (span_buf_count > 0) {
+        d3d_gpu_batch_flushes++;
+        of_gpu_draw_spans_batch(span_buf, span_buf_count);
+        span_buf_count = 0;
+    }
+}
+
+static inline void d3d_gpu_submit_span(const of_gpu_span_t *span) {
+    d3d_gpu_span_count++;
+    if (d3d_gpu_skip_submit) return;
+    span_buf[span_buf_count++] = *span;
+    if (span_buf_count >= OF_GPU_BATCH_MAX_SPANS)
+        d3d_gpu_flush_batch();
 }
 
 void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels)
 {
-    /* Cache fb_base/fb_stride unconditionally — d3d_gpu_clear_rect_fb's
-     * CPU memset fallback uses fb_stride for per-row advance even when
-     * the GPU is disabled (use_spans=0 / d3d_gpu_present=0). */
-    fb_base   = fb_pixels;
-    fb_stride = stride_pixels;
+    /* Cache fb_base for the GPU-off CPU memset path in
+     * d3d_gpu_clear_rect_fb.  Stride is no longer cached — span
+     * emitters read BUILD's bytesperline live so they track
+     * setviewtotile's stride flip without a separate hook. */
+    fb_base = fb_pixels;
+    /* Snapshot the just-finished frame's counters BEFORE resetting —
+     * the [perf-rooms] print runs after _nextpage returns (= after
+     * this function), so reading the live counter would always see 0. */
+    d3d_gpu_span_count_last     = d3d_gpu_span_count;
+    d3d_gpu_batch_flushes_last  = d3d_gpu_batch_flushes;
+    d3d_gpu_span_count = 0;
+    d3d_gpu_batch_flushes = 0;
     if (!d3d_gpu_present) return;
 
     /* Unconditional GPU-tex-cache invalidate at every frame boundary.
@@ -103,16 +188,15 @@ void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels)
      * animated-tile data updates, runtime HUD/weapon sprite builds —
      * without us having to find and hook each one. */
     GPU_TEX_FLUSH = 1;
-    gpu_tex_dirty = 0;
 
     of_gpu_set_framebuffer((uint32_t)(uintptr_t)fb_pixels,
                            (uint16_t)stride_pixels);
 }
 
-/* Upload the active palookup as the GPU colormap.  Duke3D's palookup
- * is 32 shade rows × 256 entries = 8 KB; the GPU's colormap RAM holds
- * up to 64 rows × 256 entries.  We upload all NUM_SHADES rows starting
- * at row 0 so SPAN_COLORMAP's `light` field directly indexes shade. */
+/* Upload the active palookup into GPU SDRAM slot 0.  Duke3D's
+ * palookup is 32 shade rows × 256 entries = 8 KB; the fabric reserves
+ * 16 KB per slot and 16 slots in SDRAM (see OF_GPU_PALOOKUP_*).
+ * SPAN_COLORMAP's `light` field directly indexes the shade row. */
 void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades)
 {
     if (!d3d_gpu_present || !palookup_table) return;
@@ -135,17 +219,35 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
     if (!d3d_gpu_present || !d3d_gpu_use_spans) {
         /* GPU off — CPU memset path so A/B tests against the GPU
          * implementation work, and the no-GPU bitstream still draws.
-         * fb_stride supplies the per-row advance (== bytesperline). */
+         * Live bytesperline tracks setviewtotile's stride flip. */
         for (int y = 0; y < (int)h; y++)
-            memset(dest + y * fb_stride, color, w);
+            memset(dest + y * bytesperline, color, w);
         return;
     }
-    of_gpu_clear_rect((uint32_t)(uintptr_t)dest, w, h, color);
+    /* Flush any pending spans first so they execute BEFORE the
+     * clear_rect.  Without this, the batch header would land in the
+     * ring AFTER the CLEAR_RECT command (which is written via direct
+     * MMIO ring writes), and the GPU would clear the rect first and
+     * then draw the (stale) spans on top — ordering inversion. */
+    d3d_gpu_flush_batch();
+    /* Per-command stride: CMD_CLEAR_RECT now carries its own stride
+     * (openfpgaOS commit landing the cr-gpu-clear-rect-stride.md fix),
+     * so we don't need to resync the global SET_FB stride before each
+     * clear.  This matters because BUILD's setviewtotile flips
+     * bytesperline mid-frame between screen stride (320) and tile
+     * stride (e.g. 160 in low-detail). */
+    of_gpu_clear_rect_strided((uint32_t)(uintptr_t)dest,
+                               w, h,
+                               (uint16_t)bytesperline,
+                               color);
 }
 
 void d3d_gpu_pre_cpu_fb_access(void)
 {
     if (!d3d_gpu_present) return;
+    /* Flush any pending span batch so its writes land in SDRAM before
+     * we wait for the GPU to drain. */
+    d3d_gpu_flush_batch();
     /* Drain GPU writes to SDRAM so subsequent CPU reads see current
      * pixels (without this, a CPU read of a region the GPU just
      * wrote could return stale SDRAM). */
@@ -181,7 +283,18 @@ void d3d_gpu_pre_cpu_fb_access(void)
 void d3d_gpu_flush(void)
 {
     if (!d3d_gpu_present) return;
+    d3d_gpu_flush_batch();
     of_gpu_finish();
+    /* Promote "fence reached" to "pipeline fully drained": the fence
+     * command updates GPU_FENCE_REACHED as soon as the command
+     * processor walks past it, but the rasteriser's m_wr_* AXI master
+     * may still have pending pixel writes in flight.  Without this
+     * poll, of_video_flip() queues the buffer for display while late
+     * writes are still landing — visible as flashing horizontal
+     * artifacts where new floor/ceiling spans overlay leftover content
+     * during scanout. */
+    while (GPU_STATUS & GPU_STATUS_BUSY)
+        ;
 }
 
 void d3d_gpu_tex_invalidate(void)
@@ -192,13 +305,15 @@ void d3d_gpu_tex_invalidate(void)
 
 void d3d_gpu_mark_tex_dirty(void)
 {
-    if (!d3d_gpu_present) return;
-    gpu_tex_dirty = 1;
+    /* Stub — d3d_gpu_set_fb invalidates the tex cache unconditionally
+     * at every frame boundary.  Kept for ABI compatibility with
+     * tiles.c; no per-call work needed. */
 }
 
 void d3d_gpu_drain(void)
 {
     if (!d3d_gpu_present) return;
+    d3d_gpu_flush_batch();
     of_gpu_finish();
 }
 
@@ -271,15 +386,11 @@ static inline void ensure_pal0_uploaded(void)
     gpu_current_slot = 0;
 }
 
-/* Backwards-compat: callers (and the comments above) historically
- * read this as "is `palookupoffse` in the GPU's loaded colormap, and
- * if so, what shade index?".  New behaviour: scan the loaded slots
- * (hot path: the slot used by the previous call), upload a fresh
- * slot lazily on first encounter of an unseen palookup, switch the
- * GPU's active slot via of_gpu_set_colormap_id when it changes, and
- * return the shade index.  Returns -1 only if the row is in NONE of
- * the BUILD palookups (unusual) or the slot table is full (can't fit
- * a 17th distinct palookup — caller falls back to CPU). */
+/* Returns the shade index (0..31) for the given palookup row, or -1
+ * if the row isn't in any GPU-loaded palookup.  Slot selection is
+ * sticky GPU state via CMD_SET_COLORMAP_ID; on slot change we flush
+ * the pending batch first so spans queued under the previous slot
+ * complete with the right palookup before we switch. */
 int d3d_gpu_shade_for(const uint8_t *palookupoffse)
 {
     if (!palookupoffse) return -1;
@@ -296,23 +407,23 @@ int d3d_gpu_shade_for(const uint8_t *palookupoffse)
         }
     }
 
-    /* Warm path: scan slots already uploaded — palookup pointers are
-     * pairwise disjoint so the first match is unique. */
+    /* Warm path: scan slots already uploaded.  Slot change → flush
+     * pending batch then issue SET_COLORMAP_ID. */
     for (int s = 0; s < gpu_pal_next_slot; s++) {
         const uint8_t *base = gpu_pal_base_of_slot[s];
         if (!base) continue;
         ptrdiff_t off = palookupoffse - base;
         if ((uintptr_t)off < D3D_GPU_PAL_BYTES) {
-            if (gpu_current_slot != s) {
-                of_gpu_set_colormap_id((uint8_t)s);
-                gpu_current_slot = s;
-            }
+            d3d_gpu_flush_batch();
+            of_gpu_set_colormap_id((uint8_t)s);
+            gpu_current_slot = s;
             return (int)(off >> 8);
         }
     }
 
     /* Cold path: locate the BUILD palookup[i] containing this row,
-     * upload it to a fresh slot, point the GPU at it. */
+     * upload it to a fresh slot.  Flush before upload so pending
+     * spans complete with the previous slot's table. */
     for (int pal_id = 0; pal_id < 256; pal_id++) {
         const uint8_t *p = palookup[pal_id];
         if (!p) continue;
@@ -323,9 +434,10 @@ int d3d_gpu_shade_for(const uint8_t *palookupoffse)
             return -1;   /* slot table full — caller falls back to CPU */
 
         int s = gpu_pal_next_slot++;
+        d3d_gpu_flush_batch();
         of_gpu_palookup_upload((uint8_t)s, p, D3D_GPU_PAL_BYTES);
-        gpu_pal_base_of_slot[s] = p;
         of_gpu_set_colormap_id((uint8_t)s);
+        gpu_pal_base_of_slot[s] = p;
         gpu_current_slot = s;
         return (int)(off >> 8);
     }
@@ -347,10 +459,10 @@ static inline void emit_column_span(uint8_t *dest, int num_pixels, int shade,
         .count     = (uint16_t)num_pixels,
         .light     = (uint8_t)(shade & 0x3F),
         .flags     = flags,
-        .fb_stride = (int16_t)fb_stride,
+        .fb_stride = (int16_t)bytesperline,
         .tex_width = 1,
     };
-    of_gpu_draw_span(&span);
+    d3d_gpu_submit_span(&span);
 }
 
 void d3d_gpu_vline(uint8_t *dest, int num_pixels, int shade,
@@ -596,7 +708,7 @@ void d3d_gpu_tvline(uint8_t *dest, int num_pixels, int shade,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    (void)reverse;  /* OF_GPU_SPAN_TRANSLUC_REV retired in lean Phase 2.1; rev path collapsed to fwd */
+    (void)reverse;  /* TRANSLUC_REV retired — rev path collapsed to fwd */
     emit_column_span(dest, num_pixels, shade, t, tstep, texture, flags);
 }
 
@@ -617,7 +729,7 @@ void d3d_gpu_tvline2(uint8_t *dest_a, int num_pixels,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    (void)reverse;  /* OF_GPU_SPAN_TRANSLUC_REV retired in lean Phase 2.1; rev path collapsed to fwd */
+    (void)reverse;  /* TRANSLUC_REV retired — rev path collapsed to fwd */
 
     int32_t ta, tstepa, tb, tstepb;
     to_16_16(vplce_a, vince_a, v_shift, &ta, &tstepa);
@@ -667,7 +779,7 @@ static inline void emit_rotsprite_hline(uint8_t *dest, int num_pixels, int shade
         .fb_stride = (int16_t)-1,
         .tex_width = (uint16_t)rs_tileHeight,
     };
-    of_gpu_draw_span(&span);
+    d3d_gpu_submit_span(&span);
 }
 
 void d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
@@ -715,7 +827,7 @@ void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    (void)reverse;  /* OF_GPU_SPAN_TRANSLUC_REV retired in lean Phase 2.1; rev path collapsed to fwd */
+    (void)reverse;  /* TRANSLUC_REV retired — rev path collapsed to fwd */
 
     /* Column-major sprite addressing via swapped S/T:
      *   GPU:  addr = base + t_int * tex_width + s_int
@@ -737,10 +849,10 @@ void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
         .count     = (uint16_t)num_pixels,
         .light     = (uint8_t)(shade & 0x3F),
         .flags     = flags,
-        .fb_stride = (int16_t)fb_stride,
+        .fb_stride = (int16_t)bytesperline,
         .tex_width = tile_height,
     };
-    of_gpu_draw_span(&span);
+    d3d_gpu_submit_span(&span);
 }
 
 /* Internal: shared hline emission for forward-walking floor/ceiling
@@ -780,7 +892,7 @@ static inline void emit_fwd_hline(uint8_t *dest, int num_pixels, int shade_x256,
         .tex_w_mask = (uint16_t)(tex_w - 1),
         .tex_h_mask = (uint16_t)(tex_h - 1),
     };
-    of_gpu_draw_span(&span);
+    d3d_gpu_submit_span(&span);
 }
 
 void d3d_gpu_mhline(uint8_t *dest, int num_pixels, int shade_x256,
@@ -813,7 +925,7 @@ void d3d_gpu_thline(uint8_t *dest, int num_pixels, int shade_x256,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    (void)reverse;  /* OF_GPU_SPAN_TRANSLUC_REV retired in lean Phase 2.1; rev path collapsed to fwd */
+    (void)reverse;  /* TRANSLUC_REV retired — rev path collapsed to fwd */
     emit_fwd_hline(dest, num_pixels, shade_x256, i2, i5, asm1, asm2,
                    width_bits, shifter, texture, flags);
 }
@@ -877,5 +989,5 @@ void d3d_gpu_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
         .tex_w_mask = (uint16_t)(tex_w - 1),
         .tex_h_mask = (uint16_t)(tex_h - 1),
     };
-    of_gpu_draw_span(&span);
+    d3d_gpu_submit_span(&span);
 }
