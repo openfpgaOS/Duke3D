@@ -43,6 +43,27 @@ static inline void of_video_wait_flip(void) {
     OF_SVC->video_wait_flip();
 }
 
+/* GPU-triggered flip path (cr-gpu-triggered-flip.md).
+ *
+ * Returns the idx of the next free draw buffer.  Pass `just_flipped_idx`
+ * = the idx of the buffer the caller just emitted CMD_FLIP for via
+ * of_gpu_flip_to(), or -1 on the first call (no previous flip).  The
+ * kernel marks just_flipped_idx as buf_ready (queued for vsync —
+ * hardware fb_swap_pending is set by the GPU's CMD_FLIP side-port
+ * when it executes), blocks if the previous queued flip hasn't yet
+ * retired, and returns the unique idx that's neither displayed nor
+ * pending.
+ *
+ * Pair with of_video_buffer_addr(idx) to get the FB address. */
+static inline int of_video_acquire_next(int just_flipped_idx) {
+    return OF_SVC->video_acquire_next(just_flipped_idx);
+}
+
+/* Address of buffer `idx` (0/1/2). */
+static inline uint8_t *of_video_buffer_addr(int idx) {
+    return OF_SVC->video_buffer_addr(idx);
+}
+
 static inline void of_video_clear(uint8_t color) {
     OF_SVC->video_clear(color);
 }

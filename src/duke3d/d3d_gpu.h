@@ -1,0 +1,308 @@
+/*
+ * d3d_gpu.h — Duke3D ↔ openfpgaOS GPU rasteriser glue.
+ *
+ * Phase 1: init / per-frame plumbing only.  Phase 2 adds opt-in span
+ * replacements for the BUILD inner loops via d3d_gpu_use_spans.
+ *
+ * Lifecycle:
+ *   d3d_gpu_init()         — once after of_video_init()
+ *   d3d_gpu_set_fb(...)    — after each retarget_frameplace
+ *   d3d_gpu_upload_palookup() — once per global palette change
+ *   d3d_gpu_flush()        — immediately before of_video_flip()
+ */
+
+#ifndef D3D_GPU_H
+#define D3D_GPU_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Master enable for any GPU work at all.  Turned on by d3d_gpu_init() if
+ * the runtime caps descriptor advertises a GPU; left at 0 otherwise so
+ * the same ELF runs on GPU-less targets without divergence. */
+extern int d3d_gpu_present;
+
+/* Phase 2 opt-in: when 1, the gated draw functions (currently
+ * vlineasm1) build of_gpu_span_t and submit instead of running the
+ * scalar SW loop.  Default 0 — flip from the console / cvar to A/B
+ * test before promoting span replacements out of opt-in. */
+extern int d3d_gpu_use_spans;
+
+/* Pipeline perf breakdown.  When 1, game.c emits a [perf-pipeline]
+ * line every 64 frames with per-span-type counts, batch stats, and
+ * GPU phase timings (flush / finish / busy poll).  Counters and
+ * timer reads run unconditionally so the off-state and on-state
+ * pipelines are bit-identical and timings stay comparable; only the
+ * printf is gated. */
+extern int d3d_perf_pipeline;
+
+/* Per-frame counters — snapshots are written to *_last in
+ * d3d_gpu_set_fb (frame boundary) so the [perf-pipeline] print can
+ * read them after the live values have been reset for the next
+ * frame.  All counts are spans actually submitted; spans that hit
+ * the d3d_gpu_skip_submit diagnostic path are NOT counted. */
+extern uint32_t d3d_perf_vline_last;
+extern uint32_t d3d_perf_sprite_vline_last;
+extern uint32_t d3d_perf_hline_last;
+extern uint32_t d3d_perf_rotsprite_last;
+extern uint32_t d3d_perf_tvline_last;
+extern uint32_t d3d_perf_clear_rect_last;
+extern uint32_t d3d_perf_palookup_uploads_last;
+extern uint32_t d3d_perf_colormap_switches_last;
+extern uint32_t d3d_perf_max_batch_size_last;
+extern uint32_t d3d_perf_flush_us_last;
+extern uint32_t d3d_perf_finish_us_last;
+extern uint32_t d3d_perf_busy_us_last;
+
+void d3d_gpu_init(void);
+void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels);
+void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades);
+void d3d_gpu_flush(void);
+
+/* Drain pending span buffer to the GPU ring without emitting a fence.
+ * Used by the GPU-triggered flip path in display_of.c::_nextpage —
+ * the subsequent of_gpu_flip_to() emits its own fence + drain primitive
+ * via CMD_FLIP, so we don't want d3d_gpu_flush()'s of_gpu_finish wait
+ * here. */
+void d3d_gpu_drain_batch(void);
+
+/* GPU-routed FB rect clear.  Pointer-friendly wrapper around the SDK
+ * of_gpu_clear_rect; safe no-op when the GPU isn't present (caller
+ * gets the same nothing-rendered behaviour as the previous CPU memset
+ * sites without having to gate on d3d_gpu_present themselves).
+ * Letterbox bars, 2D `clear2dscreen`, fillscreen16, drawline16,
+ * setgamemode HW-buffer wipe — all of the per-frame
+ * memset(frameplace, …) categories route through here so the FB is
+ * 100% GPU-owned (project_gpu_owns_framebuffer.md). */
+void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color);
+
+/* Upload BUILD's transluc[65536] LUT to the fabric BLEND unit.  Call
+ * once per level (after loadpalette has filled `transluc`).  Wraps the
+ * SDK helper so callers don't need to drag of_gpu.h's static state into
+ * a second TU. */
+void d3d_gpu_upload_transluc(const uint8_t *table, uint32_t size);
+
+/* Invalidate the GPU's texture cache (gpu_tex_cache.v).  DANGEROUS to
+ * call mid-frame — issuing GPU_TEX_FLUSH while the GPU is processing
+ * spans has been observed to wedge the FB-write fence path (3D output
+ * stops entirely).  Use d3d_gpu_mark_tex_dirty() instead from any
+ * BUILD code path that mutates tile bytes; the actual MMIO flush is
+ * deferred to d3d_gpu_set_fb() at the next page-flip, when the prior
+ * frame's of_gpu_finish() has guaranteed the GPU is idle. */
+void d3d_gpu_tex_invalidate(void);
+
+/* Mark the GPU's texture cache as needing invalidation at the next
+ * frame boundary.  Cheap (one store).  Must be paired with the
+ * deferred drain in d3d_gpu_set_fb. */
+void d3d_gpu_mark_tex_dirty(void);
+
+/* GPU-only drain (no CPU cache flush).  display_of.c uses it to time
+ * the GPU finish step separately from the CPU cache flush. */
+void d3d_gpu_drain(void);
+
+/* Call BEFORE any CPU code that needs to read or write the
+ * framebuffer this frame (e.g. completemirror's reverse-blit).
+ * Drains the GPU so SDRAM holds all pending pixels, invalidates L1
+ * so CPU reads hit fresh SDRAM, and arms d3d_gpu_flush() to do a
+ * write-back at the end of the frame so any CPU writes the caller
+ * makes get pushed to SDRAM before of_video_flip().  Common case
+ * (no CPU FB access at all this frame) skips the flush — that's the
+ * win that retiring of_cache_flush from the hot path delivers. */
+void d3d_gpu_pre_cpu_fb_access(void);
+
+/* Returns shade index 0..31 if `palookupoffse` is inside the palookup
+ * currently loaded in the GPU's colormap RAM (palookup[0]), or -1 if
+ * not — caller must fall back to the SW path so the wall/floor renders
+ * with the correct per-pal shading. */
+int  d3d_gpu_shade_for(const uint8_t *palookupoffse);
+
+/* Try-helpers for the BUILD inner loops.  Each lives outside the
+ * OF_FASTTEXT section so it gets its own ABI-clean prologue/epilogue;
+ * the call site in draw.c becomes a single boolean dispatch with no
+ * register-save divergence between GPU and SW paths.
+ *
+ * Each returns 1 if the GPU absorbed the call (caller MUST return
+ * immediately), 0 if it didn't (caller falls through to its scalar
+ * SW loop, which then runs unaffected).
+ *
+ * The vline*_try variants take all of vlineasm1's args plus the
+ * mach3_al shift; they do the shade range check, the GPU dispatch,
+ * and the SW-equivalent vplce update internally. */
+int  d3d_gpu_try_vline1(uint8_t *dest, int num_pixels,
+                        const uint8_t *palookupoffse,
+                        int32_t vplce, int32_t vince,
+                        uint8_t v_shift, const uint8_t *texture,
+                        int32_t *vplce_out);
+int  d3d_gpu_try_mvline1(uint8_t *dest, int num_pixels,
+                         const uint8_t *palookupoffse,
+                         int32_t vplce, int32_t vince,
+                         uint8_t v_shift, const uint8_t *texture,
+                         int32_t *vplce_out);
+int  d3d_gpu_try_vline4(uint8_t *framebuffer, int num_pixels,
+                        uint8_t v_shift);
+int  d3d_gpu_try_mvline4(uint8_t *framebuffer, int num_pixels,
+                         uint8_t v_shift);
+int  d3d_gpu_try_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
+                       uint32_t i4, uint32_t i5,
+                       uint32_t asm1, uint32_t asm2,
+                       uint8_t width_bits, uint8_t shifter,
+                       const uint8_t *texture);
+
+/* Span helpers used by the gated draw replacements in draw.c.  Kept in
+ * d3d_gpu.c so of_gpu.h's static mutable ring state stays in one TU. */
+void d3d_gpu_vline(uint8_t *dest, int num_pixels, int shade,
+                   uint32_t vplce, uint32_t vince, uint8_t v_shift,
+                   const uint8_t *texture);
+
+/* Transparent-aware vline: same as d3d_gpu_vline but emits the
+ * SPAN_SKIP_ZERO flag so texel value 0xFF (BUILD's TRANSPARENT_COLOR)
+ * is dropped at the fragment stage. */
+void d3d_gpu_mvline(uint8_t *dest, int num_pixels, int shade,
+                    uint32_t vplce, uint32_t vince, uint8_t v_shift,
+                    const uint8_t *texture);
+
+/* 4-column batch (vlineasm4 replacement).  Submits 4 separate spans
+ * to the GPU; the per-pixel pack-into-uint32 trick the SW path uses is
+ * a CPU-side optimisation only, the mixer/GPU sees them identically. */
+void d3d_gpu_vline4(uint8_t *fb_at_y0, int num_pixels,
+                    const int shade[4],
+                    const uint32_t vplce[4],
+                    const uint32_t vince[4],
+                    uint8_t v_shift,
+                    const uint8_t *const texture[4]);
+
+/* Masked 4-column batch (mvlineasm4 replacement).  Same as vline4 but
+ * each span carries SPAN_SKIP_ZERO so 0xFF texels drop. */
+void d3d_gpu_mvline4(uint8_t *fb_at_y0, int num_pixels,
+                     const int shade[4],
+                     const uint32_t vplce[4],
+                     const uint32_t vince[4],
+                     uint8_t v_shift,
+                     const uint8_t *const texture[4]);
+
+/* ----------------------------------------------------------------------
+ * Translucent paths (Stage 5 — fabric transluc[] BLEND unit).
+ *
+ * Architectural principle (project_gpu_owns_framebuffer.md): once the
+ * GPU is doing the work, the CPU MUST NOT write the framebuffer on the
+ * converted paths.  The helpers below are therefore unconditional —
+ * NO try/return fallback; the caller's CPU loop is dead code.  If a
+ * helper hits a fabric gap (e.g. the active palookup isn't pal0 so
+ * d3d_gpu_shade_for returns -1), it skips the draw rather than
+ * silently writing the wrong shading; missing translucent geometry is
+ * an honest signal that the gap is real.  See transluc.md "Open
+ * questions" for the multi-colormap and resource-table follow-ups.
+ *
+ * The host fabric is expected to already advertise OF_HW_GPU_TRANSLUC
+ * (capability gating is stage 7); on bitstreams without the BLEND unit
+ * these calls render with COLORMAP+SKIP_ZERO and look opaque. -------- */
+
+/* Translucent vertical wall column — replaces draw.c::tvlineasm1.
+ * `texture` is the 1-D column data (BUILD's `source` arg in tvlineasm1).
+ * `reverse` non-zero => emit OF_GPU_SPAN_TRANSLUC_REV (BUILD's transrev). */
+void d3d_gpu_tvline(uint8_t *dest, int num_pixels, int shade,
+                    uint32_t vplce, uint32_t vince, uint8_t v_shift,
+                    const uint8_t *texture, int reverse);
+
+/* Translucent paired columns — replaces draw.c::tvlineasm2.  Issues two
+ * column spans at dest_a and dest_a+1 (BUILD's tran2edi / tran2edi+1).
+ * The two columns share v_shift but otherwise have independent vplce /
+ * vince / texture / shade. */
+void d3d_gpu_tvline2(uint8_t *dest_a, int num_pixels,
+                     int shade_a, int shade_b,
+                     uint32_t vplce_a, uint32_t vince_a,
+                     uint32_t vplce_b, uint32_t vince_b,
+                     uint8_t v_shift,
+                     const uint8_t *tex_a, const uint8_t *tex_b,
+                     int reverse);
+
+/* Translucent rotated/scaled sprite vertical column — replaces
+ * draw.c::DrawSpriteVerticalLine.  Models BUILD's two-axis fractional
+ * sprite walk as a GPU affine column span over a column-major sprite
+ * (tex_height = sprite column stride).  Caller passes the FULL 16.16
+ * xv / yv per-pixel steps and the initial fractional bx / by — the
+ * integer parts are already baked into `texture` by BUILD's caller.
+ *
+ * Note: BUILD's SW path uses a one-time `adder` bump on first X-frac
+ * wrap which only matches an affine pattern when xv-frac wraps at
+ * most once per column.  The GPU path is the exact affine; for
+ * typical sprite columns the two are byte-identical, for very long
+ * columns the GPU path is correct and the SW path was the
+ * approximation. */
+void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
+                          uint32_t bx_frac, uint32_t xv_step,
+                          uint32_t by_frac, uint32_t yv_step,
+                          uint16_t tile_height,
+                          const uint8_t *texture, int reverse);
+
+/* Rotated affine sprite hlines (rhlineasm4 / rmhlineasm4 replacements).
+ * Horizontal-walk analog of d3d_gpu_sprite_vline: column-major sprite
+ * via swapped S/T (tex_width = tile_height), negative steps for the
+ * BUILD `texture -= …` loop, and fb_stride = -1 for the dest[-1],
+ * dest[-2] write pattern.  Caller passes the full 16.16 xv2 / yv2 and
+ * the initial fractional bx<<16 / by<<16 just as for sprite_vline.
+ *   rhline  = SPAN_COLORMAP                         (opaque)
+ *   rmhline = SPAN_COLORMAP | SPAN_SKIP_ZERO        (color-key) */
+void d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
+                    uint32_t bx_frac, uint32_t xv2_step,
+                    uint32_t by_frac, uint32_t yv2_step,
+                    uint16_t tile_height,
+                    const uint8_t *texture);
+
+void d3d_gpu_rmhline(uint8_t *dest, int num_pixels, int shade,
+                     uint32_t bx_frac, uint32_t xv2_step,
+                     uint32_t by_frac, uint32_t yv2_step,
+                     uint16_t tile_height,
+                     const uint8_t *texture);
+
+/* Recorder called from engine.c::dorotatesprite before each
+ * setuprhlineasm4 / setuprmhlineasm4 so the rh/rmh hooks have access
+ * to the full 16.16 xv2 / yv2 and tileHeight without trying to
+ * reverse-engineer them from BUILD's frac/integer-split statics. */
+void d3d_gpu_record_rotsprite_setup(int32_t xv2, int32_t yv2, int32_t tileHeight);
+
+/* Masked horizontal span (mhlineskipmodify replacement).  Same shld
+ * addressing as hlineasm4 but walks dest++, with positive S/T steps
+ * and SPAN_SKIP_ZERO for color-key transparency on 0xFF texels.
+ *   shade_x256  = palookup row offset already × 256 (BUILD's `shade`)
+ *   i2 / i5     = initial T / S in 0.32
+ *   asm1 / asm2 = per-pixel +T / +S
+ *   width_bits  = log2(tex_width); shifter as in hlineasm4 */
+void d3d_gpu_mhline(uint8_t *dest, int num_pixels, int shade_x256,
+                    uint32_t i2, uint32_t i5,
+                    uint32_t asm1, uint32_t asm2,
+                    uint8_t width_bits, uint8_t shifter,
+                    const uint8_t *texture);
+
+/* Translucent horizontal span (thlineskipmodify replacement).  Same as
+ * mhline plus SPAN_TRANSLUC; `reverse` non-zero adds TRANSLUC_REV. */
+void d3d_gpu_thline(uint8_t *dest, int num_pixels, int shade_x256,
+                    uint32_t i2, uint32_t i5,
+                    uint32_t asm1, uint32_t asm2,
+                    uint8_t width_bits, uint8_t shifter,
+                    const uint8_t *texture, int reverse);
+
+/* Affine horizontal span (hlineasm4 replacement).  Reverse-direction:
+ * the SW loop walks dest--, so we feed fb_stride = -1 and let the GPU
+ * step right-to-left from `dest_right`.
+ *   width_bits  = log2(tex_width)            (bitsSetup)
+ *   shifter     = bit position of T integer  ((256 - machxbits_al)&31)
+ *   shade_x256  = palookup row offset already multiplied by 256
+ *                 (matches BUILD's hlineasm4 first-arg encoding)
+ *   i4 / i5     = initial S / T fixed-point at dest_right
+ *   asm1 / asm2 = per-pixel T / S decrement (i5 -= asm1, i4 -= asm2)
+ *   texture     = full 2-D tile base */
+void d3d_gpu_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
+                   uint32_t i4, uint32_t i5,
+                   uint32_t asm1, uint32_t asm2,
+                   uint8_t width_bits, uint8_t shifter,
+                   const uint8_t *texture);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* D3D_GPU_H */

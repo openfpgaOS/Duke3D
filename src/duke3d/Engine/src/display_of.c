@@ -19,6 +19,8 @@
 #include "display.h"
 #include "fixedPoint_math.h"
 #include "../../d3d_audio.h"
+#include "../../d3d_gpu.h"
+#include "of_gpu.h"     /* of_gpu_flip_to, of_gpu_kick */
 #include "of_midi.h"
 #include "engine.h"
 #include "draw.h"
@@ -161,7 +163,23 @@ static void init_new_res_vars(void)
     xdim = xres = OF_DISPLAY_W;
     ydim = yres = OF_DISPLAY_H;
 
-    numpages = 1;  /* perm overhead handled by periodic forced redraws instead */
+    /* Match the actual hardware triple-buffer count.  BUILD's
+     * rotatesprite uses `numpages` to know how many times to redraw
+     * each `dastat & 128` (perm) HUD element so it lands on every
+     * buffer in the rotation.  With numpages=1 (the previous setting)
+     * each HUD perm draw was queued NOT-AT-ALL — engine.c::rotatesprite
+     * line 8119 gates the permfifo enqueue on `numpages >= 2`, so HUD
+     * elements only appeared on whichever single buffer the game
+     * happened to be rendering when the state changed.  As the
+     * triple-buffer rotation cycled, the other two buffers showed
+     * stale (or zeroed) content where the HUD should be → visible
+     * flashing for the first 3 frames after every HUD update.
+     * numpages=3 enables the standard BUILD perm-sprite handling:
+     * each HUD draw is queued in permfifo, and nextpage() walks the
+     * queue once per frame redrawing every queued sprite onto the
+     * current buffer until pagesleft reaches 0 (= drawn 3×, once on
+     * each of the 3 hardware buffers). */
+    numpages = 3;
     bytesperline = OF_DISPLAY_W;
     vesachecked = 1;
     vgacompatible = 1;
@@ -212,7 +230,9 @@ void *get_framebuffer(void)
     return of_framebuffer;
 }
 
-/* Point BUILD's rendering target at the given HW back buffer. */
+/* Point BUILD's rendering target at the given HW back buffer.
+ * Also retargets the GPU framebuffer to the same back buffer so any
+ * GPU-driven span draws this frame land in the right surface. */
 static void retarget_frameplace_at(uint8_t *dst)
 {
     if (dst) {
@@ -220,6 +240,7 @@ static void retarget_frameplace_at(uint8_t *dst)
         frameplace = render_base;
         extern int32_t viewoffset;
         frameoffset = render_base + viewoffset;
+        d3d_gpu_set_fb(render_base, OF_DISPLAY_W);
     }
 }
 
@@ -230,19 +251,37 @@ static void retarget_frameplace(void)
 
 static int video_initialized = 0;
 
+/* GPU-triggered flip pipeline state.  draw_idx tracks the slot the
+ * GPU's CMD_FLIP will target this frame; initialized in
+ * ensure_video_init() to the kernel's initial buf_draw via
+ * of_video_acquire_next(-1), then advanced each _nextpage() to the
+ * new draw slot returned by of_video_acquire_next(draw_idx). */
+static int draw_idx = -1;
+
 static void ensure_video_init(void) {
     if (!video_initialized) {
         video_initialized = 1;
         of_video_init();
         of_video_set_display_mode(OF_DISPLAY_FRAMEBUFFER);
         of_video_palette_bulk(of_palette, 256);
-        /* Clear all 3 triple-buffer frames */
+        /* Clear all 3 triple-buffer frames using the kernel-driven flip
+         * path — this leaves buf_display, buf_ready, buf_draw in a
+         * known state for the GPU-triggered flip path that takes over
+         * in _nextpage(). */
         of_video_clear(0); of_video_flip();
         of_video_clear(0); of_video_flip();
         of_video_clear(0);
+        /* Bring up the GPU before the first frame.  Safe no-op on
+         * targets without a GPU window (caps->gpu_base == 0). */
+        d3d_gpu_init();
+        /* Capture the kernel's current draw idx so the first
+         * _nextpage()'s of_gpu_flip_to() targets the right slot.
+         * Passing -1 means "no previous flip — just tell me which
+         * slot is currently drawable". */
+        draw_idx = of_video_acquire_next(-1);
         /* Point BUILD at the HW back buffer from now on */
         bars_remaining = 3;
-        retarget_frameplace();
+        retarget_frameplace_at(of_video_buffer_addr(draw_idx));
     }
 }
 
@@ -260,51 +299,101 @@ void _platform_init(int argc, char **argv, const char *title, const char *iconNa
     /* Seed random from timer */
     srand((unsigned int)of_time_ms());
 
-    /* Zero out the internal framebuffer */
+    /* Zero the static fallback framebuffer.  CPU memset is correct
+     * here — _platform_init runs before any GPU init, and the
+     * of_framebuffer array lives in BSS, not in GPU-accessible SDRAM. */
     memset(of_framebuffer, 0, sizeof(of_framebuffer));
 }
 
 uint32_t np_input_us, np_flip_us, np_audio_us;
+/* Sub-breakdown of flip — printed alongside the [perf] line so we can
+ * see whether the 25 ms 'flip' bucket is actually GPU drain, CPU cache
+ * flush, the page-flip MMIO, or vsync wait. */
+uint32_t np_gpu_flush_us, np_cache_flush_us, np_video_flip_us;
+uint32_t np_retarget_us, np_wait_flip_us;
+/* drawrooms phase timers (set inside engine.c::drawrooms — visible
+ * here so game.c's [perf] printer can pick them up).  The two phases
+ * are visibility (scansector portal walk) and render (bunch sort +
+ * drawalls per closest bunch — wall/floor/ceiling rasterisation). */
+uint32_t np_dr_visible_us, np_dr_render_us;
+/* drawmasks phase accumulator — set inside engine.c::drawmasks via
+ * += so multiple per-frame call sites (mirror, camera-sprite, normal
+ * path) all roll up.  Game.c::displayrooms must reset this to 0 at
+ * the start of each frame's render. */
+uint32_t np_drawmasks_us;
 
+/* GPU-triggered flip pipeline (cr-gpu-triggered-flip.md):
+ *   1. d3d_gpu_flush_batch — ship pending span buffer to GPU ring
+ *   2. of_gpu_flip_to(idx) — emit CMD_FLIP into the ring; GPU drains
+ *      its m_wr_* writes, pulses the swap side-port, publishes a fence
+ *   3. of_gpu_kick — commit ring writes
+ *   4. of_video_acquire_next(idx) — kernel marks idx as buf_ready
+ *      (blocking if a previous flip is still pending), returns the
+ *      next free draw idx
+ *
+ * No CPU spin on STATUS_BUSY (CMD_FLIP's drain primitive replaces it),
+ * no kernel of_video_flip syscall (the GPU's side-port drives the swap
+ * register directly), no swap_pending state (acquire_next blocks
+ * internally when the 3-buffer ceiling is hit).  Saves ~340 µs/frame
+ * on the duke3d core and removes the architectural reason for the
+ * STATUS_BUSY workaround. */
 void _nextpage(void)
 {
     ensure_video_init();
 
     uint32_t _a = of_time_us();
+
     _handle_events();
     uint32_t _b = of_time_us();
 
     /* BUILD already rendered into the HW back buffer (via frameplace).
-     * Clear letterbox bars only until all 3 triple-buffer slots are done. */
+     * Clear letterbox bars only until all 3 triple-buffer slots are
+     * done. */
     if (bars_remaining > 0) {
         uint8_t *dst = of_video_surface();
         if (dst) {
-            memset(dst, 0, OF_DISPLAY_W * OF_DISPLAY_BAR_H);
-            memset(dst + OF_DISPLAY_W * (OF_DISPLAY_BAR_H + OF_DISPLAY_H), 0,
-                   OF_DISPLAY_W * OF_DISPLAY_BAR_H);
+            d3d_gpu_clear_rect_fb(dst,
+                                  OF_DISPLAY_W, OF_DISPLAY_BAR_H, 0);
+            d3d_gpu_clear_rect_fb(dst + OF_DISPLAY_W *
+                                       (OF_DISPLAY_BAR_H + OF_DISPLAY_H),
+                                  OF_DISPLAY_W, OF_DISPLAY_BAR_H, 0);
         }
         bars_remaining--;
     }
-
-    of_video_flip();
-    retarget_frameplace();
     uint32_t _c = of_time_us();
 
-    d3d_audio_pump();
+    /* Ship pending spans + emit CMD_FLIP for the current draw idx.
+     * The GPU's command processor drains m_wr_* and triggers the
+     * swap when CMD_FLIP reaches the head.  draw_idx is initialized
+     * by ensure_video_init() so the first frame flips correctly. */
+    d3d_gpu_drain_batch();
+    of_gpu_flip_to(draw_idx);
+    of_gpu_kick();
     uint32_t _d = of_time_us();
 
-    /* Pace the game loop to real display cadence. Placed AFTER
-     * d3d_audio_pump so MIDI/voice servicing never eats the ~16 ms
-     * wait latency; we block on vsync only after audio is up to date.
-     * Gives VRR clean flip-to-flip intervals to retune the scaler
-     * against, and kills the unpaced-render judder that appears when
-     * the scene renders faster than one vsync period. */
-    of_video_wait_flip();
+    /* Acquire next draw idx.  On the first call (draw_idx == -1) the
+     * kernel returns the initial slot without any handoff; on
+     * subsequent calls it promotes draw_idx to buf_ready (blocking
+     * if the previous queued flip is still in flight) and returns
+     * the next free slot. */
+    draw_idx = of_video_acquire_next(draw_idx);
     uint32_t _e = of_time_us();
 
-    np_input_us = _b - _a;
-    np_flip_us  = (_c - _b) + (_e - _d);
-    np_audio_us = _d - _c;
+    /* Retarget BUILD + GPU at the new draw buffer for the next frame. */
+    retarget_frameplace_at(of_video_buffer_addr(draw_idx));
+    uint32_t _f = of_time_us();
+
+    d3d_audio_pump();
+    uint32_t _g = of_time_us();
+
+    np_wait_flip_us   = 0;            /* gone — wait folded into acquire_next */
+    np_input_us       = _b - _a;
+    np_cache_flush_us = 0;
+    np_gpu_flush_us   = _d - _c;      /* now: flush_batch + flip_to + kick */
+    np_video_flip_us  = _e - _d;      /* now: acquire_next (blocks if FIFO full) */
+    np_retarget_us    = _f - _e;
+    np_audio_us       = _g - _f;
+    np_flip_us = _g - _a;
 }
 
 void VBE_setPalette(uint8_t *palettebuffer)
@@ -387,11 +476,15 @@ int32_t _setgamemode(int32_t daxdim, int32_t daydim)
 
     /* Always use 320x200 regardless of what was requested */
     if (video_initialized) {
-        /* Clear the HW back buffer that BUILD is rendering into */
+        /* Clear the full HW back buffer (bars + render area) via GPU. */
         uint8_t *dst = of_video_surface();
-        if (dst) memset(dst, 0, OF_DISPLAY_W * OF_DISPLAY_HW_H);
+        if (dst) d3d_gpu_clear_rect_fb(dst, OF_DISPLAY_W,
+                                       OF_DISPLAY_HW_H, 0);
         bars_remaining = 3;
     } else {
+        /* CPU fallback only — of_framebuffer is a static C array used
+         * pre-video-init; the GPU isn't initialized yet and can't
+         * address this region anyway. */
         memset(of_framebuffer, 0, sizeof(of_framebuffer));
     }
     init_new_res_vars();
@@ -697,7 +790,12 @@ uint8_t readpixel(uint8_t *offset)
 
 void drawpixel(uint8_t *location, uint8_t pixel)
 {
-    *location = pixel;
+    /* GPU-routed via 1×1 clear_rect — every CPU FB write should
+     * vanish per project_gpu_owns_framebuffer.md.  This is the
+     * single drawpixel hot path used by automap line draws and
+     * BUILD's 2D drawline2d, so converting it sweeps three call
+     * sites at once. */
+    d3d_gpu_clear_rect_fb(location, 1, 1, pixel);
 }
 
 void setcolor16(uint8_t col)
@@ -707,13 +805,15 @@ void setcolor16(uint8_t col)
 
 void drawpixel16(int32_t offset)
 {
-    if (offset >= 0 && offset < OF_DISPLAY_W * OF_DISPLAY_H)
-        ((uint8_t *)frameplace)[offset] = drawpixel_color;
+    if (offset < 0 || offset >= OF_DISPLAY_W * OF_DISPLAY_H) return;
+    /* GPU-routed single pixel — 1×1 clear_rect.  Editor / 2D path,
+     * called rarely; the per-pixel ring submission cost is fine. */
+    d3d_gpu_clear_rect_fb((uint8_t *)frameplace + offset, 1, 1,
+                          drawpixel_color);
 }
 
 void fillscreen16(int32_t offset, int32_t color, int32_t blocksize)
 {
-    uint8_t *pixels = (uint8_t *)frameplace;
     int32_t fb_size = OF_DISPLAY_W * OF_DISPLAY_H;
 
     if (!pageoffset) {
@@ -726,14 +826,21 @@ void fillscreen16(int32_t offset, int32_t color, int32_t blocksize)
         blocksize = fb_size - offset;
     if (blocksize <= 0) return;
 
-    memset(pixels + offset, (int)color, blocksize);
+    /* Single-row rect — full width × N rows would need (offset, w, h)
+     * decomposition.  fillscreen16 here is treated as a 1-row clear of
+     * `blocksize` bytes since BUILD's editor uses it for stripe fills.
+     * Matches the prior memset semantics byte-for-byte. */
+    d3d_gpu_clear_rect_fb((uint8_t *)frameplace + offset,
+                          (uint16_t)blocksize, 1, (uint8_t)color);
     _nextpage();
 }
 
 void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint8_t Color)
 {
-    /* Bresenham line into the of framebuffer.
-       Simplified version -- only needed for 2D map overlay. */
+    /* Bresenham line — 2D map overlay only.  Each lit pixel becomes a
+     * 1×1 of_gpu_clear_rect; the automap is opt-in and low-rate so the
+     * per-pixel ring cost is acceptable.  GPU-only keeps the FB clean
+     * of CPU writes (project_gpu_owns_framebuffer.md). */
     int dx = abs((int)(XEnd - XStart));
     int dy = abs((int)(YEnd - YStart));
     int sx = (XStart < XEnd) ? 1 : -1;
@@ -741,11 +848,11 @@ void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint
     int err = dx - dy;
     int x = (int)XStart;
     int y = (int)YStart;
-    uint8_t *fb = (uint8_t *)frameplace;
 
     while (1) {
         if (x >= 0 && x < OF_DISPLAY_W && y >= 0 && y < OF_DISPLAY_H)
-            fb[y * OF_DISPLAY_W + x] = Color;
+            d3d_gpu_clear_rect_fb((uint8_t *)frameplace + y * OF_DISPLAY_W + x,
+                                  1, 1, Color);
 
         if (x == (int)XEnd && y == (int)YEnd) break;
 
@@ -757,7 +864,12 @@ void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint
 
 void clear2dscreen(void)
 {
-    memset((void *)frameplace, 0, OF_DISPLAY_W * OF_DISPLAY_H);
+    /* BUILD 2D-mode full-screen clear of the render area (NOT the
+     * letterbox bars).  GPU-routed via clear_rect on the 320×200
+     * frameplace region — caller's setviewtotalarea / qsetmode
+     * sequencing fences before any reads. */
+    d3d_gpu_clear_rect_fb((uint8_t *)frameplace,
+                          OF_DISPLAY_W, OF_DISPLAY_H, 0);
 }
 
 void _updateScreenRect(int32_t x, int32_t y, int32_t w, int32_t h)

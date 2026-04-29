@@ -164,6 +164,13 @@ static uint32_t _gpu_base;
  * to pull it via its own AXI master — eliminates the 120 ns/word MMIO
  * stall that dominates per-span dispatch cost. */
 #define GPU_CMD_DRAW_SPANS_BATCH 0x41
+/* GPU-triggered display flip (cr-gpu-triggered-flip.md).  2-word payload:
+ *   word 0: bits[1:0] = back-buffer index (0/1/2 → FB_ADDR_{0,1,2})
+ *   word 1: fence token (published to GPU_FENCE_REACHED after the swap)
+ * Drains all outstanding m_wr_* writes (same primitive as the upgraded
+ * CMD_FENCE), pulses the swap side-port to axi_periph_slave for one
+ * cycle, then publishes the fence token. */
+#define GPU_CMD_FLIP             0x42
 
 /* Maximum spans per CMD_DRAW_SPANS_BATCH dispatch.  At 15 words/span
  * that's 1920 words = 7680 bytes per batch — fits comfortably in the
@@ -381,6 +388,25 @@ static inline uint32_t of_gpu_fence(void) {
     return token;
 }
 
+/* GPU-triggered page flip — emits CMD_FLIP into the ring with the
+ * given back-buffer index and a fresh fence token.  The GPU's command
+ * processor drains all outstanding m_wr_* writes, pulses the swap
+ * side-port to the display controller (queued for next vsync), and
+ * publishes the fence token to GPU_FENCE_REACHED.  Non-blocking — the
+ * caller can poll the returned token via of_gpu_fence_reached() to
+ * know the swap has actually fired (post-vsync).
+ *
+ * Pair with the kernel's of_video_acquire_next(idx) to get the next
+ * free draw buffer.  See docs/cr-gpu-triggered-flip.md and
+ * d3d_gpu_flip_to() for the standard call pattern. */
+static inline uint32_t of_gpu_flip_to(int idx) {
+    uint32_t token = _gpu_fence_next++;
+    _gpu_cmd_header(GPU_CMD_FLIP, 2);
+    _gpu_ring_write((uint32_t)(idx & 0x3));
+    _gpu_ring_write(token);
+    return token;
+}
+
 static inline uint32_t of_gpu_submit(void) {
     uint32_t token = of_gpu_fence();
     of_gpu_kick();
@@ -480,6 +506,20 @@ static inline void of_gpu_clear_rect(uint32_t start_byte_addr,
     _gpu_ring_write(start_byte_addr);
     _gpu_ring_write(((uint32_t)w << 16) | (uint32_t)h);
     _gpu_ring_write((uint32_t)color);
+}
+
+/* Strided clear_rect — word 2 of the payload carries the row stride at
+ * bits [31:16].  When stride==0 the GPU falls back to the SET_FB-
+ * resident global stride (matches plain of_gpu_clear_rect).  See
+ * docs/cr-gpu-clear-rect-stride.md for the rationale. */
+static inline void of_gpu_clear_rect_strided(uint32_t start_byte_addr,
+                                              uint16_t w, uint16_t h,
+                                              uint16_t stride,
+                                              uint8_t color) {
+    _gpu_cmd_header(GPU_CMD_CLEAR_RECT, 3);
+    _gpu_ring_write(start_byte_addr);
+    _gpu_ring_write(((uint32_t)w << 16) | (uint32_t)h);
+    _gpu_ring_write(((uint32_t)stride << 16) | (uint32_t)color);
 }
 
 /*

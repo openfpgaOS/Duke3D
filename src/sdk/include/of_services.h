@@ -38,7 +38,7 @@ struct of_services_table {
     uint32_t version;
     uint32_t count;         /* Number of function pointers */
 
-    /* -- Video (12) -- */
+    /* -- Video (14) -- */
     void      (*video_init)(void);
     uint8_t * (*video_get_surface)(void);
     uint8_t * (*video_flip)(void);
@@ -51,6 +51,14 @@ struct of_services_table {
     void      (*video_flush_cache)(void);
     void      (*video_set_display_mode)(int mode);
     void      (*video_set_color_mode)(int mode);
+    /* GPU-triggered flip (cr-gpu-triggered-flip.md):
+     * acquire_next(just_flipped_idx) — caller passes idx of the buffer
+     * they just emitted CMD_FLIP for (or -1 on first call); kernel
+     * promotes it to buf_ready (blocking if previous still pending)
+     * and returns the next free draw idx.
+     * buffer_addr(idx) — returns FB address of the given idx. */
+    int       (*video_acquire_next)(int just_flipped_idx);
+    uint8_t * (*video_buffer_addr)(int idx);
 
     /* -- Input (4) -- */
     void      (*input_poll)(void);
@@ -141,12 +149,12 @@ struct of_services_table {
     const void *smp_bank_preload_base;
     uint32_t    smp_bank_preload_size;
 
-    /* -- AWE coprocessor (Phase 1+, append-only ABI) --
-     *    Phase 1 wires only the playback-relevant subset (sample address,
-     *    BASE_RATE, VOICE_BASE_VOL, PAN_BASE, INITIAL_FC/Q) into the
-     *    mixer at NOTE_ON.  Channel CC writes update the channel bank
-     *    but don't recompose currently-playing voices yet.  See of_awe.h
-     *    for the full struct. */
+    /* -- AWE coprocessor (RETIRED — slots kept for ABI stability) --
+     *    The AWE fabric coprocessor was removed; all of these slots are
+     *    wired to no-op stubs in services_table.c so SDK apps built
+     *    against the old ABI still link.  They silently do nothing.
+     *    Do NOT call these from new code; use the mixer + smp_voice
+     *    paths instead.  See of_awe.h for matching app-side stubs. */
     void      (*awe_voice_load)(int voice, const struct awe_voice_t *v);
     void      (*awe_voice_trigger)(int voice);
     void      (*awe_voice_release)(int voice);
@@ -165,37 +173,51 @@ struct of_services_table {
     void      (*awe_set_bend_range)(int cents);
     uint64_t  (*awe_active_mask)(void);
 
-    /* Phase 2 — 1 kHz stage-sequencer tick counter readback.  Reads
-     * the free-running 32-bit counter from audio_awe; increments once
-     * per 1 ms.  Rolls over every ~50 days; callers take deltas. */
+    /* Retired — returns 0. */
     uint32_t  (*awe_tick_count)(void);
 
-    /* Phase 3 — global flag that hands the amplitude envelope advance
-     * and VOL_COMPOSE over to fabric.  SW voice engine checks the
-     * same flag (see of_awe_hw_envelope_enabled in hal/awe.h via
-     * service table) to avoid stomping the HW-emitted mixer writes. */
+    /* Retired — no-op. */
     void      (*awe_set_hw_envelope)(int enabled);
 
-    /* Phase 6a — global reverb bus controls.  Level and feedback are
-     * 0..255.  Both default to 0 (bypass); the fabric mixes the delay
-     * tap into the output at `level`, and loops it back into the
-     * delay line at `feedback` — so level≈128, feedback≈140 gives a
-     * noticeable slap-back, level≈64, feedback≈180 gives a subtle
-     * tail. */
+    /* Retired — no-op. */
     void      (*awe_set_reverb_level)(int level);
     void      (*awe_set_reverb_feedback)(int feedback);
 
-    /* Phase 6b — global chorus bus controls.  level = wet mix 0..255,
-     * rate = LFO phase increment per sample (Q16), depth = LFO swing
-     * in samples (peak swing of read-pointer offset). */
+    /* Retired — no-op. */
     void      (*awe_set_chorus_level)(int level);
     void      (*awe_set_chorus_rate)(int rate);
     void      (*awe_set_chorus_depth)(int depth);
 
-    /* Phase 5c — Ramp1 (mod env) trigger.  stage = 2 (ATTACK) restarts
-     * from level=0; stage = 6 (RELEASE) fades from current level; stage
-     * = 7 (DONE) snaps to 0 and stops.  rate is Q16.16 incr per ms. */
+    /* Retired — no-op. */
     void      (*awe_ramp1_trigger)(int voice, int stage, uint32_t rate);
+
+    /* -- Mixer group-aware allocation (append-only, ABI-stable) --
+     *    Atomic alloc-and-tag entry; lets callers that know which
+     *    group a new voice belongs to bias the slot search and steal
+     *    paths so MUSIC and SFX don't collide in the same slot range.
+     *    `mixer_voice_group` reads back the current tag for a slot
+     *    (cheap shadow read) so callers can validate ownership before
+     *    writing — used by the SW MIDI ISR to drop stale references
+     *    when a slot has been reassigned to another group.  Older
+     *    firmware leaves these as NULL; callers should fall back to
+     *    of_mixer_play + of_mixer_set_group when these are absent. */
+    int       (*mixer_alloc_for_group)(int group, const uint8_t *pcm_s16,
+                                       uint32_t sample_count,
+                                       uint32_t sample_rate,
+                                       int priority, int volume);
+    int       (*mixer_voice_group)(int voice);
+
+    /* -- Cache (append-only) -- */
+    /* Range-granular writeback + invalidate (cbo.flush per line).
+     * On this VexiiRiscv config, cbo.clean alone has been observed
+     * to leave dirty lines in L1 (the bank-preload + audio-mixer
+     * paths both regressed when using clean-only).  Use this when
+     * preparing a buffer to be read by an external AXI master like
+     * the GPU's m_rd_* or the audio mixer's per-voice fetch — they
+     * read DRAM directly, not through the CPU's cache.
+     * Older firmware leaves this NULL; callers should fall back to
+     * cache_flush() (full sweep) when this is absent. */
+    void      (*cache_flush_range)(void *addr, uint32_t size);
 };
 
 #ifndef OF_PC
