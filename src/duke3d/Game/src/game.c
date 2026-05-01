@@ -8220,13 +8220,6 @@ int main(int argc,char  **argv)
         for(;;){__asm__ volatile("");}
     }
 
-#ifdef OPENFPGA
-	/* Skip version detection and CRC on openfpgaOS */
-	grpVersion = SHAREWARE_GRP13;
-	conVersion = 13;
-	groupefil_crc32[0] = 0;
-	ud.exeCRC[0] = 0;
-#else
 	// Detecting grp version
 	filehandle = kopen4load("DUKEDC9.MAP",1);
 	kclose(filehandle);
@@ -8259,6 +8252,12 @@ int main(int argc,char  **argv)
 	}
 	else
 		grpVersion = DUKEITOUTINDC_GRP;
+
+#ifdef OPENFPGA
+	if (grpVersion == ATOMIC_GRP14_15)
+		conVersion = 15;
+	ud.exeCRC[0] = 0;
+#else
 
 	// FIX_00062: Better support and identification for GRP and CON files for 1.3/1.3d/1.4/1.5
 	if (	groupefil_crc32[0]==CRC_BASE_GRP_SHAREWARE_13 ||
@@ -8587,18 +8586,8 @@ int main(int argc,char  **argv)
         else
             i = 65536;
 
-#ifdef OPENFPGA
-        { static int _pf = 0; uint32_t _t0, _t1, _t2, _t3;
-          _t0 = of_time_us();
-#endif
         displayrooms(screenpeek,i);
-#ifdef OPENFPGA
-          _t1 = of_time_us();
-#endif
         displayrest(i);
-#ifdef OPENFPGA
-          _t2 = of_time_us();
-#endif
 
         if(ps[myconnectindex].gm&MODE_DEMO)
             goto MAIN_LOOP_RESTART;
@@ -8613,16 +8602,6 @@ int main(int argc,char  **argv)
             	rotatesprite((320-50)<<16,9<<16,65536L,0,BETAVERSION,0,0,2+8+16+128,0,0,xdim-1,ydim-1);
 
         nextpage();
-#ifdef OPENFPGA
-          _t3 = of_time_us();
-          if ((++_pf & 63) == 0) {
-              extern uint32_t np_input_us, np_flip_us, np_audio_us;
-              printf("[perf] rooms=%u rest=%u flip=%u(in=%u fl=%u au=%u) total=%u us\n",
-                     _t1-_t0, _t2-_t1, _t3-_t2,
-                     np_input_us, np_flip_us, np_audio_us, _t3-_t0);
-          }
-        }
-#endif
     }
 
     gameexit(" ");

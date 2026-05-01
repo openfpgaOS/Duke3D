@@ -26,47 +26,7 @@ int d3d_gpu_present  = 0;
  * visually wrong while set; [perf-rooms] render time reveals the upper
  * bound on what batching could save. */
 int d3d_gpu_skip_submit = 0;
-int d3d_gpu_span_count  = 0;
-/* Snapshot of the just-finished frame's span count.  The [perf-rooms]
- * line prints this AFTER d3d_gpu_set_fb has reset the live counter,
- * so we copy the value into _last just before reset. */
-int d3d_gpu_span_count_last = 0;
-/* Batch-flush counter: how many times d3d_gpu_flush_batch fired this
- * frame.  Tells us whether batches are filling up (efficient — high
- * spans-per-flush) or being broken up by state changes (small
- * batches = high overhead per span). */
-int d3d_gpu_batch_flushes = 0;
-int d3d_gpu_batch_flushes_last = 0;
 
-/* Pipeline-perf counters.  Live values increment unconditionally on
- * the hot path (single uint32_t++ — ~1 cycle each) so the off-state
- * pipeline matches the on-state pipeline bit-identically.  Only the
- * frame-end printf is gated by d3d_perf_pipeline. */
-int d3d_perf_pipeline = 1;
-static uint32_t perf_vline_count;
-static uint32_t perf_sprite_vline_count;
-static uint32_t perf_hline_count;
-static uint32_t perf_rotsprite_count;
-static uint32_t perf_tvline_count;
-static uint32_t perf_clear_rect_count;
-static uint32_t perf_palookup_uploads;
-static uint32_t perf_colormap_switches;
-static uint32_t perf_max_batch_size;
-static uint32_t perf_flush_us;
-static uint32_t perf_finish_us;
-static uint32_t perf_busy_us;
-uint32_t d3d_perf_vline_last;
-uint32_t d3d_perf_sprite_vline_last;
-uint32_t d3d_perf_hline_last;
-uint32_t d3d_perf_rotsprite_last;
-uint32_t d3d_perf_tvline_last;
-uint32_t d3d_perf_clear_rect_last;
-uint32_t d3d_perf_palookup_uploads_last;
-uint32_t d3d_perf_colormap_switches_last;
-uint32_t d3d_perf_max_batch_size_last;
-uint32_t d3d_perf_flush_us_last;
-uint32_t d3d_perf_finish_us_last;
-uint32_t d3d_perf_busy_us_last;
 int d3d_gpu_use_spans = 1;   /* Master switch.  Set to 0 BEFORE the
                               * first frame to disable the GPU
                               * entirely: d3d_gpu_init() bails so
@@ -84,6 +44,31 @@ int d3d_gpu_use_spans = 1;   /* Master switch.  Set to 0 BEFORE the
  * here would land vline writes on every other tile row. */
 static uint8_t *fb_base;
 extern int32_t  bytesperline;   /* BUILD's live row stride in bytes */
+
+/* Spinwatch: every entry/exit point that could spin updates this
+ * tag.  Because the SDK app and kernel are separate binaries, we
+ * print directly here (throttled to every 256th call so steady-
+ * state load is small).  When a freeze happens, the LAST tag line
+ * before silence pinpoints which path the CPU got stuck in.
+ *
+ * Tag IDs:
+ *   0  = idle / exiting
+ *   1  = d3d_gpu_drain entered
+ *   2  = d3d_gpu_flush entered
+ *   3  = d3d_gpu_pre_cpu_fb_access entered
+ *   4  = of_gpu_finish entered (about to spin on fence)
+ *   5  = d3d_gpu_flush_batch entered
+ *   6  = d3d_gpu_drain_batch entered
+ *   7  = d3d_gpu_flip_to entered
+ *   8  = d3d_gpu_clear_rect_fb entered
+ */
+volatile uint32_t d3d_spin_tag = 0;
+volatile uint32_t d3d_spin_seq = 0;
+static inline void d3d_spin_log(uint32_t t) {
+    d3d_spin_tag = t;
+    d3d_spin_seq++;
+}
+#define SPIN_TAG(t) d3d_spin_log(t)
 
 /* Multi-palookup state.  The fabric now holds up to 16 palookups in
  * SDRAM (one per slot), reachable via gpu_tex_cache port B; CPU
@@ -157,11 +142,10 @@ static int           span_buf_count;
 
 static inline void d3d_gpu_flush_batch(void) {
     if (span_buf_count > 0) {
-        d3d_gpu_batch_flushes++;
-        if ((uint32_t)span_buf_count > perf_max_batch_size)
-            perf_max_batch_size = (uint32_t)span_buf_count;
+        SPIN_TAG(5);
         of_gpu_draw_spans_batch(span_buf, span_buf_count);
         span_buf_count = 0;
+        SPIN_TAG(0);
     }
 }
 
@@ -169,7 +153,84 @@ static inline void d3d_gpu_flush_batch(void) {
  * GPU-triggered flip path before emitting CMD_FLIP. */
 void d3d_gpu_drain_batch(void) {
     if (!d3d_gpu_present) return;
+    SPIN_TAG(6);
     d3d_gpu_flush_batch();
+    SPIN_TAG(0);
+}
+
+/* GPU-triggered flip wrapper.  Lives in this TU (the single owner of
+ * of_gpu.h's static ring state — _gpu_wrptr, _gpu_fence_next, etc.)
+ * so display_of.c can trigger flips without including of_gpu.h itself,
+ * which would create a duplicate set of static ring-tracking variables
+ * and desync the actual ring writes from the SW-tracked wrptr.  An
+ * earlier attempt at calling of_gpu_flip_to() directly from
+ * display_of.c hit exactly this: tok=0 from a separate
+ * _gpu_fence_next, and worse, of_gpu_kick() writing display_of.c's
+ * stale _gpu_wrptr=0xC truncated the ring back to 12 bytes — the GPU
+ * lost track of all the BUILD-emitted spans + bar-clear commands. */
+uint32_t d3d_gpu_flip_to(int idx) {
+    if (!d3d_gpu_present) return 0;
+    SPIN_TAG(7);
+    uint32_t token = of_gpu_flip_to(idx);
+    of_gpu_kick();
+    SPIN_TAG(0);
+    return token;
+}
+
+/* GPU-routed mirror reverse-blit.  See d3d_gpu.h for rationale.
+ *   dst, src   — FB byte addresses (cached alias — GPU's m_rd / m_wr
+ *                go directly to SDRAM regardless of CPU-cache alias).
+ *   count      — pixels per row.
+ *   rows       — number of rows to mirror.
+ *   row_stride — bytes between rows (BUILD's bytesperline / ylookup[1]).
+ *
+ * Per row: dst[k] = src[count-1-k].  Implemented as one affine span
+ * per row that walks dst BACKWARDS (fb_stride = -1) while sampling
+ * src FORWARD (sstep = +0x10000).  Walking dst backwards instead of
+ * sampling src reverse avoids the gpu_core.v `p0_s_int <= sp_s[31:16]
+ * & sp_tex_w_mask` step — a negative s_int would alias to 0xFFFF
+ * after masking and read 64 KB past the source.  fb_stride is signed
+ * 16-bit at the GPU side and the per-pixel update sign-extends, so
+ * negative strides work natively.
+ *
+ * CMD_FENCE first drains in-flight m_wr_* from earlier world spans
+ * so tex_cache reads back fresh SDRAM (cr-gpu-fence-write-completion
+ * gives us the GPU-side write→read ordering at the command-processor
+ * level — no CPU spin involved). */
+void d3d_gpu_blit_mirror(uint8_t *dst, const uint8_t *src,
+                         int count, int rows, int row_stride) {
+    if (!d3d_gpu_present) return;
+    if (count <= 0 || rows <= 0) return;
+
+    of_gpu_fence();
+
+    of_gpu_span_t sp;
+    sp.s         = 0;
+    sp.t         = 0;
+    sp.sstep     = 0x10000;             /* +1 pixel/pixel, forward sample */
+    sp.tstep     = 0;
+    sp.count     = (uint16_t)count;
+    sp.light     = 0;
+    sp.flags     = 0;                   /* raw byte copy, no colormap */
+    sp.fb_stride = -1;                  /* dst walks RIGHT-to-LEFT */
+    sp.tex_width = 1;                   /* affine, no t advance — ignored */
+    sp.tex_w_mask = 0xFFFF;
+    sp.tex_h_mask = 0xFFFF;
+    sp.sdivz = sp.tdivz = sp.zi_persp = 0;
+    sp.sdivz_step = sp.tdivz_step = sp.zi_step = 0;
+
+    /* fb_addr for row 0 starts at dst's LAST pixel (so the backwards
+     * walk finishes at dst[0]); tex_addr starts at src's FIRST pixel
+     * (forward sample with sstep=+1 reads src[0..count-1]). */
+    uint32_t dst_last = (uint32_t)(uintptr_t)(dst + (count - 1));
+    uint32_t src_base = (uint32_t)(uintptr_t)src;
+
+    for (int r = 0; r < rows; r++) {
+        sp.fb_addr  = dst_last + (uint32_t)(r * row_stride);
+        sp.tex_addr = src_base + (uint32_t)(r * row_stride);
+        of_gpu_draw_span(&sp);
+    }
+    of_gpu_kick();
 }
 
 /* Direct-write submit: caller gets a pointer to the next free span
@@ -184,7 +245,6 @@ static inline of_gpu_span_t *d3d_gpu_alloc_span(void) {
 }
 
 static inline void d3d_gpu_commit_span(void) {
-    d3d_gpu_span_count++;
     if (d3d_gpu_skip_submit) return;
     span_buf_count++;
 }
@@ -196,37 +256,6 @@ void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels)
      * emitters read BUILD's bytesperline live so they track
      * setviewtotile's stride flip without a separate hook. */
     fb_base = fb_pixels;
-    /* Snapshot the just-finished frame's counters BEFORE resetting —
-     * the [perf-rooms] print runs after _nextpage returns (= after
-     * this function), so reading the live counter would always see 0. */
-    d3d_gpu_span_count_last     = d3d_gpu_span_count;
-    d3d_gpu_batch_flushes_last  = d3d_gpu_batch_flushes;
-    d3d_perf_vline_last              = perf_vline_count;
-    d3d_perf_sprite_vline_last       = perf_sprite_vline_count;
-    d3d_perf_hline_last              = perf_hline_count;
-    d3d_perf_rotsprite_last          = perf_rotsprite_count;
-    d3d_perf_tvline_last             = perf_tvline_count;
-    d3d_perf_clear_rect_last         = perf_clear_rect_count;
-    d3d_perf_palookup_uploads_last   = perf_palookup_uploads;
-    d3d_perf_colormap_switches_last  = perf_colormap_switches;
-    d3d_perf_max_batch_size_last     = perf_max_batch_size;
-    d3d_perf_flush_us_last           = perf_flush_us;
-    d3d_perf_finish_us_last          = perf_finish_us;
-    d3d_perf_busy_us_last            = perf_busy_us;
-    d3d_gpu_span_count = 0;
-    d3d_gpu_batch_flushes = 0;
-    perf_vline_count = 0;
-    perf_sprite_vline_count = 0;
-    perf_hline_count = 0;
-    perf_rotsprite_count = 0;
-    perf_tvline_count = 0;
-    perf_clear_rect_count = 0;
-    perf_palookup_uploads = 0;
-    perf_colormap_switches = 0;
-    perf_max_batch_size = 0;
-    perf_flush_us = 0;
-    perf_finish_us = 0;
-    perf_busy_us = 0;
     if (!d3d_gpu_present) return;
 
     /* Unconditional GPU-tex-cache invalidate at every frame boundary.
@@ -268,7 +297,7 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
 {
     if (!dest) return;
     if (w == 0 || h == 0) return;
-    perf_clear_rect_count++;
+    SPIN_TAG(8);
     if (!d3d_gpu_present || !d3d_gpu_use_spans) {
         /* GPU off — CPU memset path so A/B tests against the GPU
          * implementation work, and the no-GPU bitstream still draws.
@@ -298,13 +327,16 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
 void d3d_gpu_pre_cpu_fb_access(void)
 {
     if (!d3d_gpu_present) return;
+    SPIN_TAG(3);
     /* Flush any pending span batch so its writes land in SDRAM before
      * we wait for the GPU to drain. */
     d3d_gpu_flush_batch();
     /* Drain GPU writes to SDRAM so subsequent CPU reads see current
      * pixels (without this, a CPU read of a region the GPU just
      * wrote could return stale SDRAM). */
+    SPIN_TAG(4);
     of_gpu_finish();
+    SPIN_TAG(0);
     /* Invalidate L1 — without this, a CPU read of an FB byte the
      * fabric just wrote could hit a STALE clean line in L1 from the
      * previous frame.  of_cache_flush is "write-back + invalidate"
@@ -336,21 +368,11 @@ void d3d_gpu_pre_cpu_fb_access(void)
 void d3d_gpu_flush(void)
 {
     if (!d3d_gpu_present) return;
-    /* Three timer reads — unconditional so on/off perf pipelines stay
-     * bit-identical. */
-    uint32_t _t0 = of_time_us();
+    SPIN_TAG(2);
     d3d_gpu_flush_batch();
-    uint32_t _t1 = of_time_us();
+    SPIN_TAG(4);
     of_gpu_finish();
-    uint32_t _t2 = of_time_us();
-    /* The STATUS_BUSY post-fence poll workaround was removed once the
-     * RTL fix in cr-gpu-fence-write-completion.md landed: CMD_FENCE now
-     * stalls in the GPU's command processor until m_wr_inflight drains
-     * to zero before publishing GPU_FENCE_REACHED.  of_gpu_finish() is
-     * once again sufficient pre-flip ordering on its own. */
-    perf_flush_us  += (_t1 - _t0);
-    perf_finish_us += (_t2 - _t1);
-    perf_busy_us   += 0;  /* retired — left in place so the [perf-flush] line stays stable */
+    SPIN_TAG(0);
 }
 
 void d3d_gpu_tex_invalidate(void)
@@ -369,8 +391,11 @@ void d3d_gpu_mark_tex_dirty(void)
 void d3d_gpu_drain(void)
 {
     if (!d3d_gpu_present) return;
+    SPIN_TAG(1);
     d3d_gpu_flush_batch();
+    SPIN_TAG(4);
     of_gpu_finish();
+    SPIN_TAG(0);
 }
 
 /* ----------------------------------------------------------------------
@@ -436,7 +461,6 @@ static inline void ensure_pal0_uploaded(void)
     for (int i = 0; i < D3D_GPU_PAL_SLOTS; i++)
         gpu_pal_base_of_slot[i] = NULL;
     of_gpu_palookup_upload(0, palookup[0], D3D_GPU_PAL_BYTES);
-    perf_palookup_uploads++;
     gpu_pal_base_of_slot[0] = palookup[0];
     gpu_pal_next_slot = 1;
     /* GPU resets the active slot to 0; software mirror starts there. */
@@ -473,7 +497,6 @@ int d3d_gpu_shade_for(const uint8_t *palookupoffse)
         if ((uintptr_t)off < D3D_GPU_PAL_BYTES) {
             d3d_gpu_flush_batch();
             of_gpu_set_colormap_id((uint8_t)s);
-            perf_colormap_switches++;
             gpu_current_slot = s;
             return (int)(off >> 8);
         }
@@ -495,8 +518,6 @@ int d3d_gpu_shade_for(const uint8_t *palookupoffse)
         d3d_gpu_flush_batch();
         of_gpu_palookup_upload((uint8_t)s, p, D3D_GPU_PAL_BYTES);
         of_gpu_set_colormap_id((uint8_t)s);
-        perf_palookup_uploads++;
-        perf_colormap_switches++;
         gpu_pal_base_of_slot[s] = p;
         gpu_current_slot = s;
         return (int)(off >> 8);
@@ -541,7 +562,6 @@ void d3d_gpu_vline(uint8_t *dest, int num_pixels, int shade,
 {
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
-    perf_vline_count++;
 
     ensure_pal0_uploaded();
 
@@ -561,7 +581,6 @@ void d3d_gpu_mvline(uint8_t *dest, int num_pixels, int shade,
 {
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
-    perf_vline_count++;
 
     ensure_pal0_uploaded();
 
@@ -586,7 +605,6 @@ void d3d_gpu_vline4(uint8_t *fb_at_y0, int num_pixels,
 {
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
-    perf_vline_count += 4;
 
     ensure_pal0_uploaded();
 
@@ -613,7 +631,6 @@ void d3d_gpu_mvline4(uint8_t *fb_at_y0, int num_pixels,
 {
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
-    perf_vline_count += 4;
 
     ensure_pal0_uploaded();
 
@@ -773,7 +790,6 @@ void d3d_gpu_tvline(uint8_t *dest, int num_pixels, int shade,
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
     if (shade < 0) return;
-    perf_tvline_count++;
 
     ensure_pal0_uploaded();
 
@@ -798,7 +814,6 @@ void d3d_gpu_tvline2(uint8_t *dest_a, int num_pixels,
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
     if (shade_a < 0 || shade_b < 0) return;
-    perf_tvline_count += 2;
 
     ensure_pal0_uploaded();
 
@@ -875,7 +890,6 @@ void d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
     if (shade < 0) return;
-    perf_rotsprite_count++;
     ensure_pal0_uploaded();
     emit_rotsprite_hline(dest, num_pixels, shade, bx_frac, by_frac,
                          texture, OF_GPU_SPAN_COLORMAP);
@@ -891,7 +905,6 @@ void d3d_gpu_rmhline(uint8_t *dest, int num_pixels, int shade,
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
     if (shade < 0) return;
-    perf_rotsprite_count++;
     ensure_pal0_uploaded();
     emit_rotsprite_hline(dest, num_pixels, shade, bx_frac, by_frac,
                          texture, OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_SKIP_ZERO);
@@ -906,7 +919,6 @@ void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
     if (shade < 0) return;
-    perf_sprite_vline_count++;
 
     ensure_pal0_uploaded();
 
@@ -1001,7 +1013,6 @@ void d3d_gpu_mhline(uint8_t *dest, int num_pixels, int shade_x256,
 {
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
-    perf_hline_count++;
 
     ensure_pal0_uploaded();
     /* Caller (mhlineskipmodify) must have verified mmach_asm3 is in
@@ -1019,7 +1030,6 @@ void d3d_gpu_thline(uint8_t *dest, int num_pixels, int shade_x256,
 {
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
-    perf_hline_count++;
 
     ensure_pal0_uploaded();
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
@@ -1038,7 +1048,6 @@ void d3d_gpu_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
 {
     if (num_pixels <= 0) return;
     if (!d3d_gpu_present || !fb_base) return;
-    perf_hline_count++;
 
     ensure_pal0_uploaded();
     /* Caller (hlineasm4) must have already checked that the floor's

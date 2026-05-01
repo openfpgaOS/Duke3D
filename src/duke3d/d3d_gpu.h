@@ -31,32 +31,6 @@ extern int d3d_gpu_present;
  * test before promoting span replacements out of opt-in. */
 extern int d3d_gpu_use_spans;
 
-/* Pipeline perf breakdown.  When 1, game.c emits a [perf-pipeline]
- * line every 64 frames with per-span-type counts, batch stats, and
- * GPU phase timings (flush / finish / busy poll).  Counters and
- * timer reads run unconditionally so the off-state and on-state
- * pipelines are bit-identical and timings stay comparable; only the
- * printf is gated. */
-extern int d3d_perf_pipeline;
-
-/* Per-frame counters — snapshots are written to *_last in
- * d3d_gpu_set_fb (frame boundary) so the [perf-pipeline] print can
- * read them after the live values have been reset for the next
- * frame.  All counts are spans actually submitted; spans that hit
- * the d3d_gpu_skip_submit diagnostic path are NOT counted. */
-extern uint32_t d3d_perf_vline_last;
-extern uint32_t d3d_perf_sprite_vline_last;
-extern uint32_t d3d_perf_hline_last;
-extern uint32_t d3d_perf_rotsprite_last;
-extern uint32_t d3d_perf_tvline_last;
-extern uint32_t d3d_perf_clear_rect_last;
-extern uint32_t d3d_perf_palookup_uploads_last;
-extern uint32_t d3d_perf_colormap_switches_last;
-extern uint32_t d3d_perf_max_batch_size_last;
-extern uint32_t d3d_perf_flush_us_last;
-extern uint32_t d3d_perf_finish_us_last;
-extern uint32_t d3d_perf_busy_us_last;
-
 void d3d_gpu_init(void);
 void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels);
 void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades);
@@ -64,10 +38,31 @@ void d3d_gpu_flush(void);
 
 /* Drain pending span buffer to the GPU ring without emitting a fence.
  * Used by the GPU-triggered flip path in display_of.c::_nextpage —
- * the subsequent of_gpu_flip_to() emits its own fence + drain primitive
- * via CMD_FLIP, so we don't want d3d_gpu_flush()'s of_gpu_finish wait
- * here. */
+ * the subsequent d3d_gpu_flip_to() emits its own fence + drain
+ * primitive via CMD_FLIP, so we don't want d3d_gpu_flush()'s
+ * of_gpu_finish wait here. */
 void d3d_gpu_drain_batch(void);
+
+/* GPU-triggered flip — emit CMD_FLIP into the ring and kick.  Returns
+ * the fence token of_gpu_flip_to gave us so the caller can pass it to
+ * of_video_acquire_next() for the wait.  Lives here (not display_of.c)
+ * because of_gpu.h's static ring state (_gpu_wrptr, _gpu_fence_next)
+ * MUST live in exactly one TU; d3d_gpu.c owns it. */
+uint32_t d3d_gpu_flip_to(int idx);
+
+/* GPU-routed horizontal mirror reverse-blit.  Used by completemirror
+ * to flip a screen rect through the X axis: for each row, pixels are
+ * read from `src` (size `count` bytes), reversed, and written to
+ * `dst`.  Both addresses are FB-resident — the helper emits a
+ * CMD_FENCE before the blit spans so the GPU's m_wr_inflight from
+ * earlier rendering drains to SDRAM before the tex_cache reads
+ * back.  Per-row affine spans with sstep=-0x10000 do the reverse
+ * sample.  Replaces the old CPU memcpy + reverse loop, which was
+ * the last documented CPU FB read+write path; eliminating it lets
+ * us run with frameplace set to the uncached alias (no cache_clean
+ * before flip needed). */
+void d3d_gpu_blit_mirror(uint8_t *dst, const uint8_t *src,
+                         int count, int rows, int row_stride);
 
 /* GPU-routed FB rect clear.  Pointer-friendly wrapper around the SDK
  * of_gpu_clear_rect; safe no-op when the GPU isn't present (caller
