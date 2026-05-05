@@ -44,6 +44,22 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 
 int32_t backflag,numenvsnds;
 
+#ifdef OPENFPGA
+static int openfpga_sound_pitch(short num)
+{
+    short pitchs = soundps[num];
+    short pitche = soundpe[num];
+    short delta = klabs(pitche - pitchs);
+
+    if (delta) {
+        if (pitchs < pitche)
+            return pitchs + (rand() % delta);
+        return pitche + (rand() % delta);
+    }
+    return pitchs;
+}
+#endif
+
 /*
 ===================
 =
@@ -265,6 +281,7 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
     {
         int32_t sndist, sndang;
         int voice;
+        int pitch;
 
         if (num < 0 || num >= NUM_SOUNDS || !SoundToggle)
             return -1;
@@ -275,6 +292,8 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 
         /* Redirect non-positional sounds */
         if (soundm[num] & 128) { sound(num); return 0; }
+
+        pitch = openfpga_sound_pitch(num);
 
         int32_t cx = ps[screenpeek].oposx;
         int32_t cy = ps[screenpeek].oposy;
@@ -308,8 +327,13 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
             if (num == PIPEBOMB_EXPLODE || num == LASERTRIP_EXPLODE ||
                 num == RPG_EXPLODE) {
                 if (sndist > 6144) sndist = 6144;
+                if (sector[ps[screenpeek].cursectnum].lotag == 2)
+                    pitch -= 1024;
             } else if (sndist > 31444 && PN != MUSICANDSFX) {
                 return -1;
+            } else if (sector[ps[screenpeek].cursectnum].lotag == 2 &&
+                       (soundm[num] & 4) == 0) {
+                pitch = -768;
             }
 
             /* Full-volume flag */
@@ -342,9 +366,9 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
         if (dist > 255) dist = 255;
 
         if (sndist == 0)
-            voice = d3d_sound_play(num, soundpr[num], 255);
+            voice = d3d_sound_play_pitch(num, soundpr[num], 255, pitch);
         else
-            voice = d3d_sound_play_3d(num, soundpr[num], sndang, dist);
+            voice = d3d_sound_play_3d_pitch(num, soundpr[num], sndang, dist, pitch);
 
         if (voice >= 0) {
             if (soundm[num] & 1)
@@ -504,7 +528,13 @@ void sound(short num)
 {
 #ifdef OPENFPGA
     {
-        int voice = d3d_sound_play(num, soundpr[num], 255);
+        if (num < 0 || num >= NUM_SOUNDS) return;
+        if (SoundToggle == 0) return;
+        if (VoiceToggle == 0 && (soundm[num] & 4)) return;
+        if ((soundm[num] & 8) && ud.lockout) return;
+
+        int pitch = openfpga_sound_pitch(num);
+        int voice = d3d_sound_play_pitch(num, soundpr[num], 255, pitch);
         if (voice >= 0 && (soundm[num] & 1))
             d3d_sound_set_loop(voice);
     }
@@ -761,4 +791,3 @@ void clearsoundlocks(void)
 
             lumplockbyte[i] = 199;
 }
-

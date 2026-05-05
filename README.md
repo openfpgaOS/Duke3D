@@ -401,33 +401,23 @@ of_set_idle_hook(my_audio_pump);      // Called by OS during bridge waits
 of_set_idle_hook(NULL);               // Disable
 ```
 
-### Save System — `of_save.h`
+### Save Files
 
-10 persistent save slots (256 KB each), backed by CRAM1 nonvolatile memory.
+10 persistent save slots (256 KB each), auto-loaded by APF into the CRAM0 save window and committed through the bridge when dirty save files are closed.
 
-**Preferred: standard C file I/O (auto-flushes on close):**
+**Preferred: standard C file I/O with the save filename from the instance JSON:**
 
 ```c
-FILE *f = fopen("save_0", "wb");
+FILE *f = fopen("MyGame_0.sav", "wb");
 fwrite(data, sizeof(data), 1, f);
-fclose(f);                            // Auto-flushes actual bytes written
+fclose(f);
 
-FILE *f = fopen("save_0", "rb");
+FILE *f = fopen("MyGame_0.sav", "rb");
 fread(data, sizeof(data), 1, f);
 fclose(f);
 ```
 
-Save names: `"save_0"` through `"save_9"`, or `"save:0"` through `"save:9"`.
-
-**Low-level API:**
-
-```c
-of_save_read(slot, buf, offset, len);           // Read from save slot (0-9)
-of_save_write(slot, buf, offset, len);          // Write to save slot
-of_save_flush(slot);                            // Flush full 256KB to SD
-of_save_flush_size(slot, actual_bytes);         // Flush only what you wrote
-of_save_erase(slot);                            // Zero and flush
-```
+The aliases `"save_0"` through `"save_9"` and `"save:0"` through `"save:9"` remain available for compatibility. The SDK intentionally exposes saves through POSIX file I/O rather than a separate save API.
 
 ### Terminal — `of_terminal.h`
 
@@ -586,12 +576,12 @@ When there's only one instance JSON for your app, the Pocket auto-selects it —
 | 1 | OS Binary | `os.bin` — loaded by bootloader via DMA |
 | 2 | Application | Your app ELF — loaded by OS kernel |
 | 3-6 | Data 1-4 | App data files (WAD, GRP, images, audio, etc.) |
-| 10-19 | Save 0-9 | Nonvolatile CRAM1 save slots (256 KB each) |
+| 10-19 | Save 0-9 | Nonvolatile CRAM0 save slots (256 KB each) |
 
 **Rules:**
 - Slot 9 (Game selector) is defined in the SDK's `data.json` — don't add it to your instance
 - Slot 0 is reserved by APF — do not use
-- Save slots use bridge address `0x30000000` (CRAM1) with 256 KB stride
+- Save slots use bridge address `0x20100000` (CRAM0 save window) with 256 KB stride
 - Place data files in your app directory — copy copies them to the SD card
 
 ---
@@ -679,7 +669,7 @@ make                                # rebuild your app
            │ (loaded from ELF)    │
 0x13FFFFFF └──────────────────────┘
 
-0x39000000   CRAM1: Save slots (10 x 256 KB)
+0x20100000   CRAM0 bridge save window: Save slots (10 x 256 KB)
 ```
 
 ---

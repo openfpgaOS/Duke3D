@@ -31,6 +31,10 @@ extern int d3d_gpu_present;
  * test before promoting span replacements out of opt-in. */
 extern int d3d_gpu_use_spans;
 
+/* Scoped CPU fallback gate for BUILD paths that must preserve exact
+ * software framebuffer semantics, such as dorotatesprite menus/HUD. */
+extern int d3d_gpu_force_cpu_spans;
+
 void d3d_gpu_init(void);
 void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels);
 void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades);
@@ -108,11 +112,19 @@ void d3d_gpu_drain(void);
  * win that retiring of_cache_flush from the hot path delivers. */
 void d3d_gpu_pre_cpu_fb_access(void);
 
-/* Returns shade index 0..31 if `palookupoffse` is inside the palookup
- * currently loaded in the GPU's colormap RAM (palookup[0]), or -1 if
- * not — caller must fall back to the SW path so the wall/floor renders
- * with the correct per-pal shading. */
+/* Cheaper write-only variant for CPU code that only draws through the
+ * uncached framebuffer alias.  It drains GPU writes for ordering, but
+ * skips the full D-cache flush needed only before CPU framebuffer reads. */
+void d3d_gpu_prepare_cpu_fb_write(void);
+
+/* Returns shade index 0..31 if `palookupoffse` is inside a GPU-loaded
+ * palookup slot, or can be lazily uploaded into one.  Returns -1 if no
+ * slot is available; caller must fall back to the SW path so the draw
+ * uses the correct per-pal shading.  The slot variant also reports the
+ * selected slot so multi-span callers can avoid mixing sticky colormap
+ * state inside one GPU batch. */
 int  d3d_gpu_shade_for(const uint8_t *palookupoffse);
+int  d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out);
 
 /* Try-helpers for the BUILD inner loops.  Each lives outside the
  * OF_FASTTEXT section so it gets its own ABI-clean prologue/epilogue;
@@ -241,17 +253,17 @@ void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
  * the initial fractional bx<<16 / by<<16 just as for sprite_vline.
  *   rhline  = SPAN_COLORMAP                         (opaque)
  *   rmhline = SPAN_COLORMAP | SPAN_SKIP_ZERO        (color-key) */
-void d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
+int d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
+                   uint32_t bx_frac, uint32_t xv2_step,
+                   uint32_t by_frac, uint32_t yv2_step,
+                   uint16_t tile_height,
+                   const uint8_t *texture);
+
+int d3d_gpu_rmhline(uint8_t *dest, int num_pixels, int shade,
                     uint32_t bx_frac, uint32_t xv2_step,
                     uint32_t by_frac, uint32_t yv2_step,
                     uint16_t tile_height,
                     const uint8_t *texture);
-
-void d3d_gpu_rmhline(uint8_t *dest, int num_pixels, int shade,
-                     uint32_t bx_frac, uint32_t xv2_step,
-                     uint32_t by_frac, uint32_t yv2_step,
-                     uint16_t tile_height,
-                     const uint8_t *texture);
 
 /* Recorder called from engine.c::dorotatesprite before each
  * setuprhlineasm4 / setuprmhlineasm4 so the rh/rmh hooks have access

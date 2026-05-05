@@ -2,9 +2,8 @@
  * of_file.h -- File I/O for openfpgaOS
  *
  * Use standard C fopen/fread/fwrite/fclose/fseek/ftell.
- *   fopen("slot:3", "rb")     -- opens data slot 3
- *   fopen("save:0", "wb")     -- opens save slot 0 for writing
- *   fclose(f)                  -- auto-flushes saves
+ *   fopen("data.bin", "rb")       -- opens a read-only APF data file
+ *   fopen("MyGame_0.sav", "wb")  -- opens a read/write save file
  *
  * Use opendir/readdir to discover available files.
  */
@@ -25,12 +24,10 @@
 
 /* Register a filename→data-slot binding for fopen() by name.
  *
- * Needed because on current APF firmware DS_CMD_GETFILE returns no
- * response — the kernel cannot discover filenames from the datatable
- * by itself. Apps that know their own slot assignments (from the
- * instance JSON) should call this during startup for each slot they
- * will open by name. Overwrites any prior mapping with the same name.
- * Max 16 registrations total.
+ * The kernel auto-discovers APF filenames at boot. Apps can still call
+ * this when they want to provide or override a binding explicitly.
+ * Overwrites any prior mapping with the same name.
+ * Max 32 registrations total.
  *
  *   of_file_slot_register(3, "data.bin");
  *   FILE *f = fopen("data.bin", "rb");

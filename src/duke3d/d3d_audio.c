@@ -5,8 +5,9 @@
  * Handles VOC/WAV parsing, CRAM1 upload, voice tracking, completion
  * callbacks, and 3D positional audio (distance → volume, angle → L/R pan).
  *
- * A 60Hz timer interrupt drives MIDI playback and voice completion
- * polling, ensuring consistent timing independent of frame rate.
+ * MIDI playback is owned by the kernel's machine-timer ISR (installed
+ * by of_midi_play); voice completion polling runs from d3d_audio_pump,
+ * called once per frame from _nextpage.
  */
 
 #include <stdint.h>
@@ -22,6 +23,7 @@
 /* Game headers */
 #include "duke3d.h"
 #include "filesystem.h"
+#include "pitch.h"
 
 /* BUILD engine sine table: short[2048], range -16383 to +16383
  * sintable[ang & 2047]       = sin(ang * pi/1024) * 16383
@@ -56,6 +58,11 @@ typedef struct {
 
 static active_voice_t active_voices[MAX_ACTIVE_VOICES];
 
+/* Pan-debounce cache for d3d_sound_set_pan — invalidated when the slot
+ * is freed in untrack_voice() so a new sound's initial pan still writes. */
+static uint8_t last_pan[MAX_ACTIVE_VOICES];
+static uint8_t last_pan_valid[MAX_ACTIVE_VOICES];
+
 static void init_voice_tracking(void) {
     for (int i = 0; i < MAX_ACTIVE_VOICES; i++)
         active_voices[i].voice = -1;
@@ -73,6 +80,9 @@ static void track_voice_timed(int voice, int sound_num, int has_owner,
 static void untrack_voice(int voice) {
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
     active_voices[voice].voice = -1;
+    /* Invalidate the pan-debounce cache so the next sound that lands on
+     * this slot writes its initial pan unconditionally. */
+    last_pan_valid[voice] = 0;
 }
 
 static void complete_voice(int i) {
@@ -88,6 +98,36 @@ static void complete_voice(int i) {
         extern void testcallback(int32_t num);
         testcallback(snd);
     }
+}
+
+static void complete_ended_voice(int i) {
+    int snd = active_voices[i].sound_num;
+    int owned = active_voices[i].has_owner;
+    untrack_voice(i);
+    if (owned) {
+        extern void testcallback(int32_t num);
+        testcallback(snd);
+    }
+}
+
+static void poll_ended_voices(void) {
+    uint32_t ended = of_mixer_poll_ended();
+    if (!ended) return;
+
+    for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
+        if (!(ended & (1u << i))) continue;
+        if (active_voices[i].voice < 0) continue;
+        complete_ended_voice(i);
+    }
+}
+
+static uint32_t pitched_rate(uint32_t sample_rate, int pitch)
+{
+    uint64_t scaled = (uint64_t)sample_rate * (uint64_t)PITCH_GetScale(pitch);
+    scaled = (scaled + 0x8000u) >> 16;
+    if (scaled == 0) scaled = 1;
+    if (scaled > 0xFFFFFFFFu) scaled = 0xFFFFFFFFu;
+    return (uint32_t)scaled;
 }
 
 /* ================================================================
@@ -110,19 +150,6 @@ static void angle_dist_to_vol_pan(int angle, int distance,
 
     *out_vol = volume;
     *out_pan = pan;
-}
-
-/* ================================================================
- * Timer-driven audio pump (60 Hz)
- * ================================================================ */
-
-#define AUDIO_TICK_HZ 60
-
-static volatile int pump_pending = 0;
-
-static void audio_timer_tick(void)
-{
-    pump_pending = 1;
 }
 
 /* ================================================================
@@ -222,8 +249,15 @@ static int ensure_decoded(int num)
  */
 int d3d_sound_play(int num, int priority, int volume)
 {
+    return d3d_sound_play_pitch(num, priority, volume, 0);
+}
+
+int d3d_sound_play_pitch(int num, int priority, int volume, int pitch)
+{
     if (!audio_initialized) return -1;
     if (num < 0 || num >= NUM_SOUNDS) return -1;
+
+    poll_ended_voices();
 
     if (!ensure_decoded(num))
         return -1;
@@ -231,20 +265,16 @@ int d3d_sound_play(int num, int priority, int volume)
     int vol = volume * 2;
     if (vol > 255) vol = 255;
 
-    int voice = of_mixer_play(decoded[num].pcm,
-                              decoded[num].sample_count,
-                              decoded[num].sample_rate,
-                              priority, vol);
+    uint32_t rate = pitched_rate(decoded[num].sample_rate, pitch);
+    int voice = of_mixer_alloc_for_group(OF_MIXER_GROUP_SFX,
+                                         decoded[num].pcm,
+                                         decoded[num].sample_count,
+                                         rate,
+                                         priority, vol);
 
     if (voice >= 0) {
-        /* Tag as SFX so the kernel allocator and master-mix path can
-         * tell game effects from MIDI voices.  Without this tag, AWE
-         * (which owns voices 0..27 for MIDI) and the SFX path silently
-         * compete for the same voice slots and SFX gets stomped one
-         * fabric tick after each of_mixer_play returns. */
-        of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
         uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
-                     / decoded[num].sample_rate + 50;
+                     / rate + 50;
         track_voice_timed(voice, num, 0, dur);
     }
 
@@ -257,8 +287,15 @@ int d3d_sound_play(int num, int priority, int volume)
  */
 int d3d_sound_play_3d(int num, int priority, int angle, int distance)
 {
+    return d3d_sound_play_3d_pitch(num, priority, angle, distance, 0);
+}
+
+int d3d_sound_play_3d_pitch(int num, int priority, int angle, int distance, int pitch)
+{
     if (!audio_initialized) return -1;
     if (num < 0 || num >= NUM_SOUNDS) return -1;
+
+    poll_ended_voices();
 
     if (!ensure_decoded(num))
         return -1;
@@ -269,16 +306,17 @@ int d3d_sound_play_3d(int num, int priority, int angle, int distance)
     int scaled_vol = vol * 2;
     if (scaled_vol > 255) scaled_vol = 255;
 
-    int voice = of_mixer_play(decoded[num].pcm,
-                              decoded[num].sample_count,
-                              decoded[num].sample_rate,
-                              priority, scaled_vol);
+    uint32_t rate = pitched_rate(decoded[num].sample_rate, pitch);
+    int voice = of_mixer_alloc_for_group(OF_MIXER_GROUP_SFX,
+                                         decoded[num].pcm,
+                                         decoded[num].sample_count,
+                                         rate,
+                                         priority, scaled_vol);
 
     if (voice >= 0) {
-        of_mixer_set_group(voice, OF_MIXER_GROUP_SFX);
         of_mixer_set_pan(voice, pan);
         uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
-                     / decoded[num].sample_rate + 50;
+                     / rate + 50;
         track_voice_timed(voice, num, 0, dur);
     }
 
@@ -287,17 +325,34 @@ int d3d_sound_play_3d(int num, int priority, int angle, int distance)
 
 /*
  * Update panning for an active 3D sound (called per-frame from pan3dsound).
+ *
+ * Per-frame pan updates were observed to cause crackle in busy passages
+ * (the diagnostic stub of this function eliminated it).  Mechanism is
+ * still under investigation — likely a HW response to high-rate
+ * MIX_VOICE_VOL_TARGET writes (write-vs-FSM-pipeline race or AXI write
+ * backpressure starving the mixer's per-sample SDRAM budget).
+ *
+ * Workaround: cache the last pan we sent per voice slot and only call
+ * the syscall when the quantized pan actually changes.  The 0..255 pan
+ * is computed from a sintable + 14-bit shift so adjacent angles
+ * frequently round to the same byte — most per-frame calls today are
+ * issuing the same value and the syscall does nothing useful anyway.
+ * Real pan changes still propagate immediately.
  */
 void d3d_sound_set_pan(int voice, int angle, int distance)
 {
     if (!audio_initialized || voice < 0) return;
+    if (voice >= MAX_ACTIVE_VOICES) return;
 
     int vol, pan;
     angle_dist_to_vol_pan(angle, distance, &vol, &pan);
 
-    /* Only update pan — volume was set at play time and the hardware
-     * ramp rate (default 0) blocks post-play volume changes. Pan is
-     * a separate hardware path that works regardless of ramp. */
+    if (last_pan_valid[voice] && (uint8_t)pan == last_pan[voice])
+        return;
+
+    last_pan[voice]       = (uint8_t)pan;
+    last_pan_valid[voice] = 1;
+
     of_mixer_set_pan(voice, pan);
 }
 
@@ -356,17 +411,15 @@ void d3d_audio_pump(void)
      * installs — calling it from here too races on the M state and
      * has been observed to fault.  See of_midi.h for the contract. */
 
-    /* Match Doom's opl_Poll: pump the SW mixer from the main thread
-     * once per game tic.  The MIDI envelope/LFO ISR is cheap and stays
-     * in the kernel; the heavy sample-mixing work runs here so the
-     * renderer's I-cache isn't trashed on every ISR fire.  of_mixer_pump
-     * loops swmixer_tick internally with a sane cap, so a late call
-     * just catches the audio ring back up. */
+    /* Pump the SW mixer from the main thread once per frame.  The
+     * MIDI envelope/LFO ISR stays in the kernel and is cheap; the
+     * heavy sample-mixing work runs here so the renderer's I-cache
+     * isn't trashed on every ISR fire.  of_mixer_pump loops
+     * swmixer_tick internally with a sane cap, so a late call just
+     * catches the audio ring back up. */
     of_mixer_pump();
 
-    /* Drain the hardware ended register so it doesn't overflow,
-     * but we don't act on it — timer expiry handles everything. */
-    of_mixer_poll_ended();
+    poll_ended_voices();
 
     uint32_t now = of_time_ms();
     for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {

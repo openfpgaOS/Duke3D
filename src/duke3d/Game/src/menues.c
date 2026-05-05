@@ -833,7 +833,17 @@ int saveplayer(int8_t spot)
     SAVE_WRITE(&parallaxyscale, sizeof(parallaxyscale), 1, fil);
 
 #ifdef OPENFPGA
-    save_fclose(fil);
+    if (save_fclose(fil) != 0)
+    {
+        ready2send = 1;
+        waitforeverybody();
+        if (ud.multimode < 2)
+        {
+            strcpy(fta_quotes[122], "SAVE FAILED");
+            FTA(122, &ps[myconnectindex], 1);
+        }
+        return(-1);
+    }
 #else
     fclose(fil);
 #endif
@@ -4806,4 +4816,3 @@ void playanm(char  *fn,uint8_t  t)
     ANIM_FreeAnim ();
     tiles[MAXTILES-3-t].lock = 1;
 }
-

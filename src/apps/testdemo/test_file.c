@@ -590,42 +590,19 @@ void test_lseek_large_read(void) {
     ASSERT("open", fd >= 0);
     if (fd < 0) { section_end(); return; }
 
-    /* DIAG: allocate first, then emit a single short line with everything.
-     * Keeping it to one printf avoids UART ring overflow during bursts,
-     * and the short format ensures it flushes even if a crash follows. */
-    const struct of_capabilities *caps = of_get_caps();
-    uint32_t hbase = caps->heap_base;
-    uint32_t hend  = caps->heap_base + caps->heap_size;
-
     uint8_t *buf1 = malloc(65536);
-    printf("\n[SL1]b1=%p h=%08x..%08x\n", (void*)buf1, hbase, hend);
-    usleep(100000);
-
     uint8_t *buf2 = malloc(65536);
-    printf("[SL2]b2=%p\n", (void*)buf2);
-    usleep(100000);
-
     ASSERT("alloc", buf1 != NULL && buf2 != NULL);
     if (!buf1 || !buf2) { free(buf1); free(buf2); close(fd); section_end(); return; }
 
-    /* Canary writes at byte 0 and byte 65535 of each buffer — if these
-     * fault (cause 7), malloc returned a pointer that straddles the
-     * heap edge. No DMA involvement. */
+    /* Canary writes — fault here (cause 7) means malloc straddled the heap edge. */
     buf1[0] = 0x11;
-    printf("[SL3]b1[0]ok\n");
-    usleep(100000);
     buf1[65535] = 0x11;
-    printf("[SL4]b1[end]ok\n");
-    usleep(100000);
     buf2[0] = 0x22;
     buf2[65535] = 0x22;
-    printf("[SL5]b2 ok, into read\n");
-    usleep(100000);
 
     /* Read 64KB to fill and refill read-ahead multiple times */
     int r1 = read(fd, buf1, 65536);
-    printf("[SL6]r1=%d\n", r1);
-    usleep(100000);
     ASSERT_EQ("read 64K", r1, 65536);
 
     /* Seek to offset 1024 (within first read-ahead window) */

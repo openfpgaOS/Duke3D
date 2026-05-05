@@ -25,37 +25,30 @@ if [ ! -d "$BUILD_DIR/Cores" ]; then
     exit 1
 fi
 
-# ── Find SD card ───────────────────────────────────────────────────
-find_pocket_sd() {
-    for mount in /run/media/"$USER"/* /Volumes/*; do
-        if [ -d "$mount/Cores" ] && [ -d "$mount/Assets" ]; then
-            echo "$mount"
-            return
-        fi
-    done
-}
-
+# ── Find / mount SD card ─────────────────────────────────────────────
 SDCARD="$1"
-if [ -z "$SDCARD" ]; then
-    SDCARD="$(find_pocket_sd)"
-    if [ -z "$SDCARD" ]; then
-        echo "Error: No Analogue Pocket SD card found"
-        echo "Usage: $0 [/path/to/sdcard]"
-        exit 1
-    fi
-fi
+source "$(dirname "$0")/sdcard.sh"
 
 echo "Deploying build/sdk/ to $SDCARD"
 
-# ── Copy ─────────────────────────────────────────────────────────────
-cp -r "$BUILD_DIR"/Cores/* "$SDCARD/Cores/" 2>/dev/null
-echo -e "  ${GREEN}+${RESET} Cores"
+# ── Sync (only modified files) ───────────────────────────────────────
+RSYNC_OPTS=(-rlptv --checksum)
 
-cp -r "$BUILD_DIR"/Assets/* "$SDCARD/Assets/" 2>/dev/null
-echo -e "  ${GREEN}+${RESET} Assets"
+# openfpgaOS folders: sync with --delete to remove stale files
+for sub in Cores/ThinkElastic.openfpgaOS Assets/openfpgaos; do
+    if [ -d "$BUILD_DIR/$sub" ]; then
+        mkdir -p "$SDCARD/$sub"
+        rsync "${RSYNC_OPTS[@]}" --delete "$BUILD_DIR/$sub/" "$SDCARD/$sub/"
+        echo -e "  ${GREEN}+${RESET} $sub"
+    fi
+done
 
-cp -r "$BUILD_DIR"/Platforms/* "$SDCARD/Platforms/" 2>/dev/null
-echo -e "  ${GREEN}+${RESET} Platforms"
+# Platforms: sync without --delete (shared with other cores)
+if [ -d "$BUILD_DIR/Platforms" ]; then
+    mkdir -p "$SDCARD/Platforms"
+    rsync "${RSYNC_OPTS[@]}" "$BUILD_DIR/Platforms/" "$SDCARD/Platforms/"
+    echo -e "  ${GREEN}+${RESET} Platforms"
+fi
 
 sync 2>/dev/null || true
 echo -e "\n${GREEN}Deployed!${RESET} Eject SD card and boot your Pocket."

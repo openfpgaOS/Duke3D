@@ -39,6 +39,20 @@ static inline void of_cache_inval_range(void *addr, uint32_t size) {
     OF_SVC->cache_inval_range(addr, size);
 }
 
+/* Range writeback + invalidate (cbo.flush per line).  On this
+ * VexiiRiscv config, cbo.clean alone leaves some dirty lines in L1 —
+ * external AXI masters (GPU m_rd_*, audio mixer voice fetch) read
+ * DRAM directly and see stale bytes.  Use this whenever you've just
+ * written a buffer that an external master will read.  Falls back to
+ * the full cache_flush() on older firmware that doesn't expose this
+ * service entry. */
+static inline void of_cache_flush_range(void *addr, uint32_t size) {
+    if (OF_SVC->cache_flush_range)
+        OF_SVC->cache_flush_range(addr, size);
+    else
+        OF_SVC->cache_flush();
+}
+
 /* Invalidate I-cache (fence.i). */
 static inline void of_cache_invalidate_icache(void) {
     __asm__ volatile("fence");

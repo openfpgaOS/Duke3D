@@ -47,16 +47,19 @@ static inline void of_video_wait_flip(void) {
  *
  * Returns the idx of the next free draw buffer.  Pass `just_flipped_idx`
  * = the idx of the buffer the caller just emitted CMD_FLIP for via
- * of_gpu_flip_to(), or -1 on the first call (no previous flip).  The
- * kernel marks just_flipped_idx as buf_ready (queued for vsync —
- * hardware fb_swap_pending is set by the GPU's CMD_FLIP side-port
- * when it executes), blocks if the previous queued flip hasn't yet
- * retired, and returns the unique idx that's neither displayed nor
- * pending.
+ * of_gpu_flip_to(), and `fence_token` = the token returned by that
+ * helper.  On the very first call (no previous flip), pass
+ * just_flipped_idx=-1 and fence_token=0 — the kernel returns the
+ * initial draw idx without any wait.
  *
- * Pair with of_video_buffer_addr(idx) to get the FB address. */
-static inline int of_video_acquire_next(int just_flipped_idx) {
-    return OF_SVC->video_acquire_next(just_flipped_idx);
+ * The kernel waits for fence_reached>=fence_token (proves CMD_FLIP
+ * retired and the slave latched fb_swap_pending=1) and then for
+ * fb_swap_pending to clear (proves the vsync swap completed).  Both
+ * waits are bounded so a stuck GPU or missing vsync can't hang the
+ * app.  Pair with of_video_buffer_addr(idx) to get the FB address. */
+static inline int of_video_acquire_next(int just_flipped_idx,
+                                         uint32_t fence_token) {
+    return OF_SVC->video_acquire_next(just_flipped_idx, fence_token);
 }
 
 /* Address of buffer `idx` (0/1/2). */

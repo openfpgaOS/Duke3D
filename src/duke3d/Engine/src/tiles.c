@@ -13,6 +13,10 @@
 #include "engine.h"
 #include "draw.h"
 #include "filesystem.h"
+#ifdef OPENFPGA
+#include "of_cache.h"
+#include "../../d3d_gpu.h"
+#endif
 
 char  artfilename[20];
 
@@ -35,6 +39,7 @@ void setviewtotile(short tilenume, int32_t tileWidth, int32_t tileHeight)
     tiles[tilenume].dim.height = tileHeight;
     bakxsiz[setviewcnt] = tileWidth;
     bakysiz[setviewcnt] = tileHeight;
+    bakbytesperline[setviewcnt] = bytesperline;
     bakvidoption[setviewcnt] = vidoption;
     vidoption = 2;
     bakframeplace[setviewcnt] = frameplace;
@@ -156,10 +161,30 @@ void loadtile(short tilenume)
         faketimerhandler();
     }
     ptr = tiles[tilenume].data;
-    
+
     kread(artfil,ptr,tileFilesize);
     faketimerhandler();
     artfilplc = tilefileoffs[tilenume]+tileFilesize;
+
+#ifdef OPENFPGA
+    /* Two-step coherency, deferred to safe boundaries:
+     *   1. CPU D-cache writeback+invalidate (now) — fresh tile bytes
+     *      hit SDRAM where the GPU's M0 AXI master can see them.
+     *      MUST be cbo.flush, not cbo.clean: clean is unreliable on
+     *      this VexiiRiscv config (some dirty lines stay in L1) and
+     *      the GPU then reads stale zeros from SDRAM, rendering every
+     *      textured pixel as pal[0] (black).  This surfaced after the
+     *      switch to CMD_DRAW_SPANS_BATCH+DMA tightened the loop —
+     *      the old per-span MMIO path was slow enough that L1 dirty
+     *      lines drained organically before the GPU caught up.
+     *   2. GPU tex-cache invalidate (next frame boundary, via the
+     *      gpu_tex_dirty flag drained in d3d_gpu_set_fb) — drops any
+     *      stale GPU-cached lines for this address.  Doing the GPU
+     *      flush inline here wedged the FB-write fence path because
+     *      the cache walk overlapped in-flight span draws. */
+    of_cache_flush_range(ptr, (uint32_t)tileFilesize);
+    d3d_gpu_mark_tex_dirty();
+#endif
 }
 
 

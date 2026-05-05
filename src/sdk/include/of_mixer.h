@@ -170,6 +170,41 @@ static inline void of_mixer_set_filter(int voice, int cutoff_q016, int q, int en
     OF_SVC->mixer_set_filter(voice, cutoff_q016, q, enable);
 }
 
+/* Group-aware atomic alloc-and-tag.  MUSIC scans low→high, SFX (and
+ * untagged/other groups) scans high→low so the two groups land at
+ * opposite ends of the slot range under low load.  Steal path prefers
+ * a same-group victim before crossing groups, so a busy MUSIC track
+ * can't silence an in-flight SFX (and vice versa) while its own
+ * lower-priority voices are still around to give up.  Returns voice
+ * index, or -1 if every slot is taken by an equal-or-higher priority
+ * voice.  Falls back to of_mixer_play + of_mixer_set_group on older
+ * firmware where the OF_SVC entry is absent. */
+static inline int of_mixer_alloc_for_group(int group, const uint8_t *pcm_s16,
+                                           uint32_t sample_count,
+                                           uint32_t sample_rate,
+                                           int priority, int volume) {
+    if (OF_SVC->mixer_alloc_for_group)
+        return OF_SVC->mixer_alloc_for_group(group, pcm_s16, sample_count,
+                                             sample_rate, priority, volume);
+    int v = OF_SVC->mixer_play(pcm_s16, sample_count, sample_rate,
+                               priority, volume);
+    if (v >= 0) OF_SVC->mixer_set_group(v, group);
+    return v;
+}
+
+/* Read the group tag for a voice slot.  Used by ISR-context callers
+ * (e.g. the SW MIDI envelope tick) to validate that a slot they
+ * allocated previously still belongs to their group before writing
+ * to it — if it has been reassigned, the caller drops its stale
+ * reference rather than corrupting the new owner.  Returns -1 if
+ * the voice index is out of range, or on older firmware where the
+ * OF_SVC entry is absent (treat that as "ownership unknown"). */
+static inline int of_mixer_voice_group(int voice) {
+    if (OF_SVC->mixer_voice_group)
+        return OF_SVC->mixer_voice_group(voice);
+    return -1;
+}
+
 #else /* OF_PC */
 
 #include <stdlib.h>
@@ -253,6 +288,15 @@ static inline void of_mixer_retrigger(int voice, const uint8_t *pcm_s16,
 static inline void of_mixer_set_end_callback(void (*cb)(uint32_t ended_mask)) {
     (void)cb;
 }
+static inline int of_mixer_alloc_for_group(int group, const uint8_t *pcm_s16,
+                                           uint32_t sample_count,
+                                           uint32_t sample_rate,
+                                           int priority, int volume) {
+    (void)group; (void)pcm_s16; (void)sample_count;
+    (void)sample_rate; (void)priority; (void)volume;
+    return -1;
+}
+static inline int of_mixer_voice_group(int voice) { (void)voice; return -1; }
 
 #endif /* OF_PC */
 

@@ -47,9 +47,21 @@
 void test_psram_memory(void) {
     section_start("PSRAM Mem");
 
-    /* This whole test bangs on hardcoded CRAM/SRAM addresses that
-     * only exist on the Pocket target. On any other platform we
-     * skip cleanly so the suite still completes. */
+    /* v2 memory arch retires CRAM1 + SRAM as CPU-addressable memory.
+     * CRAM0 is kept but its only role is bridge staging (load/save
+     * scratch), time-sliced with the CPU via an MMIO owner bit.
+     * The old uncached aliases 0x38xxxxxx / 0x39xxxxxx / 0x3Axxxxxx
+     * are no longer in any PMA region — a direct load/store traps.
+     *
+     * Skip the whole PSRAM memory test suite here: none of the
+     * hardware it was probing exists as an app-addressable region
+     * anymore.  The per-chip memory controllers are already exercised
+     * by the standalone Verilator harnesses in src/fpga/test/. */
+    test_pass("skipped (v2)");
+    section_end();
+    return;
+#if 0
+    /* Any pre-v2 target: original test below kept for reference. */
     if (of_get_caps()->platform_id != OF_PLATFORM_POCKET) {
         test_pass("not pocket");
         section_end();
@@ -191,11 +203,17 @@ void test_psram_memory(void) {
     }
 
     section_end();
+#endif /* pre-v2 reference code */
 }
 
 void test_cram0_256k(void) {
     section_start("CRAM0 256K");
 
+    /* v2: skipped.  See note in test_psram_memory(). */
+    test_pass("skipped (v2)");
+    section_end();
+    return;
+#if 0
     if (of_get_caps()->platform_id != OF_PLATFORM_POCKET) {
         test_pass("not pocket");
         section_end();
@@ -283,4 +301,5 @@ void test_cram0_256k(void) {
     }
 
     section_end();
+#endif /* pre-v2 reference code */
 }

@@ -11,6 +11,7 @@
 #include "draw.h"
 #ifdef OPENFPGA
 #include "of_fastram.h"
+#include "../../d3d_gpu.h"
 #else
 #define OF_FASTTEXT
 #define OF_FASTDATA
@@ -64,6 +65,14 @@ OF_FASTTEXT void hlineasm4(int32_t numPixels, int32_t shade, uint32_t i4, uint32
 	if (!RENDER_DRAW_CEILING_AND_FLOOR)
 		return;
 
+#ifdef OPENFPGA
+    if (!d3d_gpu_force_cpu_spans &&
+        d3d_gpu_try_hline(dest, numPixels, shade, i4, i5,
+                          (uint32_t)local_asm1, (uint32_t)local_asm2,
+                          bits, (uint8_t)shifter, texture))
+        return;
+#endif
+
     while (numPixels) {
 
 	    source = i5 >> shifter;
@@ -106,8 +115,21 @@ OF_FASTTEXT void rhlineasm4(int32_t i1, const uint8_t* texture, int32_t i3, uint
     uint32_t ebp = 0;
     int32_t numPixels;
 	int32_t offset = i1 + 1;
-	
+
     if (i1 <= 0) return;
+
+#ifdef OPENFPGA
+    /* Stage 5+: rotated affine sprite hline.  Caller (dorotatesprite)
+     * has already populated the rs_* recorder via
+     * d3d_gpu_record_rotsprite_setup; the hook also needs the per-call
+     * shade row (rmach_edx = palookupoffs). */
+    if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
+        int shade = d3d_gpu_shade_for(rmach_edx);
+        if (d3d_gpu_rhline(dest, i1, shade, i4, 0, i5, 0, 0, texture))
+            return;
+        d3d_gpu_pre_cpu_fb_access();
+    }
+#endif
 
     numPixels = i1;
     do {
@@ -155,9 +177,20 @@ OF_FASTTEXT void rmhlineasm4(int32_t i1, const uint8_t* shade, int32_t colorInde
     uint32_t ebp = 0;
     int32_t numPixels;
 	int32_t offset = i1 + 1;
-    
+
     if (i1 <= 0)
         return;
+
+#ifdef OPENFPGA
+    /* Stage 5+: rotated affine sprite hline + color-key transparency. */
+    if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
+        int shade_idx = d3d_gpu_shade_for(rmmach_edx);
+        if (d3d_gpu_rmhline(dest, i1, shade_idx,
+                            (uint32_t)i4, 0, (uint32_t)i5, 0, 0, shade))
+            return;
+        d3d_gpu_pre_cpu_fb_access();
+    }
+#endif
 
     numPixels = i1;
     do {
@@ -236,6 +269,21 @@ OF_FASTTEXT int32_t vlineasm1(int32_t vince, const uint8_t * restrict palookupof
     if (!RENDER_DRAW_WALL_BORDERS)
 		return vplce;
 
+#ifdef OPENFPGA
+    /* GPU dispatch lives in d3d_gpu_try_vline1 (out-of-line, normal
+     * ABI).  Inlined here it confused GCC's lazy-save optimiser into
+     * skipping s8/s9 saves on the GPU success path while still
+     * restoring them in the merged epilogue — caller saw garbage in
+     * its callee-saved regs and trapped. */
+    {
+        int32_t vplce_after;
+        if (d3d_gpu_try_vline1(dest, numPixels + 1, palookupoffse,
+                               vplce, vince, local_shift, texture,
+                               &vplce_after))
+            return vplce_after;
+    }
+#endif
+
     numPixels++;
     while (numPixels)
     {
@@ -260,6 +308,22 @@ OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t * restrict texture, int
     const uint8_t shiftValue = (globalshiftval & 0x1f);
     const int32_t local_bpl = bytesperline;
     const int local_transrev = transrev;
+
+#ifdef OPENFPGA
+    /* Stage 5 GPU dispatch (gated by d3d_gpu_use_spans for A/B test).
+     * `texture` here is BUILD's palookup row (the colormap); `source`
+     * is the 1-D column data. */
+    if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
+        int shade = d3d_gpu_shade_for(texture);
+        if (shade >= 0) {
+            d3d_gpu_tvline(dest, numPixels + 1, shade,
+                           (uint32_t)i4, (uint32_t)i1, shiftValue,
+                           source, local_transrev);
+            return i4 + i1 * (numPixels + 1);
+        }
+        d3d_gpu_prepare_cpu_fb_write();
+    }
+#endif
 
 	numPixels++;
 	while (numPixels)
@@ -303,6 +367,41 @@ void setuptvlineasm2(int32_t i1, const uint8_t* i2, const uint8_t* i3)
 
 OF_FASTTEXT void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4, uint32_t i5, uintptr_t i6)
 {
+#ifdef OPENFPGA
+    if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
+        /* GPU dispatch.  Caller (engine.c transmaskvline2): asm1 holds
+         * tran2incb (= vince B), asm2 holds the BUILD-internal
+         * "end-of-loop dest pointer" — both are inputs here and BUILD
+         * expects asm1/asm2 to carry the post-loop vplce for the two
+         * columns on return (used as the vplce arg of a follow-up
+         * tvlineasm1). */
+        const intptr_t saved_asm2 = asm2;       /* dest end+1 (= ylookup[y2]+i+1) */
+        const int32_t  saved_asm1 = asm1;       /* tran2incb = vince B */
+        const int32_t  local_bpl  = bytesperline;
+        const int      count = (int)((saved_asm2 - (intptr_t)i6) / local_bpl) + 1;
+        int slot_a, slot_b;
+        const int      shade_a = d3d_gpu_shade_slot_for(tran2pal_ebx, &slot_a);
+        const int      shade_b = d3d_gpu_shade_slot_for(tran2pal_ecx, &slot_b);
+
+        if (shade_a >= 0 && shade_b >= 0 && slot_a == slot_b) {
+            d3d_gpu_tvline2((uint8_t *)i6, count,
+                            shade_a, shade_b,
+                            i5, i2,                         /* col A: vplce, vince */
+                            i1, (uint32_t)saved_asm1,       /* col B: vplce, vince */
+                            (uint8_t)(tran2shr & 0x1f),
+                            (const uint8_t *)i3,
+                            (const uint8_t *)i4,
+                            transrev);
+            /* SW post-loop output: asm1 = i5_final, asm2 = ebp_final.
+             * After `count` iterations of `i5 += i2` and `ebp += saved_asm1`. */
+            asm1 = (int32_t)(i5 + i2 * (uint32_t)count);
+            asm2 = (intptr_t)(i1 + (uint32_t)saved_asm1 * (uint32_t)count);
+            return;
+        }
+        d3d_gpu_prepare_cpu_fb_write();
+    }
+#endif
+
 	uint32_t ebp = i1;
 	const uint32_t tran2inca = i2;
 	const uint32_t tran2incb = asm1;
@@ -383,6 +482,16 @@ OF_FASTTEXT int32_t mvlineasm1(int32_t vince, const uint8_t * restrict palookupo
     const uint8_t local_shift = machmv;
     const int32_t local_bpl = bytesperline;
 
+#ifdef OPENFPGA
+    {
+        int32_t vplce_after;
+        if (d3d_gpu_try_mvline1(dest, i3 + 1, palookupoffse,
+                                vplce, vince, local_shift, texture,
+                                &vplce_after))
+            return vplce_after;
+    }
+#endif
+
     for(;i3>=0;i3--)
     {
 		uint32_t temp = ((uint32_t)vplce) >> local_shift;
@@ -418,6 +527,13 @@ OF_FASTTEXT void vlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
 	const int32_t local_bpl = bytesperline;
 	uint32_t index = 0;
 	const uint32_t length = ylookup[columnIndex];
+
+#ifdef OPENFPGA
+    if (d3d_gpu_try_vline4(framebuffer,
+                           (int)(length / (uint32_t)local_bpl) + 1,
+                           local_shift))
+        return;
+#endif
 
 	/* Alignment depends only on framebuffer pointer — index always
 	 * advances by bytesperline (320 = 4×80, always 4-aligned). */
@@ -466,6 +582,13 @@ OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
     const int32_t local_bpl = bytesperline;
 	uint32_t index = 0;
 	const uint32_t length = ylookup[columnIndex];
+
+#ifdef OPENFPGA
+    if (d3d_gpu_try_mvline4(framebuffer,
+                            (int)(length / (uint32_t)local_bpl) + 1,
+                            local_shift))
+        return;
+#endif
 
     do {
 
@@ -527,6 +650,15 @@ OF_FASTDATA uint32_t tsmach_eax1;
 OF_FASTDATA uint32_t adder;
 OF_FASTDATA uint32_t tsmach_eax3;
 OF_FASTDATA uint32_t tsmach_ecx;
+#ifdef OPENFPGA
+/* Stage 5 sprite_vline GPU helper inputs.  BUILD's CPU loop cracks xv
+ * into integer (folded into adder) + fractional (tsmach_ecx) parts
+ * and recovery from those is ambiguous, so capture the raw 16.16
+ * inputs and the column stride here once per sprite. */
+static OF_FASTDATA int32_t  ts_xv_full;
+static OF_FASTDATA int32_t  ts_yv_full;
+static OF_FASTDATA int32_t  ts_tileHeight;
+#endif
 /* Setup-only: not in BRAM (cold path) */
 void tsetupspritevline(const uint8_t * palette, int32_t i2, int32_t i3, int32_t i4, int32_t i5)
 {
@@ -535,7 +667,16 @@ void tsetupspritevline(const uint8_t * palette, int32_t i2, int32_t i3, int32_t 
 	adder = (i5 >> 16) + i2;
 	tsmach_eax3 = adder + i4;
 	tsmach_ecx = i3;
-} 
+#ifdef OPENFPGA
+	/* Recover xv from i2 = (xv>>16)*tileHeight and i3 = xv<<16:
+	 *   xv_int  = i2 / i4 (signed div by tileHeight)
+	 *   xv_frac = (uint32_t)i3 >> 16
+	 * yv arrives whole as i5; tileHeight is i4. */
+	ts_xv_full   = ((i2 / i4) << 16) | (int32_t)((uint32_t)i3 >> 16);
+	ts_yv_full   = i5;
+	ts_tileHeight = i4;
+#endif
+}
 
 /*
  FCS: Draw a sprite vertical line of pixels.
@@ -544,6 +685,27 @@ OF_FASTTEXT void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t 
 {
     const int32_t local_bpl = bytesperline;
     const int local_transrev = transrev;
+
+#ifdef OPENFPGA
+    /* GPU dispatch (gated by d3d_gpu_use_spans for A/B test).
+     * SW loop semantics: `numPixels--; if (numPixels != 0) draw;` =>
+     * N-1 actual pixels for N input.  Caller passes y2-y1+1 expecting
+     * y2-y1 draws. */
+    if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
+        const int shade = d3d_gpu_shade_for(tspal);
+        if (shade >= 0) {
+            d3d_gpu_sprite_vline(dest, numPixels - 1, shade,
+                                 (uint32_t)i4,            /* bx<<16 from caller */
+                                 (uint32_t)ts_xv_full,
+                                 (uint32_t)i2,            /* by<<16 from caller */
+                                 (uint32_t)ts_yv_full,
+                                 (uint16_t)ts_tileHeight,
+                                 texture, local_transrev);
+            return;
+        }
+        d3d_gpu_prepare_cpu_fb_write();
+    }
+#endif
 
 	while (numPixels)
 	{
@@ -640,6 +802,21 @@ OF_FASTTEXT void mhlineskipmodify( uint32_t i2, int32_t numPixels, int32_t i5, u
     const int32_t local_asm1 = mmach_asm1;
     const int32_t local_asm2 = mmach_asm2;
 
+#ifdef OPENFPGA
+    if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
+        int shade_idx = d3d_gpu_shade_for(local_pal);
+        if (shade_idx >= 0) {
+            d3d_gpu_mhline(dest, numPixels + 1, shade_idx << 8,
+                           i2, (uint32_t)i5,
+                           (uint32_t)local_asm1, (uint32_t)local_asm2,
+                           local_shift_bl, local_shift_al,
+                           local_texture);
+            return;
+        }
+        d3d_gpu_prepare_cpu_fb_write();
+    }
+#endif
+
     while (numPixels >= 0)
     {
 	    uint32_t ebx = i2 >> local_shift_al;
@@ -695,6 +872,21 @@ OF_FASTTEXT void thlineskipmodify(int32_t i1, uint32_t i2, uint32_t i3, int32_t 
     const int32_t local_asm2 = tmach_asm2;
     const int local_transrev = transrev;
     int counter = (i3>>16);
+
+#ifdef OPENFPGA
+    if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
+        int shade_idx = d3d_gpu_shade_for(local_pal);
+        if (shade_idx >= 0) {
+            d3d_gpu_thline(i6, counter + 1, shade_idx << 8,
+                           i2, (uint32_t)i5,
+                           (uint32_t)local_asm1, (uint32_t)local_asm2,
+                           local_shift_bl, local_shift_al,
+                           local_tex, local_transrev);
+            return;
+        }
+        d3d_gpu_prepare_cpu_fb_write();
+    }
+#endif
 
     while (counter >= 0)
     {

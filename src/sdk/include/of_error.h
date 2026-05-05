@@ -36,7 +36,7 @@ typedef enum {
 
 /* Boolean parameter constants -- pass these to APIs that take an `int
  * enable` / `int loop` / `int hflip` flag for self-documenting call sites:
- *   of_tile_enable(OF_ENABLE, 0);
+ *   of_mixer_set_bidi(voice, OF_ENABLE);
  *   of_midi_play(data, len, OF_LOOP);
  */
 #define OF_DISABLE  0

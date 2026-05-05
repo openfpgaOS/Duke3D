@@ -3,7 +3,8 @@
  *
  * Bridges Duke3D's MUSIC_* interface to the openfpgaOS of_midi API.
  * MIDI files are loaded from the GRP via the BUILD engine file system
- * and played through the hardware OPL3 (YMF262) FM synthesizer.
+ * and rendered through the SoundFont sample-voice engine (the .ofsf
+ * bank the kernel loaded at boot).
  */
 
 #include <stdint.h>
@@ -22,7 +23,15 @@ extern void kclose(short handle);
 
 static int  midi_initialized = 0;
 static int  midi_volume = 255;       /* 0-255, game-requested volume */
-static int  midi_looping = 0;
+/* Duke3D's original DOS behaviour: per-level MIDI loops continuously
+ * within the level; MUSIC_StopSong only fires on level transitions
+ * (premap.c::enterlevel).  The audiolib-era default was to loop, but
+ * this port's stubbed-out audiolib never calls MUSIC_SetLoopFlag, so
+ * `midi_looping` stayed at 0 and tracks died at end-of-file.  Default
+ * to 1 so the soundtrack is continuous; if anything ever wires up
+ * MUSIC_SetLoopFlag(0) (e.g. for the menu jingle), that override
+ * still takes effect. */
+static int  midi_looping = 1;
 
 /* Buffer for loaded MIDI data (largest Duke3D MIDI is ~60KB) */
 #define MIDI_BUF_SIZE (64 * 1024)
@@ -51,21 +60,18 @@ int MUSIC_Init(int SoundCard, int Address)
 
     if (!midi_initialized) {
         of_midi_init();
-        /* Match Doom's i_stubsnd.c::opl_Init exactly: SW voice engine,
-         * AWE backend OFF, reverb at FPGA reset default (0 = bypass).
+        /* AWE backend OFF, reverb at FPGA reset default (0 = bypass).
          *
-         * AWE off:  the AWE coprocessor's shared voice_state_ram +
-         * multi-writer voice_tbl mux + PITCH_COMPOSE stage collide with
-         * SFX writes to the same mixer voice slots, producing the
-         * "distorted from the first note" symptom.  SW path runs
-         * envelope / LFO / filter at 1 kHz on the CPU and writes mixer
+         * AWE off: the AWE coprocessor's shared voice_state_ram +
+         * multi-writer voice_tbl mux + PITCH_COMPOSE stage collide
+         * with SFX writes to the same mixer voice slots, producing
+         * the "distorted from the first note" symptom.  SW path runs
+         * envelope/LFO/filter at 1 kHz on the CPU and writes mixer
          * regs from one place — no contention with d3d_sound_play.
          *
-         * Reverb untouched:  Doom's i_stubsnd.c documents that
-         * mididemo's (80,140) reverb sums past the mixer accumulator
-         * headroom on dense sustained music and clips hard.  Duke3D's
-         * soundtrack is the same shape as Doom's; keep wet at 0 until
-         * the mixer adds compression instead of the >>2 + clamp. */
+         * Reverb at 0: dense sustained music sums past the mixer
+         * accumulator headroom and clips hard with non-zero wet.
+         * Keep dry until the mixer learns compression. */
         smp_voice_enable_awe_backend(0);
         midi_initialized = 1;
     }
@@ -91,9 +97,9 @@ void MUSIC_SetMaxFMMidiChannel(int channel)
 void MUSIC_SetVolume(int volume)
 {
     /* Duke3D volume is 0-255 — passed through unchanged.  With AWE
-     * off and reverb at 0 (matching Doom's setup) the dry mix has
-     * enough headroom that the engine's default ÷2 in master_volume
-     * shouldn't clip the mixer accumulator on Duke3D's soundtrack. */
+     * off and reverb at 0, the dry mix has enough headroom that the
+     * engine's default ÷2 in master_volume shouldn't clip the mixer
+     * accumulator on Duke3D's soundtrack. */
     if (volume < 0) volume = 0;
     if (volume > 255) volume = 255;
     midi_volume = volume;

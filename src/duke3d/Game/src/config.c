@@ -624,16 +624,13 @@ void CONFIG_ReadSetup( void )
    printf("CONFIG_ReadSetup...\n");
 
 #ifdef OPENFPGA
-   /* Console port: no config file, just use hardcoded defaults.
-      openfpgaOS has no filesystem path for config files, and all
-      user-facing settings are fixed for the handheld. */
-   CONFIG_SetDefaults();
-   CONTROL_ClearAssignments();
-   CONFIG_ReadKeys();
-   setupread = 1;
-   return;
-#endif
-
+   /* Settings persisted in the "Settings" non-volatile data slot
+    * (id 9 in data.json, filename "duke3d.cfg").  SCRIPT_Load opens
+    * the slot via the OS VFS; on first boot the slot is empty and
+    * SCRIPT_Load returns -1 — defaults take over.  CONFIG_WriteSetup
+    * later writes back through the same path. */
+   strcpy(setupfilename, SETUPFILENAME);
+#else
    if (!SafeFileExists(setupfilename))
       {
 		// FIX_00011: duke3d.cfg not needed anymore to start the game. Will create a default one
@@ -643,6 +640,7 @@ void CONFIG_ReadSetup( void )
 	  if(setup_file_hdl)
 		  fclose(setup_file_hdl);
       }
+#endif
 
    CONFIG_SetDefaults();
    scripthandle = SCRIPT_Load( setupfilename );
@@ -810,11 +808,6 @@ void CONFIG_WriteSetup( void )
    char  commmacro[] = COMMMACRO;
 
    if (!setupread) return;
-
-#ifdef OPENFPGA
-   /* Console port: no config file to write. */
-   return;
-#endif
 
    printf("CONFIG_WriteSetup...\n");
 

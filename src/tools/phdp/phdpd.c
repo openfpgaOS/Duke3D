@@ -393,7 +393,7 @@ static int uart_send(const uint8_t *data, int len) {
 static int uart_send_packet(uint8_t cmd, const void *payload, uint32_t payload_len) {
     uint8_t pkt[PHDP_MAX_PACKET];
     int pkt_len = phdp_build_packet(pkt, G.tx_seq++, cmd, payload, payload_len);
-    logv("[tx] cmd=0x%02X seq=%u len=%u\n", cmd, (unsigned)(G.tx_seq - 1), payload_len);
+    tracev("[tx] cmd=0x%02X seq=%u len=%u\n", cmd, (unsigned)(G.tx_seq - 1), payload_len);
     return uart_send(pkt, pkt_len);
 }
 
@@ -491,9 +491,9 @@ static int stream_send_next_chunk(void) {
     G.stream.last_chunk_ms = now_ms();
     G.stream.retries = 0;
 
-    if (G.verbose) {
+    {
         unsigned pct = (unsigned)(G.stream.bytes_sent * 100 / G.stream.file_size);
-        logv("[stream] sent %u/%u (%u%%)\n", G.stream.bytes_sent, G.stream.file_size, pct);
+        tracev("[stream] sent %u/%u (%u%%)\n", G.stream.bytes_sent, G.stream.file_size, pct);
     }
 
     return 0;
@@ -651,9 +651,11 @@ static void handle_exec_start(const uint8_t *payload, uint32_t len) {
 
     set_state(PHDP_STATE_MONITORING);
 
-    /* Notify any IPC clients waiting for exec. The client's cmd_wait
-     * expects byte 0 = success, 2 = timeout, anything else = error;
-     * keep that contract. */
+    /* Notify any IPC clients waiting for exec.
+     * 2026-04-08: success code is 0 — phdp.c cmd_wait treats
+     * result==0 as EXIT_OK and anything else as "wait failed". Was
+     * previously 1 which made every successful wait look like an
+     * error to the client. */
     uint8_t ok = 0;
     for (int i = 0; i < G.num_clients; i++) {
         if (G.clients[i].wait_exec) {
@@ -672,7 +674,7 @@ static void process_uart_packet(const uint8_t *pkt, uint32_t total_len) {
         return;
     }
 
-    logv("[rx] cmd=0x%02X seq=%u len=%u\n", hdr.cmd, hdr.seq, hdr.len);
+    tracev("[rx] cmd=0x%02X seq=%u len=%u\n", hdr.cmd, hdr.seq, hdr.len);
     hex_dump("[rx-bytes]", pkt, total_len);
 
     const uint8_t *payload = pkt + PHDP_HEADER_SIZE;
@@ -821,40 +823,40 @@ static int uart_read_available(void) {
 
     G.uart_rx_len += (uint32_t)n;
 
-    /* In MONITORING state, treat bytes as raw console output unless
-     * we see STX (0x02) which means the Pocket rebooted and is sending
-     * EVT_BOOT_ALIVE — switch back to PHDP parsing. */
+    /* In MONITORING state bytes are normally raw console output, but
+     * the kernel's boot-ROM disk backend issues PHDP packets
+     * (REQ_OVERRIDE etc.) over the same UART after EXEC_START. We
+     * split the WHOLE buffer (not just new bytes) at the first STX:
+     * everything before STX is console, STX-and-after is handed to
+     * uart_process_rx which knows how to handle partial packets that
+     * straddle multiple read() calls. */
     if (G.state == PHDP_STATE_MONITORING) {
-        /* Raw console mode: bytes are forwarded three ways
-         *   1. phdpd's own stdout (FD 1) — live serial-monitor mirror,
-         *      byte-for-byte with the on-screen Pocket terminal so any
-         *      ANSI cursor escapes hit the user's real terminal in the
-         *      same order the OS emitted them.
-         *   2. log ring buffer — for late-attaching `phdp logs --last N`.
-         *   3. broadcast to streaming `phdp logs` clients (the IPC path).
-         *
-         * The stdout write is unbuffered (raw write(2)) so cursor
-         * positioning works without intermediate flushes.
-         *
-         * Per-packet `[console-rx]` markers stay trace-only so they
-         * don't appear inline in the user's terminal at -v level.
-         *
-         * Reboot detection happens when poll sees no data for 2+ seconds
-         * and then receives a valid BOOT_ALIVE packet. */
-        const uint8_t *new_data = G.uart_rx + G.uart_rx_len - (uint32_t)n;
-        tracev("[console-rx] %zd bytes: %.*s\n", n,
-               (int)(n > 60 ? 60 : n), (const char *)new_data);
-        (void)!write(STDOUT_FILENO, new_data, (size_t)n);
-        log_ring_write((const char *)new_data, (uint32_t)n);
-        log_ring_broadcast((const char *)new_data, (uint32_t)n);
-        G.uart_rx_len = 0;
-    } else {
-        uart_process_rx();
-        /* After EXEC_START processing, flush leftover RX buffer */
-        if (G.monitoring_flush_pending && G.state == PHDP_STATE_MONITORING) {
-            G.uart_rx_len = 0;
-            G.monitoring_flush_pending = 0;
+        uint32_t stx_off = G.uart_rx_len;
+        for (uint32_t i = 0; i < G.uart_rx_len; i++) {
+            if (G.uart_rx[i] == PHDP_STX) { stx_off = i; break; }
         }
+        if (stx_off > 0) {
+            /* Console-pass prefix (or whole buffer if no STX). */
+            (void)!write(STDOUT_FILENO, G.uart_rx, stx_off);
+            log_ring_write((const char *)G.uart_rx, stx_off);
+            log_ring_broadcast((const char *)G.uart_rx, stx_off);
+            memmove(G.uart_rx, G.uart_rx + stx_off, G.uart_rx_len - stx_off);
+            G.uart_rx_len -= stx_off;
+        }
+        if (G.uart_rx_len > 0) {
+            /* Buffer now starts with STX — try to parse packets.
+             * uart_process_rx leaves partial packets in the buffer
+             * for the next read(). */
+            uart_process_rx();
+        }
+        return 0;
+    }
+
+    uart_process_rx();
+    /* After EXEC_START processing, flush leftover RX buffer */
+    if (G.monitoring_flush_pending && G.state == PHDP_STATE_MONITORING) {
+        G.uart_rx_len = 0;
+        G.monitoring_flush_pending = 0;
     }
     return 0;
 }
@@ -942,8 +944,8 @@ static void ipc_handle_reset(int client_fd) {
 
 static void ipc_handle_wait(int client_idx) {
     if (G.state == PHDP_STATE_MONITORING) {
-        /* Already executing — respond immediately. Same byte-0 = OK
-         * contract as the deferred handle_exec_start path. */
+        /* Already executing — respond immediately. 0 = success
+         * (phdp.c cmd_wait treats result==0 as EXIT_OK). */
         uint8_t ok = 0;
         (void)write(G.clients[client_idx].fd, &ok, 1);
     } else {

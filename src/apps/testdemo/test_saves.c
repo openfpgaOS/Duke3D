@@ -177,6 +177,59 @@ void test_posix_saves(void) {
         fclose(f);
     }
 
+    /* Duke3D pattern: write placeholder header + payload, close, then
+     * reopen r+b to patch data_size and magic. This catches regressions
+     * where the first close persists but the header backfill is lost. */
+    {
+        enum { DUKE_HEADER = 20, DUKE_PAYLOAD = 48 };
+        const uint32_t duke_magic = 0x444B5356u; /* "DKSV" */
+        const uint32_t duke_size = DUKE_HEADER + DUKE_PAYLOAD;
+        uint8_t header[DUKE_HEADER] = {0};
+        uint8_t payload[DUKE_PAYLOAD];
+        uint8_t check_payload[DUKE_PAYLOAD];
+        uint32_t got_size = 0;
+        uint32_t got_magic = 0;
+
+        for (int i = 0; i < DUKE_PAYLOAD; i++)
+            payload[i] = (uint8_t)(0x30 + i * 3);
+
+        f = fopen("save_9", "wb");
+        ASSERT("duke wb open", f != NULL);
+        if (f) {
+            ASSERT("duke hdr reserve",
+                   fwrite(header, 1, DUKE_HEADER, f) == DUKE_HEADER);
+            ASSERT("duke payload",
+                   fwrite(payload, 1, DUKE_PAYLOAD, f) == DUKE_PAYLOAD);
+            ASSERT("duke first close", fclose(f) == 0);
+        }
+
+        f = fopen("save_9", "r+b");
+        ASSERT("duke r+b open", f != NULL);
+        if (f) {
+            ASSERT("duke size seek", fseek(f, 0, SEEK_SET) == 0);
+            ASSERT("duke size write", fwrite(&duke_size, 4, 1, f) == 1);
+            ASSERT("duke magic seek", fseek(f, 16, SEEK_SET) == 0);
+            ASSERT("duke magic write", fwrite(&duke_magic, 4, 1, f) == 1);
+            ASSERT("duke second close", fclose(f) == 0);
+        }
+
+        f = fopen("save_9", "rb");
+        ASSERT("duke rb open", f != NULL);
+        if (f) {
+            ASSERT("duke size read", fread(&got_size, 4, 1, f) == 1);
+            ASSERT("duke magic seek2", fseek(f, 16, SEEK_SET) == 0);
+            ASSERT("duke magic read", fread(&got_magic, 4, 1, f) == 1);
+            ASSERT("duke payload seek", fseek(f, DUKE_HEADER, SEEK_SET) == 0);
+            ASSERT("duke payload read",
+                   fread(check_payload, 1, DUKE_PAYLOAD, f) == DUKE_PAYLOAD);
+            ASSERT("duke size match", got_size == duke_size);
+            ASSERT("duke magic match", got_magic == duke_magic);
+            ASSERT("duke payload match",
+                   memcmp(payload, check_payload, DUKE_PAYLOAD) == 0);
+            fclose(f);
+        }
+    }
+
     /* Clean up: write 256 bytes of 0xFF */
     {
         FILE *ef = fopen("save:9", "wb");

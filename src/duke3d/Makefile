@@ -48,7 +48,7 @@ CONSOLE_SRCS = \
 
 MIDI_SRCS = Game/src/midi/midi_of.c
 
-SHIM_SRCS = posix_shim.c d3d_audio.c d3d_save.c
+SHIM_SRCS = posix_shim.c d3d_audio.c d3d_save.c d3d_gpu.c
 
 # SDK helper sources -- duke3d's midi_of.c calls of_midi_* which lives
 # in the SDK's of_midi.c.  The MIDI engine now delegates note rendering

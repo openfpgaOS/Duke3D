@@ -52,12 +52,14 @@ struct of_services_table {
     void      (*video_set_display_mode)(int mode);
     void      (*video_set_color_mode)(int mode);
     /* GPU-triggered flip (cr-gpu-triggered-flip.md):
-     * acquire_next(just_flipped_idx) — caller passes idx of the buffer
-     * they just emitted CMD_FLIP for (or -1 on first call); kernel
-     * promotes it to buf_ready (blocking if previous still pending)
-     * and returns the next free draw idx.
-     * buffer_addr(idx) — returns FB address of the given idx. */
-    int       (*video_acquire_next)(int just_flipped_idx);
+     * acquire_next(just_flipped_idx, fence_token) — caller passes idx
+     * of the buffer they just emitted CMD_FLIP for and the fence
+     * token the SDK helper returned (or -1, 0 on first call).  Kernel
+     * waits for fence_reached >= token (proves CMD_FLIP retired and
+     * fb_swap_pending=1 was latched), then for fb_swap_pending → 0
+     * (proves vsync swap completed), then returns the next free
+     * draw idx.  buffer_addr(idx) — returns FB address of the given idx. */
+    int       (*video_acquire_next)(int just_flipped_idx, uint32_t fence_token);
     uint8_t * (*video_buffer_addr)(int idx);
 
     /* -- Input (4) -- */

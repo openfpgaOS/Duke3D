@@ -1,8 +1,96 @@
 # OpenFPGA 3D Accelerator Architecture
 
+> Sections 2–7 describe the original design intent.  Some features
+> listed there (alpha test, blend, gouraud RGB combine, indexed
+> drawing, batched-span command, set-associative tex cache) were
+> **never implemented or were removed during phase reduction** — see
+> §1.1 below for the authoritative list of what the current GPU
+> actually does, and §3.2 for the live command opcodes.
+
 ## 1. Overview
 
 A fixed-function 3D rasterizer built around a **triangle pipeline with span fast-path**. The CPU handles all 3D transforms and submits screen-space geometry. The GPU rasterizes, textures, lights, depth-tests, and writes pixels to the framebuffer — all while the CPU runs game logic in parallel.
+
+## 1.1. Implemented Primitives
+
+The following is the canonical list of features that ship in the current bitstream (Pocket target, GPU at 100 MHz).  Anything not on this list is design-intent only.
+
+### Drawing commands
+
+| Cmd | Opcode | Payload | Implemented behaviour |
+|-----|--------|---------|----------------------|
+| `NOP`              | `0x01` | 0 words   | Padding/alignment. |
+| `FENCE`            | `0x02` | 1 word    | Latch token into `GPU_FENCE_REACHED`. |
+| `CLEAR`            | `0x10` | 2 words   | Clear FB and/or Z-buffer (`OF_GPU_CLEAR_COLOR`/`_DEPTH`).  Hardcoded 320×200 extent. |
+| `CLEAR_RECT`       | `0x11` | 3 words   | Clear an arbitrary rect.  Word 0 = absolute byte addr (CPU pre-computes `fb_base + y*stride + x`); word 1 = `{w[31:16], h[15:0]}` (pixels × rows); word 2 = `{16'b0, color[15:0]}` (low byte replicated 4× per FB word).  Word-aligned full-width strips hit the 4-byte fast path; arbitrary x/w byte-strobes the partial-word edges.  Used to retire CPU `memset(frameplace, …)` paths (letterbox, status bar, menu panes, splash). |
+| `SET_TEXTURE`      | `0x20` | 4 words   | Set `st_tex_addr` + `st_tex_width` for triangle path; format/wrap fields decoded but not consumed by the datapath. |
+| `SET_DEPTH_FUNC`   | `0x21` | 1 word    | `NONE`/`ALWAYS`/`LESS`/`LEQUAL`/`EQUAL`/`GEQUAL`/`GREATER`/`NOTEQUAL` for triangle path. |
+| `SET_FB`           | `0x23` | 2 words   | `addr`, `stride` for triangle path. |
+| `SET_ZB`           | `0x24` | 2 words   | `addr`, `stride` for triangle path. |
+| `SET_COLORMAP_ID`  | `0x28` | 1 word    | `[3:0] = palookup slot` (0..15).  Sticky — affects subsequent `SPAN_COLORMAP` draws.  Reset default = 0.  Each slot's 16 KB table lives in SDRAM at `0x100000 + slot*0x4000`; the GPU reads via `gpu_tex_cache` port B.  Use `of_gpu_palookup_upload(slot, …)` to populate. |
+| `DRAW_TRIANGLES`   | `0x30` | `1+6N`    | Convex triangles, top-left fill rule, edge-walk → row-span emit. Per-pixel attributes: `S`/`T` (texture, multiply-mode + POT wrap), `Z` (depth), `R` (Gouraud light, 8-bit walked into the colormap row). Optional perspective via per-vertex `W`. |
+| `DRAW_SPAN`        | `0x40` | 18 words  | Single span (horizontal floor or vertical column). All fields below. |
+
+Opcodes `0x22` (`SET_BLEND`), `0x25` (`SET_SHADE_MODE`), `0x31` (`DRAW_INDEXED`), and `0x41` (`DRAW_SPANS_BATCH`) listed in legacy docs are **not implemented**.  Their SDK helpers were removed; sending one is a NOP at best.  `0x27 SET_SKIP_ZERO` is reserved for the triangle internal-span emit path; do not reuse.
+
+### Span flags (`of_gpu_span_t.flags`)
+
+| Bit | Name | Behaviour |
+|-----|------|-----------|
+| 0 | `OF_GPU_SPAN_COLORMAP`     | Texel goes through `colormap[light * 256 + texel]`.  Without this flag the texel reaches the FB unmodified. |
+| 1 | `OF_GPU_SPAN_COLUMN`       | (Vestigial — fb_stride alone now controls column vs row walk.) |
+| 2 | `OF_GPU_SPAN_SKIP_ZERO`    | Color-key transparency: discard texels of value `0xFF`.  This is the only "alpha-ish" path; no real blending. |
+| 3 | `OF_GPU_SPAN_DEPTH_TEST`   | Compare span Z against SRAM Z-buffer using current `SET_DEPTH_FUNC`. |
+| 4 | `OF_GPU_SPAN_DEPTH_WRITE`  | Write span Z back to SRAM Z-buffer (typically paired with `_TEST`). |
+| 5 | `OF_GPU_SPAN_PERSP`        | Per-pixel perspective: GPU walks `s/z`, `t/z`, `1/z` in 8-pixel segments and emits affine sub-segments.  Requires the perspective payload words. |
+| 6 | `OF_GPU_SPAN_TRANSLUC`     | Translucent compositing through the 32 KB on-chip `transluc[]` LUT (BUILD-style indexed-color blend).  GPU reads the destination FB byte, composes a 15-bit key `{shaded_src[7:1], fb_byte}`, looks up the blended byte in `transluc_bram`, and writes back.  Pairs with `OF_GPU_SPAN_COLORMAP` (the source byte is the post-shade palette index). |
+| 7 | `OF_GPU_SPAN_TRANSLUC_REV` | Variant of TRANSLUC: swaps the LUT key axes (`{fb_byte[7:1], shaded_src}`).  Used for additive vs 50/50 blend variants. |
+
+### Texture addressing
+
+Multiply-mode only.  `addr = tex_base + (t_int & tex_h_mask) × tex_width + (s_int & tex_w_mask)`, where `tex_w_mask`/`tex_h_mask` come from CMD_DRAW_SPAN word 8 (`= tex_w-1` / `tex_h-1` for POT wrap; `0` decodes to `0xFFFF` = no wrap, the legacy default).  The shift-mode path (`(t>>shift)<<bits | (s>>(32-bits))`) was retired; BUILD/Quake floors use multiply-mode + POT masks.  Texture format is fixed at I8; `RGB565` exists in the enum but the datapath only handles 8-bit texels.
+
+### Color combine
+
+| Path | Output |
+|------|--------|
+| Span/triangle, `SPAN_COLORMAP` set        | `palookup[st_colormap_id][light × 256 + texel]`, served via `gpu_tex_cache` port B (SDRAM-backed; on-chip `cmap_bram` was retired) |
+| Span/triangle, `SPAN_COLORMAP` clear      | `texel` (raw I8) |
+| Span/triangle, `SKIP_ZERO` set, texel == 0xFF | discard pixel |
+| Span/triangle, `SPAN_TRANSLUC` set        | `transluc_bram[{shaded_src[7:1], fb_byte}]` (32 KB / 128×256 quantised LUT in M10K; reads the existing FB byte via `gpu_tex_cache` AXI master, composes the key, looks up the blended byte, writes back through the FB accumulator) |
+| Span/triangle, `SPAN_TRANSLUC_REV` set    | Same as TRANSLUC but with the key axes swapped: `transluc_bram[{fb_byte[7:1], shaded_src}]` |
+
+Triangles with `R` set per vertex walk the light gradient per pixel (Gouraud "shade" — Phase 4d).  No RGB modulate, no alpha blend, no alpha test.
+
+### Depth
+
+16-bit depth values stored in external SRAM (256 KB available, 320×240×2 = 154 KB used).  Read-compare-write pipeline through the FBSS sub-FSM.  Functions listed above.
+
+### State and status
+
+| MMIO offset | Reg | Direction | Notes |
+|------------|------|-----------|-------|
+| `0x00` | `GPU_CTRL`            | W | bit 0 = enable, bit 1 = soft_reset, bit 2 = ring_reset |
+| `0x04` | `GPU_RING_WRPTR`      | W | CPU write pointer — kicks GPU |
+| `0x08` | `GPU_RING_DATA`       | W | Push one word into the ring BRAM (auto-increment) |
+| `0x10` | `GPU_RING_RDPTR`      | R | GPU read pointer |
+| `0x14` | `GPU_STATUS`          | R | Busy + ring_empty + state + pipeline + cache + FBSS bits |
+| `0x18` | `GPU_FENCE_REACHED`   | R | Last completed fence token |
+| `0x1C` | `GPU_STAT_PIXELS`     | R | Pixel counter (GPU_STATS build only) |
+| `0x20` | `GPU_CMAP_ADDR`       | W | LUT upload address (auto-inc).  Bit 31 = target select: `0` = colormap (legacy, now a no-op since `cmap_bram` was retired — palookups live in SDRAM), `1` = `transluc[]`.  Low 15 bits = byte offset within the selected target. |
+| `0x24` | `GPU_CMAP_DATA`       | W | LUT upload data (32-bit word, addr += 4).  Only the `transluc[]` target writes are meaningful now; colormap target writes are dropped (palookup uploads go through `of_gpu_palookup_upload` → SDRAM). |
+| `0x28` | `GPU_TEX_FLUSH`       | W | Pulse to invalidate the tex cache (S_INIT walk-clears 1024 sets) |
+| `0x2C` | `GPU_STAT_SPANS`      | R | Span counter (GPU_STATS only) |
+
+### SDK entry points (header-only, in `of_gpu.h`)
+
+Init/sync: `of_gpu_init`, `of_gpu_kick`/`_kick_verified`, `of_gpu_fence`/`_submit`/`_fence_reached`/`_wait`/`_finish`/`_shutdown`, `of_gpu_nop`, `of_gpu_ring_free`/`_can_fit`.
+
+State / draws: `of_gpu_set_framebuffer`, `of_gpu_set_zbuffer`, `of_gpu_depth_test`, `of_gpu_bind_texture`, `of_gpu_draw_span`, `of_gpu_draw_triangles`/`_batch`, `of_gpu_clear`, `of_gpu_clear_rect`, `of_gpu_stat_pixels`, `of_gpu_stat_spans`.
+
+LUT uploads / colormap selection: `of_gpu_colormap_upload` (slot-0 wrapper, retained for legacy callers), `of_gpu_palookup_upload(slot, data, size)` (writes to `caps->sdram_base + 0x100000 + slot*0x4000`, then `of_cache_clean_range` so the GPU's tex_cache fill sees committed bytes), `of_gpu_set_colormap_id(slot)` (sticky 4-bit slot select for subsequent SPAN_COLORMAP draws), `of_gpu_translucency_upload(table, 65536)` (decimates a BUILD-style 64 KB table to the fabric's 32 KB / 128×256 quant LUT during upload via the shared `GPU_CMAP_ADDR/DATA` MMIO with bit 31 = 1).
+
+Removed (no datapath behind them): `of_gpu_blend`, `of_gpu_alpha_ref`, `of_gpu_shade_mode`.
 
 ```
     CPU (VexRiscv @ 100 MHz)
@@ -25,14 +113,15 @@ A fixed-function 3D rasterizer built around a **triangle pipeline with span fast
     │              (walk edges, emit fragments)              │
     │                      │                                │
     │              [Fragment Processor]                      │
-    │              ├─ Texture Cache (M10K)                   │
-    │              ├─ Colormap BRAM (M10K)                   │
-    │              ├─ Color interpolation                    │
-    │              └─ Alpha test                             │
+    │              ├─ gpu_tex_cache, dual-port (16 KB M10K)  │
+    │              │     port A → texture fetch (p1)         │
+    │              │     port B → palookup fetch (p2)        │
+    │              ├─ transluc_bram (32 KB M10K, BUILD blend)│
+    │              └─ Gouraud light walk                     │
     │                      │                                │
     │              [Depth Test] ←→ SRAM Z-buffer             │
     │                      │                                │
-    │              [FB Writer] → AXI4 → SDRAM framebuffer    │
+    │              [FB Writer + transluc RMW] → AXI4 → SDRAM │
     └───────────────────────────────────────────────────────┘
 ```
 
@@ -46,8 +135,8 @@ A fixed-function 3D rasterizer built around a **triangle pipeline with span fast
 | Scanline rasterizer      | 700       | 4    | 0   | Edge walking, fragment emission           |
 | Span bypass path         | 150       | 0    | 0   | Mux span params into rasterizer          |
 | Fragment processor       | 1000      | 0    | 2   | Texcoord step, color interp, alpha test  |
-| Texture cache            | 300       | 20   | 0   | 4-way set-assoc, 16B lines, AXI4 fill   |
-| Colormap BRAM            | 100       | 16   | 0   | 16KB: 64 light × 256 palette             |
+| Texture + palookup cache | 450       | 19   | 0   | 16 KB direct-mapped, 16B lines, AXI4 fill, **dual-port** (A = textures, B = palookups via SDRAM) |
+| Translucency LUT         | 60        | 32   | 0   | 32 KB / 128×256 BUILD-shape blend table; CPU upload via shared `GPU_CMAP_ADDR/DATA` (bit 31 = transluc target) |
 | Z-buffer interface       | 400       | 2    | 0   | SRAM read/compare/write pipeline          |
 | Framebuffer writer       | 350       | 4    | 0   | 4-byte accumulator, AXI4 burst writes    |
 | Misc (FIFO, fence, perf) | 300       | 4    | 0   | Fence counter, stat counters             |
@@ -55,6 +144,18 @@ A fixed-function 3D rasterizer built around a **triangle pipeline with span fast
 | **Budget**               | **5000**  | **64** | **~59** |                                    |
 
 Headroom: ~100 ALMs, 4 M10K.
+
+> **Note (2026-04):** the table above is the original design-intent
+> sketch.  Current fitted utilisation on the Pocket bitstream is
+> higher after the perspective + transluc[] + dual-port-cache work
+> landed:
+> - ALMs: ~16,950 of 18,480 (~92%).
+> - M10K: 255 of 308 (83%) — `cmap_bram` retired in favour of
+>   SDRAM-backed palookups via `gpu_tex_cache` port B, freeing 16
+>   M10K vs the prior 271/308.
+> - DSP: 36 of 66.
+>
+> Per-commit cost deltas are tracked in `openfpgaOS/CHANGES.md`.
 
 ### 2.1. Expansion Options (if more ALMs available)
 
@@ -93,21 +194,7 @@ Word 0:  [31:24] cmd_type  [23:0] payload_words
 Word 1+: command-specific payload
 ```
 
-| Cmd Type | Name              | Payload Words | Description                        |
-|----------|-------------------|---------------|------------------------------------|
-| 0x01     | NOP               | 0             | Padding / alignment                |
-| 0x02     | FENCE             | 1             | Write fence_value to status reg    |
-| 0x10     | CLEAR             | 2             | flags, color, depth                |
-| 0x20     | SET_TEXTURE       | 4             | addr, w, h, format, wrap           |
-| 0x21     | SET_DEPTH_FUNC    | 1             | depth function enum                |
-| 0x22     | SET_BLEND         | 1             | blend mode + alpha ref             |
-| 0x23     | SET_FRAMEBUFFER   | 2             | addr, stride                       |
-| 0x24     | SET_ZBUFFER       | 2             | addr, stride                       |
-| 0x25     | SET_SHADE_MODE    | 1             | gouraud enable                     |
-| 0x30     | DRAW_TRIANGLES    | 1 + N×6       | count, then count vertices (6 words each) |
-| 0x31     | DRAW_INDEXED      | 2 + V×6 + I   | vert_count, idx_count, verts, indices |
-| 0x40     | DRAW_SPAN         | 16            | full span descriptor               |
-| 0x41     | DRAW_SPANS_BATCH  | 1 + N×16      | count, then count span descriptors |
+See §1.1 for the live command set.  `0x22 SET_BLEND`, `0x25 SET_SHADE_MODE`, `0x31 DRAW_INDEXED`, and `0x41 DRAW_SPANS_BATCH` are documented but **not implemented**; the others are.  `DRAW_SPAN` is **18 payload words** (not 16): the original 16 plus word 8 (`{tex_h_mask, tex_w_mask}`) plus the perspective tail.
 
 ### 3.3. Vertex Encoding in Ring (6 words = 24 bytes)
 
@@ -175,13 +262,14 @@ Per fragment:
 5. **Depth test**: compare fragment Z against SRAM Z-buffer
 6. **Framebuffer write**: accumulate bytes, burst-write to SDRAM
 
-### 4.5. Texture Cache
+### 4.5. Texture Cache (as built)
 
-- **Capacity**: 20 M10K = 20KB
-- **Organization**: 4-way set-associative, 64 sets, 16-byte lines (16 texels for I8, 8 for RGB565)
-- **Hit latency**: 1 cycle (M10K registered read)
-- **Miss latency**: ~10-40 cycles (AXI4 SDRAM burst fill)
-- **Fill**: non-blocking prefetch on sequential access patterns
+- **Capacity**: 16 KB.  `data_mem` = 1024 sets × 4 words × 32 bits, all in M10K.
+- **Organization**: **direct-mapped**, 1024 sets, 16-byte lines (16 I8 texels per line).  Tag is 12 bits.  `addr[3:0]` = byte offset, `addr[13:4]` = set, `addr[25:14]` = tag.
+- **Hit latency**: 1 cycle (registered M10K read; consumer's combinational `byte_from_rd` selects the correct lane).
+- **Miss latency**: AXI4 burst fill of 4 words (~10–20 cycles depending on SDRAM).  Cache stalls while filling.
+- **Flush**: `GPU_TEX_FLUSH` MMIO pulse → walk-clear all 1024 valid bits via `S_INIT`.
+- **Read latch is gated on accept**: `rd_*` only update when `req_valid && req_ready` so pipeline stalls (FBSS mid-write) don't let `req_addr` drift away from `pipe_addr` and corrupt `byte_from_rd`.  See `tb_gpu_floor_span` and `tb_gpu_gpudemo` for the regression coverage.
 
 ### 4.6. Colormap BRAM
 
@@ -225,26 +313,29 @@ of_gpu_draw_span(&col);
 
 ### 5.2. Duke3D (Build Engine)
 
-Same span model as Doom but with shift-based texture addressing.
+Same span model as Doom.  BUILD's `hlineasm4` shift-mode addressing is reproduced via POT wrap masks on multiply-mode (the shift-mode datapath itself was retired):
 
 ```c
-// Floor/ceiling span (hlineasm4)
+// Floor/ceiling span (hlineasm4 — multiply-mode + POT masks)
 of_gpu_span_t span = {
-    .fb_addr   = dest_addr,
-    .tex_addr  = texture_addr,
-    .s         = u_fixed,
-    .t         = v_fixed,
-    .sstep     = u_step,
-    .tstep     = v_step,
-    .count     = pixel_count,
-    .light     = shade,
-    .flags     = OF_GPU_SPAN_COLORMAP,
-    .fb_stride = 1,
-    .tex_shift = shifter,       // Build engine V shift
-    .tex_bits  = bits,          // Build engine UV combine width
+    .fb_addr    = dest_addr,
+    .tex_addr   = texture_addr,
+    .s          = i4 >> (16 - width_bits),       // 0.32 i4 → 16.16 sp_s
+    .t          = i5 >> (shifter - 16),          // 0.32 i5 → 16.16 sp_t
+    .sstep      = -(int32_t)(asm2 >> (16 - width_bits)),
+    .tstep      = -(int32_t)(asm1 >> (shifter - 16)),
+    .count      = pixel_count,
+    .light      = shade,
+    .flags      = OF_GPU_SPAN_COLORMAP,
+    .fb_stride  = -1,                            // walk left, matching SW dest--
+    .tex_width  = 1u << width_bits,
+    .tex_w_mask = (1u << width_bits) - 1,         // POT wrap, mod tex_w
+    .tex_h_mask = (1u << (32 - shifter)) - 1,     // POT wrap, mod tex_h
 };
 of_gpu_draw_span(&span);
 ```
+
+Both `tex_w` and `tex_h` must be powers of two (always true for BUILD textures).  See `src/duke3d/d3d_gpu.c` in PocketDukeNukem-SDK for the full helper.
 
 ### 5.3. Quake
 
@@ -279,17 +370,16 @@ Multitexture (base × lightmap in one pass) would require a second texture unit 
 
 ### 5.5. Super Mario 64
 
-Triangle-based with vertex colors. Perfect match for the triangle pipeline.
+Triangle-based with vertex colors.  Today's pipeline supports per-vertex `R` (8-bit Gouraud light walked through the colormap row) — `g`/`b` channels are decoded into the vertex struct but not consumed by the datapath.  Full RGB modulate would need a second-texture combiner unit (not in the current build).
 
 ```c
 of_gpu_bind_texture(&mario_texture);
 of_gpu_depth_test(OF_GPU_DEPTH_LESS);
-of_gpu_shade_mode(true);  // Gouraud: vertex RGB modulates texture
 
 of_gpu_vertex_t v[3] = {
-    { x0, y0, z0, 0, s0, t0, OF_FP16(1), r0, g0, b0, 255 },
-    { x1, y1, z1, 0, s1, t1, OF_FP16(1), r1, g1, b1, 255 },
-    { x2, y2, z2, 0, s2, t2, OF_FP16(1), r2, g2, b2, 255 },
+    { x0, y0, z0, 0, s0, t0, OF_GPU_FP16(1), r0, 0, 0, 255 },
+    { x1, y1, z1, 0, s1, t1, OF_GPU_FP16(1), r1, 0, 0, 255 },
+    { x2, y2, z2, 0, s2, t2, OF_GPU_FP16(1), r2, 0, 0, 255 },
 };
 of_gpu_draw_triangles(v, 3);
 ```
@@ -300,7 +390,7 @@ Textured polygons with flat/Gouraud shading, 8-bit indexed. Triangle pipeline + 
 
 ### 5.7. Wipeout
 
-Textured triangles with Gouraud shading, semi-transparency. Triangle pipeline with vertex colors. Semi-transparent surfaces can use OF_GPU_BLEND_ALPHA or stay in software (like Duke3D translucency).
+Textured triangles with Gouraud shading.  Single-channel light works today; semi-transparency does **not** (no blend unit) — translucent surfaces have to stay in software or be approximated with `OF_GPU_SPAN_SKIP_ZERO` color-key.
 
 ## 6. Performance Estimates
 
@@ -328,43 +418,38 @@ Typical overdraw ratios:
 
 At 2× overdraw, 128K effective pixels per frame. Still well within fill budget.
 
-## 7. Implementation Phases
+## 7. Implementation Status
 
-### Phase 1: Foundation (span-only, Doom/Duke3D ready)
+### Shipped
 
-Build the core infrastructure without triangle setup:
-- Command ring buffer + DMA fetch engine
-- Command decoder + state registers
-- Span rasterizer (stepping engine)
-- Texture cache + colormap BRAM
-- Framebuffer writer
-- Z-buffer interface
-- Fence mechanism
+- Phase 1 — span pipeline: ring + DMA + decode + texture cache (16 KB direct-mapped, M10K) + colormap BRAM (16 KB, 64×256) + accumulating FB writer + SRAM Z interface + fence/MMIO surface.
+- Phase 2 — triangle pipeline: convex-only edge walk (top-left fill rule, 12.4 sub-pixel), per-pixel `S`/`T`/`Z`/`R` interpolation, depth test+write, top-of-pipeline shared with span path via `S_FRAG_PIPE`.
+- Phase 3 partial — perspective: 8-pixel affine sub-segments using projection-space `s/z`/`t/z`/`1/z` plus a CLZ + reciprocal LUT + Newton-Raphson refine (works on both `DRAW_SPAN` with `SPAN_PERSP` and triangle path with per-vertex `W`).
+- Phase 4 — write coalescing: 4-byte FB accumulator, AXI burst writes; mid-flight cache flush handling.
 
-**Validates**: async model, texture cache, memory interfaces, basic pixel pipeline.
-**Enables**: Doom, Duke3D (full acceleration), Quake (via span path).
+### Not implemented (despite enums / placeholders that may exist in headers)
 
-### Phase 2: Triangle setup (SM64/Descent/Wipeout ready)
+- Real alpha blending (`SET_BLEND`, `OF_GPU_BLEND_ALPHA/_ADD`).  Only color-key transparency via `SPAN_SKIP_ZERO`.
+- Alpha test (`SET_ALPHA_REF`).
+- Full RGB Gouraud modulate.  Only the 8-bit `R` light walk lands in the colormap row.
+- Bilinear filtering.
+- Indexed primitives (`DRAW_INDEXED`).
+- Batched span command (`DRAW_SPANS_BATCH`).
+- Multi-texture / lightmap combine.
+- RGB565 texel sampling (enum exists; datapath is I8-only).
+- Texture wrap modes other than POT-mask + the implicit wrap on the multiply addressing.
+- Triangles outside convex / counter-clockwise orientation.
 
-Add the triangle pipeline:
-- Edge equation computation (sequential DSP)
-- Attribute gradient computation
-- Scanline rasterizer (edge walking)
-- Feed fragments into the existing fragment processor
+### Verification harnesses (`src/fpga/test/`)
 
-**Validates**: triangle rendering, sub-pixel precision, fill rules.
-**Enables**: SM64, Descent, Wipeout, Quake 2 / Half-Life (triangle path).
+- `tb_gpu`            — 249 focused tests (spans, triangles, depth, colormap, perspective, cache flush mid-flight).
+- `tb_gpu_floor_span` — 8 BUILD `hlineasm4` cases against a CPU oracle, validating multiply-mode + POT wrap.
+- `tb_gpu_gpudemo`    — long-running per-frame submission stress, mirrors gpudemo's pattern.
 
-### Phase 3: Quality + features
+### Open future work
 
-Based on remaining ALMs after Phase 2:
-- Perspective correction (for large triangles / Quake span path)
-- Gouraud color interpolation (RGB modulate for SM64, Wipeout)
-- Indexed drawing (vertex reuse for meshes)
-
-### Phase 4: Optimization
-
-- Texture prefetch (predict next texel address, start SDRAM fetch early)
-- 4-byte FB write batching (already in PocketQuake design)
-- Performance counters for profiling
-- DMA span list mode (batch SDRAM→GPU for many short spans)
+- Alpha blending (blend unit + a second FB read port).
+- Bilinear filter (one extra texel-fetch port + 4-tap combiner).
+- 4-column batched mode (Duke3D `vlineasm4` analogue).
+- Edge walker coprocessor (HW triangle-to-span decomposition; would let CPU drive at higher tri rates).
+- Proper triangle backface / CCW handling.

@@ -21,13 +21,14 @@ typedef struct {
     uint32_t offset;        /* current byte position within save slot */
     uint32_t size;          /* total size of save slot */
     int      writing;       /* 1 = write mode, 0 = read mode */
+    int      error;         /* sticky I/O error for write/close reporting */
 } OfSaveFile;
 
 OfSaveFile *save_fopen(int slot, const char *mode);
 unsigned int save_fread(void *buf, unsigned int size, unsigned int count, OfSaveFile *sf);
 unsigned int save_fwrite(const void *buf, unsigned int size, unsigned int count, OfSaveFile *sf);
 int save_fseek(OfSaveFile *sf, long offset, int whence);
-void save_fclose(OfSaveFile *sf);
+int save_fclose(OfSaveFile *sf);
 void save_dfread(void *buffer, unsigned int dasizeof, unsigned int count, OfSaveFile *sf);
 void save_dfwrite(void *buffer, unsigned int dasizeof, unsigned int count, OfSaveFile *sf);
 int save_slot_valid(int slot);

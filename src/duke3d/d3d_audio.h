@@ -8,6 +8,8 @@
 void d3d_audio_init(void);
 int  d3d_sound_play(int sound_num, int priority, int volume);
 int  d3d_sound_play_3d(int sound_num, int priority, int angle, int distance);
+int  d3d_sound_play_pitch(int sound_num, int priority, int volume, int pitch);
+int  d3d_sound_play_3d_pitch(int sound_num, int priority, int angle, int distance, int pitch);
 void d3d_sound_stop(int voice);
 void d3d_sound_stop_all(void);
 void d3d_sound_set_volume(int voice, int volume);

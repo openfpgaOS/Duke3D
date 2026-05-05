@@ -451,14 +451,22 @@ static int voice_alloc(void)
 
 /* Schedule a voice for shutdown without reusing its slot.  Used by
  * kill_exclusive_class — the new note allocates a fresh slot and the
- * old one fades out via voice_cleanup_stolen on the next tick. */
+ * old one fades out via voice_cleanup_stolen on the next tick.
+ *
+ * Ramp rate must be high enough that the HW vol_lr reaches 0 BEFORE
+ * voice_cleanup_stolen fires 1 ms later and snaps vol_lr/ctrl to 0
+ * (otherwise the snap from non-zero to 0 is an audible click).  At
+ * 48 kHz audio, 1 ms = 48 ramp steps; rate=16 → fade in 16 samples
+ * (~0.33 ms), well under the 1 ms cleanup gap.  Old rate=4 needed
+ * 64 samples (~1.33 ms) to fade — finished AFTER cleanup, leaving
+ * ~63 of 255 LSBs to be snapped, ~25% full-scale step, audible. */
 static void voice_force_off(int idx)
 {
     smp_voice_t *v = &voices[idx];
     if (v->mixer_voice >= 0) {
         of_mixer_set_vol_lr(v->mixer_voice, 0, 0);
         SMP_TRACE(SMP_TRACE_OP_VOL_LR, v->mixer_voice, 0, 0, 0);
-        of_mixer_set_volume_ramp(v->mixer_voice, 4);
+        of_mixer_set_volume_ramp(v->mixer_voice, 16);
     }
     v->active = STEAL_PENDING;
 }
@@ -541,84 +549,12 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
     }
 }
 
-/* Recompute and (if changed) write the filter state for a voice.
- *
- * Called at 1 kHz (mid-tick + end-tick) rather than 500 Hz because the HW
- * filter cutoff snaps instantly — each cents-level change produces a small
- * SVF state-variable transient.  Doubling the update rate halves the jump
- * size per write and reduces audible "breakup" on effect-heavy patches
- * (synth leads, pads, brass) where mod_lfo_to_filter or mod_env_to_filter
- * sweep the cutoff continuously.
- *
- * Skip the HW write when the integer-rounded HW cutoff value is unchanged:
- * cents-level jitter often collapses to the same Q0.16 HW number, and a
- * redundant write still perturbs the filter on the HW side. */
-// TODO(audio_review): Software filter update logic is running, but the mixer RTL
-// does not implement it. The filter control stack is carrying cost without hardware behavior.
-static void filter_update(smp_voice_t *v)
-{
-    const ofsf_zone_t *z = v->zone;
-    if (!z) return;
-    if (v->mixer_voice < 0) return;
-    if (z->initial_fc >= 13500 &&
-        z->mod_lfo_to_filter == 0 &&
-        z->mod_env_to_filter == 0)
-        return;  /* filter bypassed at note-on */
-
-    int32_t fc = z->initial_fc;
-
-    if (z->mod_lfo_to_filter != 0) {
-        int32_t lfo_out = triangle_wave(v->mod_lfo.phase);
-        fc += (lfo_out * z->mod_lfo_to_filter) >> 16;
-    }
-    if (z->mod_env_to_filter != 0) {
-        fc += ((int64_t)v->mod_env.level * z->mod_env_to_filter) >> 16;
-    }
-    fc += ((int32_t)ch_brightness[v->midi_ch] - 64) * 75;
-
-    if (fc < 1500)  fc = 1500;
-    if (fc > 13500) fc = 13500;
-
-    int16_t fc16 = (int16_t)fc;
-    int16_t q16  = z->initial_q + (int16_t)(ch_resonance[v->midi_ch] * 8);
-    if (q16 > 960) q16 = 960;
-
-    if (fc16 == v->cur_filter_fc && q16 == v->cur_filter_q)
-        return;
-    v->cur_filter_fc = fc16;
-    v->cur_filter_q  = q16;
-
-    /* Convert cents to Q0.16 normalized frequency for hardware.
-     * fc_hz = 8.176 * 2^(fc_cents/1200)
-     * cutoff_hw = (fc_hz / 24000) * 65535  (Nyquist = 24 kHz)
-     * 8.176 Hz * 65536 / 24000 ≈ 22.36 → use 22 as integer approx */
-    uint32_t fc_mult = smp_cents_to_multiplier(fc16);
-    uint32_t cutoff_hw = (uint32_t)(((uint64_t)fc_mult * 22) >> 16);
-    if (cutoff_hw > 65535) cutoff_hw = 65535;
-
-    /* SVF q is damping (higher = less resonance), SF2 Q is resonance
-     * gain (higher = more resonance). Invert. */
-    int q_hw = 255 - (q16 * 255 / 960);
-    if (q_hw < 8) q_hw = 8;  /* prevent self-oscillation */
-
-    if ((uint16_t)cutoff_hw == v->cur_cutoff_hw)
-        return;  /* HW cutoff unchanged — avoid redundant write */
-
-    /* Track the largest single-tick cutoff jump across all voices since
-     * the last stats reset.  Big jumps correlate with audible SVF
-     * state-variable transients. */
-    uint16_t new_hw = (uint16_t)cutoff_hw;
-    uint16_t delta  = (new_hw > v->cur_cutoff_hw)
-                        ? (uint16_t)(new_hw - v->cur_cutoff_hw)
-                        : (uint16_t)(v->cur_cutoff_hw - new_hw);
-    if (delta > stat_cutoff_delta_max) stat_cutoff_delta_max = delta;
-    v->cur_cutoff_hw = new_hw;
-
-    of_mixer_set_filter(v->mixer_voice, (int)cutoff_hw, q_hw, 1);
-    SMP_TRACE(SMP_TRACE_OP_FILTER, v->mixer_voice,
-              (uint32_t)cutoff_hw, (uint32_t)q_hw, 1u);
-    stat_filter_writes++;
-}
+/* filter_update retired in v3 — the mixer RTL has no SVF, so the
+ * cents→Q0.16 conversion + redundant-write skip + delta tracking
+ * was producing zero audible effect.  Each tick was paying ~50–100
+ * cycles per active voice for math whose only consumer was the
+ * stub of_mixer_set_filter() in hal/mixer.c.  If SVF returns to
+ * the RTL, reintroduce a runtime cap-gated path. */
 
 static uint32_t compute_pitch(smp_voice_t *v)
 {
@@ -819,56 +755,12 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     lfo_init(&v->mod_lfo, zone->mod_lfo_delay_ticks, zone->mod_lfo_rate);
     lfo_init(&v->vib_lfo, zone->vib_lfo_delay_ticks, zone->vib_lfo_rate);
 
-    /* Initial filter state.
-     *
-     * CRITICAL: of_mixer_play does NOT reset the per-voice filter
-     * registers (FILTER_FC / FILTER_Q), so a reused voice slot inherits
-     * whatever cutoff/Q/enable the previous note left behind.  Without
-     * an explicit write here, a new zone with no filter requirement
-     * would play through a stale low-pass filter from an unrelated
-     * sample, producing audibly wrong timbres on stolen voices.
-     *
-     * Program the filter explicitly:
-     *   - If the zone needs filtering (cutoff below wide-open, or any
-     *     modulation source), enable with the zone's initial cutoff/Q
-     *     converted to the hardware Q0.16 / 0..255 representation —
-     *     same math as the per-tick filter update below.
-     *   - Otherwise disable the filter so the voice runs unfiltered. */
-    v->cur_filter_fc = zone->initial_fc;
-    v->cur_filter_q  = zone->initial_q;
-    {
-        int need_filter = (zone->initial_fc < 13500) ||
-                          (zone->mod_lfo_to_filter != 0) ||
-                          (zone->mod_env_to_filter != 0);
-        if (need_filter) {
-            int32_t fc = zone->initial_fc;
-            if (fc < 1500)  fc = 1500;
-            if (fc > 13500) fc = 13500;
-            int16_t q16 = zone->initial_q + (int16_t)(ch_resonance[midi_ch] * 8);
-            if (q16 > 960) q16 = 960;
-            uint32_t fc_mult = smp_cents_to_multiplier(fc);
-            uint32_t cutoff_hw = (uint32_t)(((uint64_t)fc_mult * 22) >> 16);
-            if (cutoff_hw > 65535) cutoff_hw = 65535;
-            int q_hw = 255 - (q16 * 255 / 960);
-            if (q_hw < 8) q_hw = 8;
-            of_mixer_set_filter(mhv, (int)cutoff_hw, q_hw, 1);
-            SMP_TRACE(SMP_TRACE_OP_FILTER, mhv,
-                      (uint32_t)cutoff_hw, (uint32_t)q_hw, 1u);
-            stat_filter_writes++;
-            /* Cache the fc we actually wrote so tick() only rewrites on
-             * a real change. */
-            v->cur_filter_fc = (int16_t)fc;
-            v->cur_filter_q  = q16;
-            v->cur_cutoff_hw = (uint16_t)cutoff_hw;
-        } else {
-            /* Bypass the filter — enable=0 ensures a prior voice's
-             * cutoff doesn't bleed into this one. */
-            of_mixer_set_filter(mhv, 65535, 8, 0);
-            SMP_TRACE(SMP_TRACE_OP_FILTER, mhv, 65535u, 8u, 0u);
-            stat_filter_writes++;
-            v->cur_cutoff_hw = 65535;
-        }
-    }
+    /* Filter state retired in v3 — mixer RTL has no SVF.  Fields kept
+     * in smp_voice_t so the existing struct layout / pinned BRAM size
+     * doesn't shift; just zero them. */
+    v->cur_filter_fc = 0;
+    v->cur_filter_q  = 0;
+    v->cur_cutoff_hw = 0;
 
     /* Advance the envelope one tick so the level is non-zero before
      * the ISR runs — otherwise the ISR writes volume 0 immediately. */
@@ -956,17 +848,6 @@ void smp_voice_tick(void)
         lfo_advance(&v->mod_lfo);
         lfo_advance(&v->vib_lfo);
 
-        if (v->mixer_voice >= 0 && v->vol_env.stage != ENV_DONE) {
-            uint32_t rate_mid = compute_pitch(v);
-            if (rate_mid != prev_rate[i]) {
-                of_mixer_set_rate_raw(v->mixer_voice, rate_mid);
-                SMP_TRACE(SMP_TRACE_OP_RATE, v->mixer_voice, rate_mid, 0, 0);
-                prev_rate[i] = rate_mid;
-                stat_rate_writes++;
-            }
-            filter_update(v);
-        }
-
         if (v->vol_env.stage == ENV_DONE) {
             if (v->mixer_voice >= 0)
                 of_mixer_stop(v->mixer_voice);
@@ -991,9 +872,6 @@ void smp_voice_tick(void)
             prev_vol_r[i] = vr;
             prev_rate[i] = rate;
         }
-
-        /* End-tick filter update (second half of the 1 kHz sampling). */
-        filter_update(v);
     }
 
     uint32_t _probe_dt = OF_SVC->timer_get_us() - _probe_t0;

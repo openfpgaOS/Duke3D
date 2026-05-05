@@ -158,9 +158,19 @@ int32_t initgroupfile(const char  *filename)
 	lseek(archive->fileDescriptor, 0, SEEK_SET);
 
 #ifdef OPENFPGA
-    /* Skip CRC32 computation on openfpgaOS — reading 11MB through DMA is slow
-       and we don't need CRC validation for single-player. */
-    archive->crc32 = 0;
+    /* Skip CRC32 computation on openfpgaOS — reading 11MB through DMA is slow.
+       Derive the canonical CRC from GRP file size (each official release has a
+       unique size), so VOLUMEONE/VOLUMEALL episode gating still works. */
+    {
+        int32_t grpSize = lseek(archive->fileDescriptor, 0, SEEK_END);
+        switch (grpSize) {
+            case 11035779: archive->crc32 = 0x983AD923; break; /* SHAREWARE 1.3D */
+            case 26524524: archive->crc32 = 0xBBC9CE44; break; /* FULL 1.3D */
+            case 44348015: archive->crc32 = 0xF514A6AC; break; /* PLUTONIUM 1.4 */
+            case 44356548: archive->crc32 = 0xFD3DCFF1; break; /* ATOMIC 1.5 */
+            default:       archive->crc32 = 0;          break;
+        }
+    }
 #else
     //Load the full GRP in RAM.
 	while((j=read(archive->fileDescriptor, crcBuffer, sizeof(crcBuffer)))){

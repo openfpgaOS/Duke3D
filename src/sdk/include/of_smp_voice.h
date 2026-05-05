@@ -1,9 +1,9 @@
 /*
  * of_smp_voice.h -- Software voice engine for sample-based MIDI synthesis.
  *
- * Manages up to 28 simultaneous sample voices with DAHDSR envelopes
- * and dual LFOs, driving the CPU-side software mixer (swmixer).  All
- * math is fixed-point Q16.16; runs in the 1 kHz timer ISR on RV32IMFC.
+ * Manages simultaneous sample voices with DAHDSR envelopes and dual
+ * LFOs, driving the hardware mixer.  All math is fixed-point Q16.16;
+ * runs in the 1 kHz timer ISR on RV32IMFC.
  */
 
 #ifndef OF_SMP_VOICE_H
@@ -19,7 +19,7 @@ extern "C" {
 /* Cut from 28→12 so smp_voice_tick's ISR loop finishes fast enough
  * for Doom's renderer to get the CPU back.  Dense MIDI passages lose
  * the quietest couple of voices to the stealer; audible but acceptable
- * tradeoff.  Corresponds to the SWMIXER_MAX_VOICES=16 cap so allocator
+ * tradeoff.  Sits well under OF_MIXER_MAX_VOICES (32) so the allocator
  * never has to re-steal. */
 #define SMP_MAX_VOICES 12
 
@@ -51,7 +51,7 @@ typedef struct {
     uint8_t voice_base_vol;  /* Pre-baked at note-on: (vel_scale × initial_attn_scale) >> 8.
                                 Collapses two multiplies into one slot, drops one mul/tick. */
     uint8_t sustain_held; /* CC64 holding this note in sustain */
-    int mixer_voice;      /* software mixer voice index */
+    int mixer_voice;      /* hardware mixer voice index */
     env_state_t vol_env;
     env_state_t mod_env;
     lfo_state_t mod_lfo;
@@ -179,7 +179,7 @@ int  smp_voice_awe_backend_enabled(void);
 typedef struct {
     uint32_t seq;       /* monotonic sequence number since last reset */
     uint8_t  op;        /* SMP_TRACE_OP_* */
-    uint8_t  voice;     /* software mixer voice index */
+    uint8_t  voice;     /* hardware mixer voice index */
     uint16_t _pad;
     uint32_t arg0;
     uint32_t arg1;

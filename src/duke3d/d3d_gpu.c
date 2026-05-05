@@ -36,6 +36,9 @@ int d3d_gpu_use_spans = 1;   /* Master switch.  Set to 0 BEFORE the
                               * short-circuits, and BUILD's CPU loops
                               * run unmodified.  Used for the GPU-on
                               * vs GPU-off A/B perf test. */
+int d3d_gpu_force_cpu_spans = 0;  /* Scoped gate: when non-zero, draw.c
+                                   * try paths fall through to BUILD's
+                                   * original CPU loops. */
 
 /* Cached framebuffer base for the GPU-disabled CPU-fallback path.
  * Stride is read from BUILD's bytesperline at submit time: setviewtotile
@@ -44,6 +47,14 @@ int d3d_gpu_use_spans = 1;   /* Master switch.  Set to 0 BEFORE the
  * here would land vline writes on every other tile row. */
 static uint8_t *fb_base;
 extern int32_t  bytesperline;   /* BUILD's live row stride in bytes */
+static int gpu_fb_drained_for_cpu;
+static int cpu_fb_read_coherent;
+
+static inline void mark_gpu_fb_dirty(void)
+{
+    gpu_fb_drained_for_cpu = 0;
+    cpu_fb_read_coherent = 0;
+}
 
 /* Spinwatch: every entry/exit point that could spin updates this
  * tag.  Because the SDK app and kernel are separate binaries, we
@@ -230,6 +241,7 @@ void d3d_gpu_blit_mirror(uint8_t *dst, const uint8_t *src,
         sp.tex_addr = src_base + (uint32_t)(r * row_stride);
         of_gpu_draw_span(&sp);
     }
+    mark_gpu_fb_dirty();
     of_gpu_kick();
 }
 
@@ -247,6 +259,7 @@ static inline of_gpu_span_t *d3d_gpu_alloc_span(void) {
 static inline void d3d_gpu_commit_span(void) {
     if (d3d_gpu_skip_submit) return;
     span_buf_count++;
+    mark_gpu_fb_dirty();
 }
 
 void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels)
@@ -256,6 +269,8 @@ void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels)
      * emitters read BUILD's bytesperline live so they track
      * setviewtotile's stride flip without a separate hook. */
     fb_base = fb_pixels;
+    gpu_fb_drained_for_cpu = 0;
+    cpu_fb_read_coherent = 0;
     if (!d3d_gpu_present) return;
 
     /* Unconditional GPU-tex-cache invalidate at every frame boundary.
@@ -312,6 +327,7 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
      * MMIO ring writes), and the GPU would clear the rect first and
      * then draw the (stale) spans on top — ordering inversion. */
     d3d_gpu_flush_batch();
+    mark_gpu_fb_dirty();
     /* Per-command stride: CMD_CLEAR_RECT now carries its own stride
      * (openfpgaOS commit landing the cr-gpu-clear-rect-stride.md fix),
      * so we don't need to resync the global SET_FB stride before each
@@ -327,16 +343,19 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
 void d3d_gpu_pre_cpu_fb_access(void)
 {
     if (!d3d_gpu_present) return;
+    if (cpu_fb_read_coherent) return;
     SPIN_TAG(3);
-    /* Flush any pending span batch so its writes land in SDRAM before
-     * we wait for the GPU to drain. */
-    d3d_gpu_flush_batch();
-    /* Drain GPU writes to SDRAM so subsequent CPU reads see current
-     * pixels (without this, a CPU read of a region the GPU just
-     * wrote could return stale SDRAM). */
-    SPIN_TAG(4);
-    of_gpu_finish();
-    SPIN_TAG(0);
+    if (!gpu_fb_drained_for_cpu) {
+        /* Flush any pending span batch so its writes land in SDRAM before
+         * we wait for the GPU to drain. */
+        d3d_gpu_flush_batch();
+        /* Drain GPU writes to SDRAM so subsequent CPU reads see current
+         * pixels (without this, a CPU read of a region the GPU just
+         * wrote could return stale SDRAM). */
+        SPIN_TAG(4);
+        of_gpu_finish();
+        gpu_fb_drained_for_cpu = 1;
+    }
     /* Invalidate L1 — without this, a CPU read of an FB byte the
      * fabric just wrote could hit a STALE clean line in L1 from the
      * previous frame.  of_cache_flush is "write-back + invalidate"
@@ -345,6 +364,21 @@ void d3d_gpu_pre_cpu_fb_access(void)
      * call (covers the FB area), so we don't need a separate flush
      * after the mirror writes. */
     of_cache_flush();
+    cpu_fb_read_coherent = 1;
+    SPIN_TAG(0);
+}
+
+void d3d_gpu_prepare_cpu_fb_write(void)
+{
+    if (!d3d_gpu_present) return;
+    if (gpu_fb_drained_for_cpu) return;
+    SPIN_TAG(3);
+    d3d_gpu_flush_batch();
+    SPIN_TAG(4);
+    of_gpu_finish();
+    gpu_fb_drained_for_cpu = 1;
+    cpu_fb_read_coherent = 0;
+    SPIN_TAG(0);
 }
 
 /* Drain pending GPU work so the next page-flip sees finished pixels.
@@ -372,6 +406,8 @@ void d3d_gpu_flush(void)
     d3d_gpu_flush_batch();
     SPIN_TAG(4);
     of_gpu_finish();
+    gpu_fb_drained_for_cpu = 1;
+    cpu_fb_read_coherent = 0;
     SPIN_TAG(0);
 }
 
@@ -395,6 +431,8 @@ void d3d_gpu_drain(void)
     d3d_gpu_flush_batch();
     SPIN_TAG(4);
     of_gpu_finish();
+    gpu_fb_drained_for_cpu = 1;
+    cpu_fb_read_coherent = 0;
     SPIN_TAG(0);
 }
 
@@ -523,6 +561,14 @@ int d3d_gpu_shade_for(const uint8_t *palookupoffse)
         return (int)(off >> 8);
     }
     return -1;   /* not in any palookup at all (unusual) */
+}
+
+int d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out)
+{
+    int shade = d3d_gpu_shade_for(palookupoffse);
+    if (slot_out)
+        *slot_out = (shade >= 0) ? gpu_current_slot : -1;
+    return shade;
 }
 
 /* Internal: build + emit a single COLUMN span. */
@@ -680,9 +726,13 @@ int d3d_gpu_try_vline1(uint8_t *dest, int num_pixels,
                        uint8_t v_shift, const uint8_t *texture,
                        int32_t *vplce_out)
 {
+    if (d3d_gpu_force_cpu_spans) return 0;
     if (!d3d_gpu_use_spans || !d3d_gpu_present) return 0;
     int shade = d3d_gpu_shade_for(palookupoffse);
-    if (shade < 0) return 0;
+    if (shade < 0) {
+        d3d_gpu_prepare_cpu_fb_write();
+        return 0;
+    }
 
     /* num_pixels here matches the SW path's `numPixels++; while(numPixels)`
      * — caller passes (numPixels + 1) explicitly. */
@@ -698,9 +748,13 @@ int d3d_gpu_try_mvline1(uint8_t *dest, int num_pixels,
                         uint8_t v_shift, const uint8_t *texture,
                         int32_t *vplce_out)
 {
+    if (d3d_gpu_force_cpu_spans) return 0;
     if (!d3d_gpu_use_spans || !d3d_gpu_present) return 0;
     int shade = d3d_gpu_shade_for(palookupoffse);
-    if (shade < 0) return 0;
+    if (shade < 0) {
+        d3d_gpu_prepare_cpu_fb_write();
+        return 0;
+    }
 
     d3d_gpu_mvline(dest, num_pixels, shade,
                    (uint32_t)vplce, (uint32_t)vince, v_shift, texture);
@@ -719,14 +773,25 @@ extern uint8_t *palookupoffse[4];
 static int try_vline4_common(uint8_t *framebuffer, int num_pixels,
                              uint8_t v_shift, int masked)
 {
+    if (d3d_gpu_force_cpu_spans) return 0;
     if (!d3d_gpu_use_spans || !d3d_gpu_present) return 0;
 
     int    shades[4];
+    int    slots[4];
     const uint8_t *tex[4];
     for (int c = 0; c < 4; c++) {
-        shades[c] = d3d_gpu_shade_for(palookupoffse[c]);
-        if (shades[c] < 0) return 0;
+        shades[c] = d3d_gpu_shade_slot_for(palookupoffse[c], &slots[c]);
+        if (shades[c] < 0) {
+            d3d_gpu_prepare_cpu_fb_write();
+            return 0;
+        }
         tex[c] = (const uint8_t *)bufplce[c];
+    }
+    for (int c = 1; c < 4; c++) {
+        if (slots[c] != slots[0]) {
+            d3d_gpu_prepare_cpu_fb_write();
+            return 0;
+        }
     }
 
     if (masked) {
@@ -761,11 +826,15 @@ int d3d_gpu_try_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
                       uint8_t width_bits, uint8_t shifter,
                       const uint8_t *texture)
 {
+    if (d3d_gpu_force_cpu_spans) return 0;
     if (!d3d_gpu_use_spans || !d3d_gpu_present) return 0;
     /* hlineasm4 reads via globalpalwritten[shade|s], so the floor's
      * pal must match the one in the GPU's colormap RAM (palookup[0]). */
     extern uint8_t *globalpalwritten;
-    if (d3d_gpu_shade_for(globalpalwritten) < 0) return 0;
+    if (d3d_gpu_shade_for(globalpalwritten) < 0) {
+        d3d_gpu_prepare_cpu_fb_write();
+        return 0;
+    }
 
     d3d_gpu_hline(dest_right, num_pixels, shade_x256, i4, i5,
                   asm1, asm2, width_bits, shifter, texture);
@@ -880,34 +949,36 @@ static inline void emit_rotsprite_hline(uint8_t *dest, int num_pixels, int shade
     d3d_gpu_commit_span();
 }
 
-void d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
+int d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
+                   uint32_t bx_frac, uint32_t xv2_step,
+                   uint32_t by_frac, uint32_t yv2_step,
+                   uint16_t tile_height,
+                   const uint8_t *texture)
+{
+    (void)xv2_step; (void)yv2_step; (void)tile_height;  /* sourced from rs_* */
+    if (num_pixels <= 0) return 1;
+    if (!d3d_gpu_present || !fb_base) return 0;
+    if (shade < 0) return 0;
+    ensure_pal0_uploaded();
+    emit_rotsprite_hline(dest, num_pixels, shade, bx_frac, by_frac,
+                         texture, OF_GPU_SPAN_COLORMAP);
+    return 1;
+}
+
+int d3d_gpu_rmhline(uint8_t *dest, int num_pixels, int shade,
                     uint32_t bx_frac, uint32_t xv2_step,
                     uint32_t by_frac, uint32_t yv2_step,
                     uint16_t tile_height,
                     const uint8_t *texture)
 {
-    (void)xv2_step; (void)yv2_step; (void)tile_height;  /* sourced from rs_* */
-    if (num_pixels <= 0) return;
-    if (!d3d_gpu_present || !fb_base) return;
-    if (shade < 0) return;
-    ensure_pal0_uploaded();
-    emit_rotsprite_hline(dest, num_pixels, shade, bx_frac, by_frac,
-                         texture, OF_GPU_SPAN_COLORMAP);
-}
-
-void d3d_gpu_rmhline(uint8_t *dest, int num_pixels, int shade,
-                     uint32_t bx_frac, uint32_t xv2_step,
-                     uint32_t by_frac, uint32_t yv2_step,
-                     uint16_t tile_height,
-                     const uint8_t *texture)
-{
     (void)xv2_step; (void)yv2_step; (void)tile_height;
-    if (num_pixels <= 0) return;
-    if (!d3d_gpu_present || !fb_base) return;
-    if (shade < 0) return;
+    if (num_pixels <= 0) return 1;
+    if (!d3d_gpu_present || !fb_base) return 0;
+    if (shade < 0) return 0;
     ensure_pal0_uploaded();
     emit_rotsprite_hline(dest, num_pixels, shade, bx_frac, by_frac,
                          texture, OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_SKIP_ZERO);
+    return 1;
 }
 
 void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,

@@ -227,7 +227,7 @@ static void raw_play_inst(int idx, int note) {
  * instead of of_mixer_play.  Uses voice 47 so it doesn't collide with
  * the SW voice allocator (SMP_MAX_VOICES = 28, of_mixer allocator
  * skips scratch voice 31). */
-#define AWE_TEST_VOICE  47
+#define AWE_TEST_VOICE  31  /* last slot now that AWE_MAX_VOICES = 32 */
 
 static void awe_play_inst(int idx, int note) {
     const ofsf_zone_t *zones[1];
@@ -287,10 +287,7 @@ static void awe_play_inst(int idx, int note) {
 
 __attribute__((unused))
 static int load_midi_file(void) {
-    /* Demo loads the MIDI file from data slot 3; filename-based access
-     * (e.g. fopen("music.mid")) requires SDK plumbing of_file_get_name
-     * from the OS, which is not wired up yet. */
-    FILE *f = fopen("slot:3", "rb");
+    FILE *f = fopen("music.mid", "rb");
     if (!f) return -1;
 
     size_t n = fread(midi_buf, 1, MIDI_MAX_SIZE, f);
@@ -390,14 +387,20 @@ int main(void) {
              * behaviour unchanged. */
             smp_voice_enable_awe_backend(mode == MODE_PLAY ? 1 : 0);
 
-            /* Phase 6a global reverb bus — only on in MODE_PLAY since
-             * it mixes into the master output unconditionally. */
+            /* Phase 6 global effect buses — only on in MODE_PLAY since
+             * they mix into the master output unconditionally. */
             if (mode == MODE_PLAY) {
                 of_awe_set_reverb_level   (80);   /* wet mix ~30 % */
                 of_awe_set_reverb_feedback(140);  /* moderate tail   */
+                of_awe_set_chorus_level   (48);   /* subtle chorus   */
+                of_awe_set_chorus_rate    (60);   /* slow LFO ~0.05 Hz */
+                of_awe_set_chorus_depth   (12);   /* ±12 sample swing */
             } else {
                 of_awe_set_reverb_level   (0);
                 of_awe_set_reverb_feedback(0);
+                of_awe_set_chorus_level   (0);
+                of_awe_set_chorus_rate    (0);
+                of_awe_set_chorus_depth   (0);
             }
 
 enter_mode:
@@ -550,9 +553,9 @@ enter_mode:
         }
 
         /* Tick-cost probe: print stats every ~1 s.
-         * Budget is 2000 us (500 Hz tick rate).
+         * Budget is 2000 us (100 Hz tick rate).
          *
-         * of_midi_pump() is now driven by the machine-timer ISR at 500 Hz
+         * of_midi_pump() is now driven by the machine-timer ISR at 100 Hz
          * (installed by of_midi_play), so printf stalls on the main thread
          * no longer starve the mixer.  We must NOT call of_midi_pump() from
          * here — doing so would race the ISR on M/voice state. */

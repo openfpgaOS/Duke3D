@@ -27,8 +27,10 @@
 #include "tiles.h"
 #ifdef OPENFPGA
 #include "of_fastram.h"
+#include "of_timer.h"
+#include "../../d3d_gpu.h"
 /* APP_BRAM is only 14 KB on the current SDK and draw.c's per-pixel
- * inner loops already fill it.  These engine.c renderers are
+ * inner loops already fill it.  Most engine.c renderers are
  * per-scanline (one call per scanline of one wall/floor/ceiling), big
  * enough that the 32 KB I-cache covers them well — moving them out of
  * BRAM into SDRAM frees ~12 KB and lets the link succeed.  Override
@@ -36,9 +38,18 @@
  * no-ops; draw.c keeps its OF_FASTTEXT and stays in BRAM. */
 #undef OF_FASTTEXT
 #define OF_FASTTEXT
+/* OF_FASTTEXT_PIN bypasses the file-wide override above for the few
+ * specific functions hot enough to justify BRAM placement.  Use
+ * sparingly — every byte costs from the ~8 KB headroom in
+ * .app_fasttext after draw.c's inner loops.  prepwall + wallscan +
+ * maskwallscan are the per-bunch wall-render hot path called many
+ * times per frame; pinning them removes the I-cache miss latency on
+ * each call. */
+#define OF_FASTTEXT_PIN __attribute__((section(".app_fasttext"), noinline))
 #else
 #define OF_FASTTEXT
 #define OF_FASTDATA
+#define OF_FASTTEXT_PIN
 #endif
 
 int32_t stereowidth = 23040, stereopixelwidth = 28, ostereopixelwidth = -1;
@@ -578,7 +589,7 @@ skipitaddwall:
  param 2: Only used to lookup the xrepeat attribute of the wall.
  
 */
-static void prepwall(int32_t z, walltype *wal)
+OF_FASTTEXT_PIN static void prepwall(int32_t z, walltype *wal)
 {
     int32_t i, l=0, ol=0, splc, sinc, x, topinc, top, botinc, bot, walxrepeat;
     vector_t* wallCoo = pvWalls[z].cameraSpaceCoo;
@@ -1242,7 +1253,7 @@ static OF_FASTTEXT void florscan (int32_t x1, int32_t x2, int32_t sectnum)
  *
  *  --ryan.
  */
-static OF_FASTTEXT void wallscan(int32_t x1, int32_t x2,
+OF_FASTTEXT_PIN static void wallscan(int32_t x1, int32_t x2,
                      int16_t *uwal, int16_t *dwal,
                      int32_t *swal, int32_t *lwal)
 {
@@ -1432,7 +1443,11 @@ static OF_FASTTEXT void wallscan(int32_t x1, int32_t x2,
 
 
 /* this renders masking sprites. See wallscan(). --ryan. */
-static OF_FASTTEXT void maskwallscan(int32_t x1, int32_t x2,
+/* maskwallscan stays in SDRAM — pinning it overflowed APP_BRAM by
+ * ~1.8 KB and it's called rarely (only for masked walls in the
+ * scene, typically grates / fences / window bars).  wallscan is the
+ * wall-rendering hot path that benefits most from BRAM placement. */
+static void maskwallscan(int32_t x1, int32_t x2,
                          short *uwal, short *dwal,
                          int32_t *swal, int32_t *lwal)
 {
@@ -3624,6 +3639,15 @@ static void loadpalette(void)
      * Avoids 16384 individual bridge round-trips. */
     kread(fil, transluc, 65536);
 
+#ifdef OPENFPGA
+    /* Stage 5: hand BUILD's transluc[] LUT to the fabric BLEND unit
+     * once at level start.  The SDK helper decimates the 64 KB table
+     * to the 32 KB / 128×256 quantised LUT (low source bit dropped);
+     * Duke3D measurement: 79.4% byte-exact, avg RGB error 1.3 in
+     * BUILD's 6-bpc palette space (sub-JND, see transluc.md). */
+    d3d_gpu_upload_transluc(transluc, 65536);
+#endif
+
     kclose(fil);
 
     initfastcolorlookup(30L,59L,11L);
@@ -3814,6 +3838,10 @@ static void dorotatesprite (int32_t sx, int32_t sy, int32_t z, short a, short pi
     int32_t xoff, yoff, npoints, yplc, yinc, lx, rx, xx, xend;
     int32_t xv, yv, xv2, yv2, obuffermode=0, qlinemode=0, y1ve[4], y2ve[4], u4, d4;
     uint8_t  bad;
+#ifdef OPENFPGA
+    int openfpga_saved_force_cpu_spans = 0;
+    int openfpga_forced_cpu_spans = 0;
+#endif
 
     short tileWidht, tileHeight;
     
@@ -4002,6 +4030,22 @@ static void dorotatesprite (int32_t sx, int32_t sy, int32_t z, short a, short pi
     else if (dastat&8)
         permanentupdate = 1;
 
+#ifdef OPENFPGA
+    /* Menus, HUD and other BUILD 2D sprites go through this routine,
+     * often using the same vline inner loops as wall rendering.  Keep
+     * 3D walls/floors on the GPU, but render dorotatesprite itself
+     * through Ken's original CPU loops until the 2D span replacements
+     * are byte-stable.  This is write-only through the uncached
+     * framebuffer alias, so we only need to drain GPU writes for
+     * ordering, not flush the whole D-cache. */
+    if (d3d_gpu_present && d3d_gpu_use_spans) {
+        d3d_gpu_prepare_cpu_fb_write();
+        openfpga_saved_force_cpu_spans = d3d_gpu_force_cpu_spans;
+        d3d_gpu_force_cpu_spans = 1;
+        openfpga_forced_cpu_spans = 1;
+    }
+#endif
+
     if ((dastat&1) == 0)
     {
         if (((a&1023) == 0) && (tileHeight <= 256))  /* vlineasm4 has 256 high limit! */
@@ -4116,6 +4160,13 @@ static void dorotatesprite (int32_t sx, int32_t sy, int32_t z, short a, short pi
         }
         else
         {
+#ifdef OPENFPGA
+            /* Record full xv2/yv2/tileHeight for the GPU rh/rmh helpers
+             * before BUILD's setup cracks them into frac+integer
+             * statics — qlinemode loses tileHeight and we'd have no
+             * way to recover it on the GPU side otherwise. */
+            d3d_gpu_record_rotsprite_setup(xv2, yv2, tileHeight);
+#endif
             if (dastat&64)
             {
                 if ((xv2&0x0000ffff) == 0)
@@ -4323,6 +4374,10 @@ static void dorotatesprite (int32_t sx, int32_t sy, int32_t z, short a, short pi
         buffermode = obuffermode;
 
     }
+#ifdef OPENFPGA
+    if (openfpga_forced_cpu_spans)
+        d3d_gpu_force_cpu_spans = openfpga_saved_force_cpu_spans;
+#endif
 }
 
 
@@ -7704,10 +7759,31 @@ void printext256(int32_t xpos, int32_t ypos, short col, short backcol, char*  na
         {
             for(x=charxsiz-1; x>=0; x--)
             {
-                if (letptr[y]&pow2char[7-fontsize-x])
-                    ptr[x] = (uint8_t )col;
-                else if (backcol >= 0)
-                    ptr[x] = (uint8_t )backcol;
+                uint8_t pix_col;
+                int     emit;
+                if (letptr[y]&pow2char[7-fontsize-x]) {
+                    pix_col = (uint8_t)col; emit = 1;
+                } else if (backcol >= 0) {
+                    pix_col = (uint8_t)backcol; emit = 1;
+                } else {
+                    emit = 0;
+                }
+                if (emit) {
+#ifdef OPENFPGA
+                    /* Per-pixel clear_rect — GPU-only path keeps the
+                     * FB clean of CPU writes.  Used for editor /
+                     * debug overlay text only on this target; status-
+                     * bar digits go through dorotatesprite which is
+                     * already GPU-routed.  Volume is small enough
+                     * that the per-pixel ring submission cost is
+                     * acceptable; a glyph-blit helper would be the
+                     * obvious follow-up if printext256 ever lands on
+                     * the per-frame hot path. */
+                    d3d_gpu_clear_rect_fb(&ptr[x], 1, 1, pix_col);
+#else
+                    ptr[x] = pix_col;
+#endif
+                }
             }
             ptr -= ylookup[1];
         }
@@ -8990,41 +9066,61 @@ void drawmapview(int32_t dax, int32_t day, int32_t zoome, int16_t ang)
 
 void clearview(int32_t dacol)
 {
-    int32_t y, dx;
+    int32_t dx, h;
     uint8_t* p;
 
     if (qsetmode != 200) return;
 
     dx = windowx2-windowx1+1;
-    dacol += (dacol<<8);
-    dacol += (dacol<<16);
-    
+    h  = windowy2-windowy1+1;
     p = frameplace+ylookup[windowy1]+windowx1;
-    for(y=windowy1; y<=windowy2; y++)
+
+#ifdef OPENFPGA
+    /* GPU rect clear in one shot — replaces the per-row clearbufbyte
+     * loop.  d3d_gpu's cached fb_stride carries the row advance. */
+    d3d_gpu_clear_rect_fb(p, (uint16_t)dx, (uint16_t)h, (uint8_t)dacol);
+#else
     {
-        clearbufbyte(p, dx, dacol);
-        p += ylookup[1];
+        int32_t y;
+        int32_t dacol4 = dacol;
+        dacol4 += (dacol4<<8);
+        dacol4 += (dacol4<<16);
+        for(y=windowy1; y<=windowy2; y++)
+        {
+            clearbufbyte(p, dx, dacol4);
+            p += ylookup[1];
+        }
     }
+#endif
     faketimerhandler();
 }
 
 
 void clearallviews(int32_t dacol)
 {
-    int32_t i;
-
     if (qsetmode != 200) return;
-    dacol += (dacol<<8);
-    dacol += (dacol<<16);
 
     switch(vidoption)
     {
     case 1:
-        for(i=0; i<numpages; i++)
+#ifdef OPENFPGA
+        /* Single full-FB rect clear covers all numpages in one
+         * command — vidoption=1 paths only ever touch the active
+         * frameplace anyway on Pocket (numpages=1). */
+        d3d_gpu_clear_rect_fb((uint8_t *)frameplace,
+                              (uint16_t)bytesperline,
+                              (uint16_t)ydim,
+                              (uint8_t)dacol);
+#else
         {
-
-            clearbufbyte((void *)frameplace,imageSize,0L);
+            int32_t i;
+            int32_t dacol4 = dacol;
+            dacol4 += (dacol4<<8);
+            dacol4 += (dacol4<<16);
+            for(i=0; i<numpages; i++)
+                clearbufbyte((void *)frameplace,imageSize,dacol4);
         }
+#endif
 
     case 2:
         clearbuf((void *)frameplace,(xdim*ydim)>>2,0L);
@@ -9050,6 +9146,13 @@ int32_t setviewcnt = 0;
 int32_t bakvidoption[4];
 uint8_t* bakframeplace[4];
 int32_t bakxsiz[4], bakysiz[4];
+/* Saved screen-side bytesperline at each setviewtotile push.  Without
+ * this restore, setviewback rebuilds ylookup[] using the still-active
+ * tile stride — which is, e.g. 160 for low-detail vs the screen's
+ * 320 — and subsequent screen rendering reads ylookup at the wrong
+ * row spacing, producing horizontal-stripe artifacts where wall
+ * columns appear at the wrong screen rows. */
+int32_t bakbytesperline[4];
 int32_t bakwindowx1[4], bakwindowy1[4];
 int32_t bakwindowx2[4], bakwindowy2[4];
 
@@ -9066,13 +9169,17 @@ void setviewback(void)
     copybufbyte(&bakdmost[windowx1],&startdmost[windowx1],(windowx2-windowx1+1)*sizeof(startdmost[0]));
     vidoption = bakvidoption[setviewcnt];
     frameplace = bakframeplace[setviewcnt];
+    /* Restore the screen-side stride BEFORE rebuilding ylookup so the
+     * loop below uses the correct row spacing.  Without this, the
+     * still-active tile stride (set by setviewtotile) leaks into the
+     * post-pop screen rendering and walls/floors land at wrong rows. */
+    setBytesPerLine(bakbytesperline[setviewcnt]);
     if (setviewcnt == 0)
         k = bakxsiz[0];
     else
         k = max(bakxsiz[setviewcnt-1],bakxsiz[setviewcnt]);
     j = 0;
     for(i=0; i<=k; i++) ylookup[i] = j, j += bytesperline;
-    setBytesPerLine(bytesperline);
 }
 
 
@@ -9120,14 +9227,26 @@ void completemirror(void)
     p = frameplace+ylookup[windowy1+mirrorsy1]+windowx1+mirrorsx1;
     i = windowx2-windowx1-mirrorsx2-mirrorsx1;
     mirrorsx2 -= mirrorsx1;
-    // FIX_00085: Optimized Video driver. FPS increases by +20%.
-    for(dy=mirrorsy2-mirrorsy1-1; dy>=0; dy--)
+
+#ifdef OPENFPGA
+    /* Use BUILD's exact temp-buffer reverse copy.  The GPU reverse-blit
+     * was close, but it skipped the historical edge-pixel duplication
+     * (`tempbuf[mirrorsx2] = tempbuf[mirrorsx2-1]`) and made mirror
+     * alignment/angle errors harder to reason about.  Drain first so
+     * the CPU reads the mirror render the GPU just produced. */
+    if (d3d_gpu_present)
+        d3d_gpu_pre_cpu_fb_access();
+#endif
     {
-        copybufbyte((void *)(p),tempbuf,mirrorsx2+1);
-        tempbuf[mirrorsx2] = tempbuf[mirrorsx2-1];
-        copybufreverse(&tempbuf[mirrorsx2],(void *)(p+i),mirrorsx2+1);
-        p += ylookup[1];
-        faketimerhandler();
+        // FIX_00085: Optimized Video driver. FPS increases by +20%.
+        for(dy=mirrorsy2-mirrorsy1-1; dy>=0; dy--)
+        {
+            copybufbyte((void *)(p),tempbuf,mirrorsx2+1);
+            tempbuf[mirrorsx2] = tempbuf[mirrorsx2-1];
+            copybufreverse(&tempbuf[mirrorsx2],(void *)(p+i),mirrorsx2+1);
+            p += ylookup[1];
+            faketimerhandler();
+        }
     }
 }
 
@@ -9353,5 +9472,3 @@ void setfirstwall(short sectnum, short newfirstwall)
 }
 
 /* end of engine.c ... */
-
-
