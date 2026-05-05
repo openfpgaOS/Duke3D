@@ -56,6 +56,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #ifdef OPENFPGA
 #include "of_file.h"
 #include "of_timer.h"
+#include "../../d3d_gpu.h"
 #endif
 
 #include "control.h"
@@ -3226,6 +3227,23 @@ void displayrooms(short snum,int32_t smoothratio)
     struct player_struct *p;
     int32_t tposx,tposy,i;
     short tang;
+#ifdef OPENFPGA
+    uint32_t perf_t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+#define D3D_DISPLAYROOMS_DONE() \
+    do { \
+        if (perf_t0) \
+            d3d_gpu_perf_note_phase(D3D_GPU_PERF_PHASE_DISPLAYROOMS, \
+                                    of_time_us() - perf_t0); \
+    } while (0)
+#define D3D_DISPLAYROOMS_RETURN() \
+    do { \
+        D3D_DISPLAYROOMS_DONE(); \
+        return; \
+    } while (0)
+#else
+#define D3D_DISPLAYROOMS_DONE() do { } while (0)
+#define D3D_DISPLAYROOMS_RETURN() return
+#endif
 
     p = &ps[snum];
 
@@ -3236,7 +3254,7 @@ void displayrooms(short snum,int32_t smoothratio)
     }
 
     if( ud.overhead_on == 2 || ud.show_help || p->cursectnum == -1)
-        return;
+        D3D_DISPLAYROOMS_RETURN();
 
     smoothratio = min(max(smoothratio,0),65536);
 
@@ -3245,7 +3263,7 @@ void displayrooms(short snum,int32_t smoothratio)
     if(ud.pause_on || ps[snum].on_crane > -1) smoothratio = 65536;
 
     sect = p->cursectnum;
-    if(sect < 0 || sect >= MAXSECTORS) return;
+    if(sect < 0 || sect >= MAXSECTORS) D3D_DISPLAYROOMS_RETURN();
 
     dointerpolations(smoothratio);
 
@@ -3439,6 +3457,10 @@ void displayrooms(short snum,int32_t smoothratio)
             p->visibility += (ud.const_visibility-p->visibility)>>2;
     }
     else p->visibility = ud.const_visibility;
+
+    D3D_DISPLAYROOMS_DONE();
+#undef D3D_DISPLAYROOMS_DONE
+#undef D3D_DISPLAYROOMS_RETURN
 }
 
 
@@ -10948,5 +10970,3 @@ Programming:   ( the functions I need )
 // Bog
 // Test Blimp respawn
 // move 1 in player???
-
-

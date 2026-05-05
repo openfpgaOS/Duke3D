@@ -34,11 +34,58 @@ extern int d3d_gpu_use_spans;
 /* Scoped CPU fallback gate for BUILD paths that must preserve exact
  * software framebuffer semantics, such as dorotatesprite menus/HUD. */
 extern int d3d_gpu_force_cpu_spans;
+/* A/B switch for dorotatesprite. 1 keeps byte-sensitive HUD/menu sprites on
+ * Ken's original CPU loops; 0 lets the existing GPU span hooks run. */
+extern int d3d_gpu_force_rotatesprite_cpu;
+/* A/B switch for the compact hardware SPAN4 command. 0 emits the proven
+ * four scalar column spans; 1 uses SPAN4. */
+extern int d3d_gpu_use_span4;
+/* A/B switch for the raw mixed command-stream DMA path. 0 uses homogeneous
+ * scalar DRAW_SPANS_BATCH; 1 batches complete DRAW_SPAN/SPAN4 commands. */
+extern int d3d_gpu_use_command_stream_batch;
+
+/* Runtime perf logging.  Default-off so UART logging does not distort FPS. */
+extern int d3d_gpu_perf_enable;
+extern int d3d_gpu_perf_deep_enable;
+/* Opt-in only: per-path timings call the timer syscall in the inner render
+ * wrappers. Path call/span/pixel counters still work when this is 0. */
+extern int d3d_gpu_perf_time_paths;
+
+enum {
+    D3D_GPU_PERF_PHASE_DISPLAYROOMS = 0,
+    D3D_GPU_PERF_PHASE_DRAWROOMS,
+    D3D_GPU_PERF_PHASE_DRAWMASKS,
+    D3D_GPU_PERF_PHASE_COUNT
+};
+
+enum {
+    D3D_GPU_PERF_ZONE_CEILSCAN = 0,
+    D3D_GPU_PERF_ZONE_FLORSCAN,
+    D3D_GPU_PERF_ZONE_WALLSCAN,
+    D3D_GPU_PERF_ZONE_MASKWALLSCAN,
+    D3D_GPU_PERF_ZONE_TRANSMASKWALLSCAN,
+    D3D_GPU_PERF_ZONE_DRAWMASKWALL,
+    D3D_GPU_PERF_ZONE_DRAWSPRITE,
+    D3D_GPU_PERF_ZONE_DOROTATESPRITE,
+    D3D_GPU_PERF_ZONE_COUNT
+};
 
 void d3d_gpu_init(void);
 void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels);
 void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades);
 void d3d_gpu_flush(void);
+
+void d3d_gpu_perf_note_cpu_fallback(void);
+void d3d_gpu_perf_note_phase(int phase, uint32_t us);
+void d3d_gpu_perf_note_zone(int zone, uint32_t us);
+void d3d_gpu_perf_report_frame(uint32_t frame_period_us,
+                               uint32_t render_us,
+                               uint32_t page_us,
+                               uint32_t wait_flip_us,
+                               uint32_t drain_batch_us,
+                               uint32_t flip_emit_us,
+                               uint32_t acquire_us,
+                               uint32_t audio_us);
 
 /* Drain pending span buffer to the GPU ring without emitting a fence.
  * Used by the GPU-triggered flip path in display_of.c::_nextpage —
@@ -121,8 +168,8 @@ void d3d_gpu_prepare_cpu_fb_write(void);
  * palookup slot, or can be lazily uploaded into one.  Returns -1 if no
  * slot is available; caller must fall back to the SW path so the draw
  * uses the correct per-pal shading.  The slot variant also reports the
- * selected slot so multi-span callers can avoid mixing sticky colormap
- * state inside one GPU batch. */
+ * selected slot, which the span encoder can put in word 6's colormap_id
+ * nibble. */
 int  d3d_gpu_shade_for(const uint8_t *palookupoffse);
 int  d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out);
 
@@ -171,9 +218,8 @@ void d3d_gpu_mvline(uint8_t *dest, int num_pixels, int shade,
                     uint32_t vplce, uint32_t vince, uint8_t v_shift,
                     const uint8_t *texture);
 
-/* 4-column batch (vlineasm4 replacement).  Submits 4 separate spans
- * to the GPU; the per-pixel pack-into-uint32 trick the SW path uses is
- * a CPU-side optimisation only, the mixer/GPU sees them identically. */
+/* Compact hardware 4-column batch (vlineasm4 replacement).  The try-helper
+ * defaults to four scalar spans while SPAN4 remains an opt-in A/B path. */
 void d3d_gpu_vline4(uint8_t *fb_at_y0, int num_pixels,
                     const int shade[4],
                     const uint32_t vplce[4],
@@ -197,11 +243,9 @@ void d3d_gpu_mvline4(uint8_t *fb_at_y0, int num_pixels,
  * GPU is doing the work, the CPU MUST NOT write the framebuffer on the
  * converted paths.  The helpers below are therefore unconditional —
  * NO try/return fallback; the caller's CPU loop is dead code.  If a
- * helper hits a fabric gap (e.g. the active palookup isn't pal0 so
- * d3d_gpu_shade_for returns -1), it skips the draw rather than
- * silently writing the wrong shading; missing translucent geometry is
- * an honest signal that the gap is real.  See transluc.md "Open
- * questions" for the multi-colormap and resource-table follow-ups.
+ * helper hits a fabric gap (for example no palookup slot is available),
+ * it skips the draw rather than silently writing the wrong shading;
+ * missing translucent geometry is an honest signal that the gap is real.
  *
  * The host fabric is expected to already advertise OF_HW_GPU_TRANSLUC
  * (capability gating is stage 7); on bitstreams without the BLEND unit

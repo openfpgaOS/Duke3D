@@ -2,7 +2,7 @@
  * d3d_save.h -- Save file I/O for openfpgaOS
  *
  * Each game save has its own nonvolatile save slot (0-9).
- * Uses fopen("save_N")/fread/fwrite/fclose — the OS auto-flushes
+ * Uses the APF manifest filenames duke3d_N.sav; the OS auto-flushes
  * to SD card with actual written size on fclose().
  */
 

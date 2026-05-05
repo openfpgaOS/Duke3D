@@ -21,6 +21,7 @@
 #include "../../d3d_audio.h"
 #include "../../d3d_gpu.h"
 #include "of_midi.h"
+#include "of_timer.h"
 #include "engine.h"
 #include "draw.h"
 #include "cache.h"
@@ -332,6 +333,19 @@ void _nextpage(void)
 {
     ensure_video_init();
 
+    static uint32_t last_page_begin_us = 0;
+    static uint32_t last_page_end_us = 0;
+    uint32_t page_begin_us = d3d_gpu_perf_enable ? of_time_us() : 0;
+    uint32_t frame_period_us = 0;
+    uint32_t render_us = 0;
+    if (d3d_gpu_perf_enable) {
+        frame_period_us = last_page_begin_us ?
+            (page_begin_us - last_page_begin_us) : 0;
+        render_us = last_page_end_us ?
+            (page_begin_us - last_page_end_us) : 0;
+        last_page_begin_us = page_begin_us;
+    }
+
     _handle_events();
 
     /* BUILD already rendered into the HW back buffer (via frameplace).
@@ -358,20 +372,40 @@ void _nextpage(void)
      * the next CMD_FLIP — without this, gpu_swap_req could pulse while
      * fb_swap_pending=1 from the previous frame, overwriting the queued
      * slot.  At typical render times the wait collapses to ~0. */
+    uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
     of_video_wait_flip();
+    uint32_t wait_flip_us = t0 ? (of_time_us() - t0) : 0;
 
     /* Ship pending spans + emit CMD_FLIP for the current draw idx.
      * Both go through d3d_gpu wrappers because of_gpu.h's static ring
      * state (_gpu_wrptr, _gpu_fence_next) MUST live in exactly one TU
      * — d3d_gpu.c. */
+    t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
     d3d_gpu_drain_batch();
-    uint32_t flip_token = d3d_gpu_flip_to(draw_idx);
+    uint32_t drain_batch_us = t0 ? (of_time_us() - t0) : 0;
 
+    t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+    uint32_t flip_token = d3d_gpu_flip_to(draw_idx);
+    uint32_t flip_emit_us = t0 ? (of_time_us() - t0) : 0;
+
+    t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
     draw_idx = of_video_acquire_next(draw_idx, flip_token);
+    uint32_t acquire_us = t0 ? (of_time_us() - t0) : 0;
 
     retarget_frameplace_at(of_video_buffer_addr(draw_idx));
 
+    t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
     d3d_audio_pump();
+    uint32_t audio_us = t0 ? (of_time_us() - t0) : 0;
+
+    if (d3d_gpu_perf_enable) {
+        uint32_t page_end_us = of_time_us();
+        uint32_t page_us = page_end_us - page_begin_us;
+        d3d_gpu_perf_report_frame(frame_period_us, render_us, page_us,
+                                  wait_flip_us, drain_batch_us, flip_emit_us,
+                                  acquire_us, audio_us);
+        last_page_end_us = of_time_us();
+    }
 }
 
 void VBE_setPalette(uint8_t *palettebuffer)

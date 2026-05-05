@@ -127,6 +127,7 @@ OF_FASTTEXT void rhlineasm4(int32_t i1, const uint8_t* texture, int32_t i3, uint
         int shade = d3d_gpu_shade_for(rmach_edx);
         if (d3d_gpu_rhline(dest, i1, shade, i4, 0, i5, 0, 0, texture))
             return;
+        d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_pre_cpu_fb_access();
     }
 #endif
@@ -188,6 +189,7 @@ OF_FASTTEXT void rmhlineasm4(int32_t i1, const uint8_t* shade, int32_t colorInde
         if (d3d_gpu_rmhline(dest, i1, shade_idx,
                             (uint32_t)i4, 0, (uint32_t)i5, 0, 0, shade))
             return;
+        d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_pre_cpu_fb_access();
     }
 #endif
@@ -321,6 +323,7 @@ OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t * restrict texture, int
                            source, local_transrev);
             return i4 + i1 * (numPixels + 1);
         }
+        d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_prepare_cpu_fb_write();
     }
 #endif
@@ -398,6 +401,7 @@ OF_FASTTEXT void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4
             asm2 = (intptr_t)(i1 + (uint32_t)saved_asm1 * (uint32_t)count);
             return;
         }
+        d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_prepare_cpu_fb_write();
     }
 #endif
@@ -530,7 +534,7 @@ OF_FASTTEXT void vlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
 
 #ifdef OPENFPGA
     if (d3d_gpu_try_vline4(framebuffer,
-                           (int)(length / (uint32_t)local_bpl) + 1,
+                           (int)(length / (uint32_t)local_bpl),
                            local_shift))
         return;
 #endif
@@ -585,7 +589,7 @@ OF_FASTTEXT void mvlineasm4(int32_t columnIndex, uint8_t * restrict framebuffer)
 
 #ifdef OPENFPGA
     if (d3d_gpu_try_mvline4(framebuffer,
-                            (int)(length / (uint32_t)local_bpl) + 1,
+                            (int)(length / (uint32_t)local_bpl),
                             local_shift))
         return;
 #endif
@@ -703,6 +707,7 @@ OF_FASTTEXT void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t 
                                  texture, local_transrev);
             return;
         }
+        d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_prepare_cpu_fb_write();
     }
 #endif
@@ -813,6 +818,7 @@ OF_FASTTEXT void mhlineskipmodify( uint32_t i2, int32_t numPixels, int32_t i5, u
                            local_texture);
             return;
         }
+        d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_prepare_cpu_fb_write();
     }
 #endif
@@ -884,6 +890,7 @@ OF_FASTTEXT void thlineskipmodify(int32_t i1, uint32_t i2, uint32_t i3, int32_t 
                            local_tex, local_transrev);
             return;
         }
+        d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_prepare_cpu_fb_write();
     }
 #endif

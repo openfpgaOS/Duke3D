@@ -30,6 +30,27 @@ uint8_t  *pic = NULL;
 
 uint8_t  gotpic[(MAXTILES+7)>>3];
 
+#ifdef OPENFPGA
+static void tile_sync_for_gpu(uint8_t *ptr, uint32_t size)
+{
+    if (!ptr || size == 0)
+        return;
+
+    /* The GPU can consume a just-loaded tile in the same render pass.
+     * of_cache_flush_range() starts writeback, but that writeback is not
+     * ordered against the GPU master on this fabric.  Mirror the bytes through
+     * the uncached SDRAM alias so the texture cache fills from committed DRAM.
+     */
+    volatile uint8_t *dst = (volatile uint8_t *)of_uncached(ptr);
+    for (uint32_t i = 0; i < size; i++)
+        dst[i] = ptr[i];
+    __asm__ volatile("fence" ::: "memory");
+
+    of_cache_flush_range(ptr, size);
+    d3d_gpu_mark_tex_dirty();
+}
+#endif
+
 void setviewtotile(short tilenume, int32_t tileWidth, int32_t tileHeight)
 {
     int32_t i, j;
@@ -167,23 +188,7 @@ void loadtile(short tilenume)
     artfilplc = tilefileoffs[tilenume]+tileFilesize;
 
 #ifdef OPENFPGA
-    /* Two-step coherency, deferred to safe boundaries:
-     *   1. CPU D-cache writeback+invalidate (now) — fresh tile bytes
-     *      hit SDRAM where the GPU's M0 AXI master can see them.
-     *      MUST be cbo.flush, not cbo.clean: clean is unreliable on
-     *      this VexiiRiscv config (some dirty lines stay in L1) and
-     *      the GPU then reads stale zeros from SDRAM, rendering every
-     *      textured pixel as pal[0] (black).  This surfaced after the
-     *      switch to CMD_DRAW_SPANS_BATCH+DMA tightened the loop —
-     *      the old per-span MMIO path was slow enough that L1 dirty
-     *      lines drained organically before the GPU caught up.
-     *   2. GPU tex-cache invalidate (next frame boundary, via the
-     *      gpu_tex_dirty flag drained in d3d_gpu_set_fb) — drops any
-     *      stale GPU-cached lines for this address.  Doing the GPU
-     *      flush inline here wedged the FB-write fence path because
-     *      the cache walk overlapped in-flight span draws. */
-    of_cache_flush_range(ptr, (uint32_t)tileFilesize);
-    d3d_gpu_mark_tex_dirty();
+    tile_sync_for_gpu(ptr, (uint32_t)tileFilesize);
 #endif
 }
 
@@ -392,6 +397,10 @@ void copytilepiece(int32_t tilenume1, int32_t sx1, int32_t sy1, int32_t xsiz, in
             x1++;
             if (x1 >= xsiz1) x1 = 0;
         }
+
+#ifdef OPENFPGA
+        tile_sync_for_gpu(tiles[tilenume2].data, (uint32_t)(xsiz2 * ysiz2));
+#endif
     }
 }
 

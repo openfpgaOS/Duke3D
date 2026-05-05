@@ -29,6 +29,16 @@
 #include "of_fastram.h"
 #include "of_timer.h"
 #include "../../d3d_gpu.h"
+#define D3D_PERF_CALL(zone, expr) \
+    do { \
+        uint32_t d3d_perf_call_t0 = \
+            (d3d_gpu_perf_enable && d3d_gpu_perf_deep_enable) ? \
+            of_time_us() : 0; \
+        expr; \
+        if (d3d_perf_call_t0) \
+            d3d_gpu_perf_note_zone((zone), \
+                                   of_time_us() - d3d_perf_call_t0); \
+    } while (0)
 /* APP_BRAM is only 14 KB on the current SDK and draw.c's per-pixel
  * inner loops already fill it.  Most engine.c renderers are
  * per-scanline (one call per scanline of one wall/floor/ceiling), big
@@ -50,6 +60,7 @@
 #define OF_FASTTEXT
 #define OF_FASTDATA
 #define OF_FASTTEXT_PIN
+#define D3D_PERF_CALL(zone, expr) do { expr; } while (0)
 #endif
 
 int32_t stereowidth = 23040, stereopixelwidth = 28, ostereopixelwidth = -1;
@@ -1702,7 +1713,8 @@ static void parascan(int32_t dax1, int32_t dax2, int32_t sectnum,uint8_t  dastat
             globalpicnum = l+pskyoff[lplc[x]>>m];
 
             if (((lplc[x]^lplc[pvWalls[z].screenSpaceCoo[0][VEC_COL]-1])>>m) == 0)
-                wallscan(x,pvWalls[z].screenSpaceCoo[0][VEC_COL]-1,topptr,botptr,swplc,lplc);
+                D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                              wallscan(x,pvWalls[z].screenSpaceCoo[0][VEC_COL]-1,topptr,botptr,swplc,lplc));
             else
             {
                 j = x;
@@ -1711,14 +1723,16 @@ static void parascan(int32_t dax1, int32_t dax2, int32_t sectnum,uint8_t  dastat
                     n = l+pskyoff[lplc[x]>>m];
                     if (n != globalpicnum)
                     {
-                        wallscan(j,x-1,topptr,botptr,swplc,lplc);
+                        D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                                      wallscan(j,x-1,topptr,botptr,swplc,lplc));
                         j = x;
                         globalpicnum = n;
                     }
                     x++;
                 }
                 if (j < x)
-                    wallscan(j,x-1,topptr,botptr,swplc,lplc);
+                    D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                                  wallscan(j,x-1,topptr,botptr,swplc,lplc));
             }
 
             globalpicnum = l;
@@ -1733,7 +1747,8 @@ static void parascan(int32_t dax1, int32_t dax2, int32_t sectnum,uint8_t  dastat
         globalpicnum = l+pskyoff[lplc[x]>>m];
 
         if (((lplc[x]^lplc[pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL]])>>m) == 0)
-            wallscan(x,pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],topptr,botptr,swplc,lplc);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                          wallscan(x,pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],topptr,botptr,swplc,lplc));
         else
         {
             j = x;
@@ -1742,14 +1757,16 @@ static void parascan(int32_t dax1, int32_t dax2, int32_t sectnum,uint8_t  dastat
                 n = l+pskyoff[lplc[x]>>m];
                 if (n != globalpicnum)
                 {
-                    wallscan(j,x-1,topptr,botptr,swplc,lplc);
+                    D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                                  wallscan(j,x-1,topptr,botptr,swplc,lplc));
                     j = x;
                     globalpicnum = n;
                 }
                 x++;
             }
             if (j <= x)
-                wallscan(j,x,topptr,botptr,swplc,lplc);
+                D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                              wallscan(j,x,topptr,botptr,swplc,lplc));
         }
         globalpicnum = l;
     }
@@ -2250,7 +2267,8 @@ static void drawalls(int32_t bunch)
         if ((sec->ceilingstat&3) == 2)
             grouscan(pvWalls[bunchfirst[bunch]].screenSpaceCoo[0][VEC_COL],pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],sectnum,0);
         else if ((sec->ceilingstat&1) == 0)
-            ceilscan(pvWalls[bunchfirst[bunch]].screenSpaceCoo[0][VEC_COL],pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],sectnum);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_CEILSCAN,
+                          ceilscan(pvWalls[bunchfirst[bunch]].screenSpaceCoo[0][VEC_COL],pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],sectnum));
         else
             parascan(pvWalls[bunchfirst[bunch]].screenSpaceCoo[0][VEC_COL],pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],sectnum,0,bunch);
     }
@@ -2260,7 +2278,8 @@ static void drawalls(int32_t bunch)
         if ((sec->floorstat&3) == 2)
             grouscan(pvWalls[bunchfirst[bunch]].screenSpaceCoo[0][VEC_COL],pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],sectnum,1);
         else if ((sec->floorstat&1) == 0)
-            florscan(pvWalls[bunchfirst[bunch]].screenSpaceCoo[0][VEC_COL],pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],sectnum);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_FLORSCAN,
+                          florscan(pvWalls[bunchfirst[bunch]].screenSpaceCoo[0][VEC_COL],pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],sectnum));
         else
             parascan(pvWalls[bunchfirst[bunch]].screenSpaceCoo[0][VEC_COL],pvWalls[bunchlast[bunch]].screenSpaceCoo[1][VEC_COL],sectnum,1,bunch);
     }
@@ -2374,7 +2393,8 @@ static void drawalls(int32_t bunch)
                         gotswall = 1;
                         prepwall(z,wal);
                     }
-                    wallscan(x1,x2,uplc,dwall,swall,lwall);
+                    D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                                  wallscan(x1,x2,uplc,dwall,swall,lwall));
 
                     if ((cz[2] >= cz[0]) && (cz[3] >= cz[1])){
                         for(x=x1; x<=x2; x++)
@@ -2487,7 +2507,8 @@ static void drawalls(int32_t bunch)
                         gotswall = 1;
                         prepwall(z,wal);
                     }
-                    wallscan(x1,x2,uwall,dplc,swall,lwall);
+                    D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                                  wallscan(x1,x2,uwall,dplc,swall,lwall));
 
                     if ((fz[2] <= fz[0]) && (fz[3] <= fz[1]))
                     {
@@ -2604,7 +2625,8 @@ static void drawalls(int32_t bunch)
                 prepwall(z,wal);
             }
             
-            wallscan(x1,x2,uplc,dplc,swall,lwall);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_WALLSCAN,
+                          wallscan(x1,x2,uplc,dplc,swall,lwall));
 
             for(x=x1; x<=x2; x++)
                 if (umost[x] <= dmost[x])
@@ -2821,6 +2843,9 @@ void drawrooms(int32_t daposx, int32_t daposy, int32_t daposz,short daang, int32
 	//Ceiling and Floor height at the player position.
 	int32_t cz, fz;
     short *shortptr1, *shortptr2;
+#ifdef OPENFPGA
+    uint32_t perf_t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+#endif
 
 	// When visualizing the rendering process, part of the screen
 	// are not updated: In order to avoid the "ghost effect", we
@@ -3062,6 +3087,11 @@ void drawrooms(int32_t daposx, int32_t daposy, int32_t daposz,short daang, int32
         bunchfirst[closest] = bunchfirst[numbunches];
         bunchlast[closest] = bunchlast[numbunches];
     }
+#ifdef OPENFPGA
+    if (perf_t0)
+        d3d_gpu_perf_note_phase(D3D_GPU_PERF_PHASE_DRAWROOMS,
+                                of_time_us() - perf_t0);
+#endif
 }
 
 
@@ -3197,6 +3227,10 @@ static void transmaskvline2 (int32_t x)
 static OF_FASTTEXT void transmaskwallscan(int32_t x1, int32_t x2)
 {
     int32_t x;
+#ifdef OPENFPGA
+    int openfpga_saved_force_cpu_spans = 0;
+    int openfpga_forced_cpu_spans = 0;
+#endif
 
     setgotpic(globalpicnum);
     
@@ -3207,11 +3241,24 @@ static OF_FASTTEXT void transmaskwallscan(int32_t x1, int32_t x2)
 
     TILE_MakeAvailable(globalpicnum);
 
+#ifdef OPENFPGA
+    if (d3d_gpu_present && d3d_gpu_use_spans) {
+        d3d_gpu_prepare_cpu_fb_write();
+        openfpga_saved_force_cpu_spans = d3d_gpu_force_cpu_spans;
+        d3d_gpu_force_cpu_spans = 1;
+        openfpga_forced_cpu_spans = 1;
+    }
+#endif
+
     x = x1;
     while ((startumost[x+windowx1] > startdmost[x+windowx1]) && (x <= x2)) x++;
     if ((x <= x2) && (x&1)) transmaskvline(x), x++;
     while (x < x2) transmaskvline2(x), x += 2;
     while (x <= x2) transmaskvline(x), x++;
+#ifdef OPENFPGA
+    if (openfpga_forced_cpu_spans)
+        d3d_gpu_force_cpu_spans = openfpga_saved_force_cpu_spans;
+#endif
     faketimerhandler();
 }
 
@@ -4031,14 +4078,11 @@ static void dorotatesprite (int32_t sx, int32_t sy, int32_t z, short a, short pi
         permanentupdate = 1;
 
 #ifdef OPENFPGA
-    /* Menus, HUD and other BUILD 2D sprites go through this routine,
-     * often using the same vline inner loops as wall rendering.  Keep
-     * 3D walls/floors on the GPU, but render dorotatesprite itself
-     * through Ken's original CPU loops until the 2D span replacements
-     * are byte-stable.  This is write-only through the uncached
-     * framebuffer alias, so we only need to drain GPU writes for
-     * ordering, not flush the whole D-cache. */
-    if (d3d_gpu_present && d3d_gpu_use_spans) {
+    /* Menus, HUD and other BUILD 2D sprites go through this routine.
+     * Keep them on Ken's original CPU loops by default; the GPU span
+     * replacements remain opt-in until their 2D output is byte-stable. */
+    if (d3d_gpu_present && d3d_gpu_use_spans &&
+        d3d_gpu_force_rotatesprite_cpu) {
         d3d_gpu_prepare_cpu_fb_write();
         openfpga_saved_force_cpu_spans = d3d_gpu_force_cpu_spans;
         d3d_gpu_force_cpu_spans = 1;
@@ -4392,7 +4436,8 @@ void nextpage(void)
         {
             per = &permfifo[i];
             if ((per->pagesleft > 0) && (per->pagesleft <= numpages))
-                dorotatesprite(per->sx,per->sy,per->z,per->a,per->picnum,per->dashade,per->dapalnum,per->dastat,per->cx1,per->cy1,per->cx2,per->cy2);
+                D3D_PERF_CALL(D3D_GPU_PERF_ZONE_DOROTATESPRITE,
+                              dorotatesprite(per->sx,per->sy,per->z,per->a,per->picnum,per->dashade,per->dapalnum,per->dastat,per->cx1,per->cy1,per->cx2,per->cy2));
         }
     } /* if */
 
@@ -4405,9 +4450,10 @@ void nextpage(void)
         {
             per = &permfifo[i];
             if (per->pagesleft >= 130)
-                dorotatesprite(per->sx,per->sy,per->z,per->a,per->picnum,
-                               per->dashade,per->dapalnum,per->dastat,
-                               per->cx1,per->cy1,per->cx2,per->cy2);
+                D3D_PERF_CALL(D3D_GPU_PERF_ZONE_DOROTATESPRITE,
+                              dorotatesprite(per->sx,per->sy,per->z,per->a,per->picnum,
+                                             per->dashade,per->dapalnum,per->dastat,
+                                             per->cx1,per->cy1,per->cx2,per->cy2));
             if (per->pagesleft&127) per->pagesleft--;
             if (((per->pagesleft&127) == 0) && (i == permtail))
                 permtail = ((permtail+1)&(MAXPERMS-1));
@@ -4785,7 +4831,8 @@ static void drawmaskwall(short damaskwallcnt)
         }
 
     if ((globalorientation&128) == 0)
-        maskwallscan(pvWalls[z].screenSpaceCoo[0][VEC_COL],pvWalls[z].screenSpaceCoo[1][VEC_COL],uwall,dwall,swall,lwall);
+        D3D_PERF_CALL(D3D_GPU_PERF_ZONE_MASKWALLSCAN,
+                      maskwallscan(pvWalls[z].screenSpaceCoo[0][VEC_COL],pvWalls[z].screenSpaceCoo[1][VEC_COL],uwall,dwall,swall,lwall));
     else
     {
         if (globalorientation&128)
@@ -4795,7 +4842,8 @@ static void drawmaskwall(short damaskwallcnt)
             else 
 				settrans(TRANS_NORMAL);
         }
-        transmaskwallscan(pvWalls[z].screenSpaceCoo[0][VEC_COL],pvWalls[z].screenSpaceCoo[1][VEC_COL]);
+        D3D_PERF_CALL(D3D_GPU_PERF_ZONE_TRANSMASKWALLSCAN,
+                      transmaskwallscan(pvWalls[z].screenSpaceCoo[0][VEC_COL],pvWalls[z].screenSpaceCoo[1][VEC_COL]));
     }
 }
 
@@ -5103,9 +5151,11 @@ static void drawsprite (int32_t snum)
         clearbuf(&swall[lx],rx-lx+1,mulscale19(yp,xdimscale));
 
         if ((cstat&2) == 0)
-            maskwallscan(lx,rx,uwall,dwall,swall,lwall);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_MASKWALLSCAN,
+                          maskwallscan(lx,rx,uwall,dwall,swall,lwall));
         else
-            transmaskwallscan(lx,rx);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_TRANSMASKWALLSCAN,
+                          transmaskwallscan(lx,rx));
     }
     else if ((cstat&48) == 16)
     {
@@ -5377,9 +5427,11 @@ static void drawsprite (int32_t snum)
             }
 
         if ((cstat&2) == 0)
-            maskwallscan(pvWalls[MAXWALLSB-1].screenSpaceCoo[0][VEC_COL],pvWalls[MAXWALLSB-1].screenSpaceCoo[1][VEC_COL],uwall,dwall,swall,lwall);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_MASKWALLSCAN,
+                          maskwallscan(pvWalls[MAXWALLSB-1].screenSpaceCoo[0][VEC_COL],pvWalls[MAXWALLSB-1].screenSpaceCoo[1][VEC_COL],uwall,dwall,swall,lwall));
         else
-            transmaskwallscan(pvWalls[MAXWALLSB-1].screenSpaceCoo[0][VEC_COL],pvWalls[MAXWALLSB-1].screenSpaceCoo[1][VEC_COL]);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_TRANSMASKWALLSCAN,
+                          transmaskwallscan(pvWalls[MAXWALLSB-1].screenSpaceCoo[0][VEC_COL],pvWalls[MAXWALLSB-1].screenSpaceCoo[1][VEC_COL]));
     }
     else if ((cstat&48) == 32)
     {
@@ -5748,6 +5800,9 @@ void drawmasks(void)
 {
     int32_t i, j, k, l, gap, xs, ys, xp, yp, yoff, yspan;
     /* int32_t zs, zp; */
+#ifdef OPENFPGA
+    uint32_t perf_t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+#endif
 
     //Copy sprite address in a sprite proxy structure (pointers are easier to re-arrange than structs).
     for(i=spritesortcnt-1; i>=0; i--)
@@ -5849,7 +5904,8 @@ void drawmasks(void)
     {
         j = maskwall[maskwallcnt-1];
         if (spritewallfront(tspriteptr[spritesortcnt-1],pvWalls[j].worldWallId) == 0)
-            drawsprite(--spritesortcnt);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_DRAWSPRITE,
+                          drawsprite(--spritesortcnt));
         else
         {
             /* Check to see if any sprites behind the masked wall... */
@@ -5859,7 +5915,8 @@ void drawmasks(void)
                 if ((pvWalls[j].screenSpaceCoo[0][VEC_COL] <= (spritesx[i]>>8)) && ((spritesx[i]>>8) <= pvWalls[j].screenSpaceCoo[1][VEC_COL]))
                     if (spritewallfront(tspriteptr[i],pvWalls[j].worldWallId) == 0)
                     {
-                        drawsprite(i);
+                        D3D_PERF_CALL(D3D_GPU_PERF_ZONE_DRAWSPRITE,
+                                      drawsprite(i));
                         tspriteptr[i]->owner = -1;
                         k = i;
                         gap++;
@@ -5881,11 +5938,21 @@ void drawmasks(void)
             }
 
             /* finally safe to draw the masked wall */
-            drawmaskwall(--maskwallcnt);
+            D3D_PERF_CALL(D3D_GPU_PERF_ZONE_DRAWMASKWALL,
+                          drawmaskwall(--maskwallcnt));
         }
     }
-    while (spritesortcnt > 0) drawsprite(--spritesortcnt);
-    while (maskwallcnt > 0) drawmaskwall(--maskwallcnt);
+    while (spritesortcnt > 0)
+        D3D_PERF_CALL(D3D_GPU_PERF_ZONE_DRAWSPRITE,
+                      drawsprite(--spritesortcnt));
+    while (maskwallcnt > 0)
+        D3D_PERF_CALL(D3D_GPU_PERF_ZONE_DRAWMASKWALL,
+                      drawmaskwall(--maskwallcnt));
+#ifdef OPENFPGA
+    if (perf_t0)
+        d3d_gpu_perf_note_phase(D3D_GPU_PERF_PHASE_DRAWMASKS,
+                                of_time_us() - perf_t0);
+#endif
 }
 
 
@@ -8133,7 +8200,8 @@ void rotatesprite(int32_t sx, int32_t sy, int32_t z, short a, short picnum,
         return;
 
     if (((dastat&128) == 0) || (numpages < 2) || (beforedrawrooms != 0))
-        dorotatesprite(sx,sy,z,a,picnum,dashade,dapalnum,dastat,cx1,cy1,cx2,cy2);
+        D3D_PERF_CALL(D3D_GPU_PERF_ZONE_DOROTATESPRITE,
+                      dorotatesprite(sx,sy,z,a,picnum,dashade,dapalnum,dastat,cx1,cy1,cx2,cy2));
 
     if ((dastat&64) && (cx1 <= 0) && (cy1 <= 0) && (cx2 >= xdim-1) && (cy2 >= ydim-1) &&
             (sx == (160<<16)) && (sy == (100<<16)) && (z == 65536L) && (a == 0) && ((dastat&1) == 0))

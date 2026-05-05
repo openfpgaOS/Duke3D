@@ -56,9 +56,10 @@ struct of_services_table {
      * of the buffer they just emitted CMD_FLIP for and the fence
      * token the SDK helper returned (or -1, 0 on first call).  Kernel
      * waits for fence_reached >= token (proves CMD_FLIP retired and
-     * fb_swap_pending=1 was latched), then for fb_swap_pending → 0
-     * (proves vsync swap completed), then returns the next free
-     * draw idx.  buffer_addr(idx) — returns FB address of the given idx. */
+     * fb_swap_pending=1 was latched), then returns the third buffer:
+     * not current scanout and not queued for next vsync.  It does not
+     * wait for vsync.  buffer_addr(idx) — returns FB address of the
+     * given idx. */
     int       (*video_acquire_next)(int just_flipped_idx, uint32_t fence_token);
     uint8_t * (*video_buffer_addr)(int idx);
 

@@ -1,11 +1,10 @@
 /*
  * d3d_save.c -- Save file I/O for openfpgaOS.
  *
- * Each game save lives in its own nonvolatile slot; on openfpgaOS the
- * kernel exposes slots through a POSIX-style VFS where "save_N",
- * "save:N", and "slot:10+N" all alias the same backing store.  We
- * use the bare "save_N" form here (matches src/apps/savea/saveb/).
- * The OS auto-flushes to SD on fclose().
+ * Each game save lives in its own nonvolatile APF data slot.  Duke's
+ * core metadata names those slots duke3d_0.sav .. duke3d_9.sav, so we
+ * open the manifest filenames directly instead of relying on save_N
+ * aliases.  The OS auto-flushes to SD on fclose().
  *
  * File layout written by us (BUILD's dfread/dfwrite expects an
  * uncompressed body; the wrapper adds a small fixed header so we can
@@ -36,7 +35,7 @@ static OfSaveFile save_pool[D3D_MAXSAVES];
 static int        save_pool_used[D3D_MAXSAVES];
 
 static void slot_path(int slot, char *out, size_t out_len) {
-    snprintf(out, out_len, "save_%d", slot);
+    snprintf(out, out_len, "duke3d_%d.sav", slot);
 }
 
 OfSaveFile *save_fopen(int slot, const char *mode) {
@@ -56,7 +55,7 @@ OfSaveFile *save_fopen(int slot, const char *mode) {
     sf->writing   = (mode[0] == 'w');
     sf->error     = 0;
 
-    char path[16];
+    char path[32];
     slot_path(slot, path, sizeof(path));
 
     /* "wb" truncates so previous saves don't leave stale bytes past
@@ -180,7 +179,7 @@ int save_fclose(OfSaveFile *sf) {
          * inline from the same handle silently drops on close.
          * Reopening with "r+b" gives us a writable handle with random
          * access on the now-persisted bytes. */
-        char path[16];
+        char path[32];
         slot_path(slot, path, sizeof(path));
         FILE *fp = fopen(path, "r+b");
         if (fp) {
@@ -210,7 +209,7 @@ int save_fclose(OfSaveFile *sf) {
 int save_slot_valid(int slot) {
     if (slot < 0 || slot >= D3D_MAXSAVES) return 0;
 
-    char path[16];
+    char path[32];
     slot_path(slot, path, sizeof(path));
 
     FILE *f = fopen(path, "rb");

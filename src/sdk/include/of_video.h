@@ -52,11 +52,13 @@ static inline void of_video_wait_flip(void) {
  * just_flipped_idx=-1 and fence_token=0 — the kernel returns the
  * initial draw idx without any wait.
  *
- * The kernel waits for fence_reached>=fence_token (proves CMD_FLIP
- * retired and the slave latched fb_swap_pending=1) and then for
- * fb_swap_pending to clear (proves the vsync swap completed).  Both
- * waits are bounded so a stuck GPU or missing vsync can't hang the
- * app.  Pair with of_video_buffer_addr(idx) to get the FB address. */
+ * The kernel waits only for fence_reached>=fence_token (proves
+ * CMD_FLIP retired and the slave latched fb_swap_pending=1), then
+ * returns the third buffer: not current scanout and not queued for
+ * next vsync.  It does not wait for the vsync swap to complete, so
+ * rendering can overlap scanout.  Pair with of_video_wait_flip()
+ * before queuing another flip if the app wants one outstanding flip
+ * at a time, and with of_video_buffer_addr(idx) to get the FB address. */
 static inline int of_video_acquire_next(int just_flipped_idx,
                                          uint32_t fence_token) {
     return OF_SVC->video_acquire_next(just_flipped_idx, fence_token);
