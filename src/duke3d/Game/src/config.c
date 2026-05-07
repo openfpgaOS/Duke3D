@@ -50,14 +50,15 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "../../d3d_save.h"
 #include "of_file.h"
 #define OPENFPGA_SETTINGS_SLOT 9
-#define OPENFPGA_SETUPFILENAME "slot:9"
+#define OPENFPGA_SETTINGS_FILENAME SETUPFILENAME
+#define OPENFPGA_SETUPFILENAME OPENFPGA_SETTINGS_FILENAME
 
 static void CONFIG_RegisterSettingsSlot(void)
 {
 	static int registered = 0;
 	if (registered)
 		return;
-	of_file_slot_register(OPENFPGA_SETTINGS_SLOT, SETUPFILENAME);
+	of_file_slot_register(OPENFPGA_SETTINGS_SLOT, OPENFPGA_SETTINGS_FILENAME);
 	registered = 1;
 }
 #endif
@@ -243,7 +244,11 @@ void CONFIG_SetDefaults( void )
    FXVolume = 220;
    MusicVolume = 200;
    FXDevice = SC_SoundScape;
+#ifdef OPENFPGA
+   MusicDevice = SC_SoundScape;
+#else
    MusicDevice = -1;
+#endif
    ReverseStereo = 0;
    
    // mouse
@@ -320,7 +325,6 @@ void CONFIG_ReadKeys( void )
         CONTROL_MapKey( function, key1, key2 );
 	}
 
-   
        numkeyentries = SCRIPT_NumberEntries( scripthandle, "KeyDefinitions" );
 
    for (i=0;i<numkeyentries;i++)  // i = number in which the functions appear in duke3d.cfg
@@ -633,8 +637,6 @@ void CONFIG_ReadSetup( void )
    char  commmacro[] = COMMMACRO;
    FILE* setup_file_hdl;
 
-   printf("CONFIG_ReadSetup...\n");
-
 #ifdef OPENFPGA
    CONFIG_RegisterSettingsSlot();
    strcpy(setupfilename, OPENFPGA_SETUPFILENAME);
@@ -760,6 +762,10 @@ void CONFIG_ReadSetup( void )
 	
    SCRIPT_GetNumber( scripthandle, "Sound Setup", "MidiPort",&MidiPort);
    SCRIPT_GetNumber( scripthandle, "Sound Setup", "ReverseStereo",&ReverseStereo);
+#ifdef OPENFPGA
+   FXDevice = SC_SoundScape;
+   MusicDevice = SC_SoundScape;
+#endif
    SCRIPT_GetNumber( scripthandle, "Controls","ControllerType",&ControllerType);
    SCRIPT_GetNumber( scripthandle, "Controls","MouseAimingFlipped",&ud.mouseflip);
    SCRIPT_GetNumber( scripthandle, "Controls","MouseAiming",&MouseAiming);
@@ -823,8 +829,6 @@ void CONFIG_WriteSetup( void )
    char  commmacro[] = COMMMACRO;
 
    if (!setupread) return;
-
-   printf("CONFIG_WriteSetup...\n");
 
 #ifdef OPENFPGA
    CONFIG_RegisterSettingsSlot();

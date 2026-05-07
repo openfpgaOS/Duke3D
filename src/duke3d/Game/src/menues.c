@@ -2602,6 +2602,16 @@ else
         case 700:
 
             c = (320>>1)-120;
+#ifdef OPENFPGA
+            int32 old_sound_toggle = SoundToggle;
+            int32 old_music_toggle = MusicToggle;
+            int32 old_voice_toggle = VoiceToggle;
+            int32 old_ambience_toggle = AmbienceToggle;
+            int32 old_opponent_sound_toggle = OpponentSoundToggle;
+            int32 old_reverse_stereo = ReverseStereo;
+            int32 old_fx_volume = FXVolume;
+            int32 old_music_volume = MusicVolume;
+#endif
             rotatesprite(320<<15,19<<16,65536L,0,MENUBAR,16,0,10,0,0,xdim-1,ydim-1);
             menutext(320>>1,24,0,0,"SETUP SOUNDS");
             onbar = ((probey == 2)&&SoundToggle) || ((probey == 3)&&MusicToggle) ;
@@ -2705,7 +2715,6 @@ else
                 MusicVolume <<= 2;
                 if(l != MusicVolume)
                 {
-                    STUBBED("Check this");
                     // !!! FIXME: Used to be Music_ not MUSIC_.  --ryan.
                     MUSIC_SetVolume( (short) MusicVolume );
                 }
@@ -2727,6 +2736,18 @@ else
             menutext(c,43+16+16+16+16+16+16+16,SHX(-9),(FXDevice==SC_Unknown)||SoundToggle==0,"OPPONENT SOUND");
 			if(OpponentSoundToggle) menutext(c+160+40,43+16+16+16+16+16+16+16,0,(FXDevice==SC_Unknown)||SoundToggle==0,"ON");
 			else menutext(c+160+40,43+16+16+16+16+16+16+16,0,(FXDevice==SC_Unknown)||SoundToggle==0,"OFF");
+
+#ifdef OPENFPGA
+            if (old_sound_toggle != SoundToggle ||
+                old_music_toggle != MusicToggle ||
+                old_voice_toggle != VoiceToggle ||
+                old_ambience_toggle != AmbienceToggle ||
+                old_opponent_sound_toggle != OpponentSoundToggle ||
+                old_reverse_stereo != ReverseStereo ||
+                old_fx_volume != FXVolume ||
+                old_music_volume != MusicVolume)
+                CONFIG_WriteSetup();
+#endif
 
             break;
 

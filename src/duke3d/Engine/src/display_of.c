@@ -25,6 +25,7 @@
 #include "engine.h"
 #include "draw.h"
 #include "cache.h"
+#include "duke3d.h"
 
 #include "of.h"
 
@@ -60,6 +61,8 @@ static unsigned int lastkey = 0;
 
 /* Saved previous button state for edge detection */
 static uint32_t prev_buttons = 0;
+static uint8_t open_button_held_scancode = 0;
+static uint8_t open_button_held_extended = 0;
 
 /* Drawing helper */
 static uint8_t drawpixel_color = 0;
@@ -70,6 +73,10 @@ static uint32_t of_palette[256];
 /* Analog stick dead zone (out of +/-32767) */
 #define STICK_DEADZONE  8000
 #define STICK_MOUSE_SCALE  6   /* right stick -> mouse sensitivity */
+#define DOCK_MOUSE_DIVISOR  32  /* physical mouse deltas are high-DPI */
+#define DOCK_MOUSE_FIRE_SCANCODE  0x1D  /* LCtrl */
+#define DOCK_MOUSE_USE_SCANCODE   0x39  /* Space */
+#define OPEN_BUTTON_MENU_SCANCODE  0x01  /* Escape = menu back */
 
 /* ======================================================================
  * Interact menu variables (Pocket menu -> SDRAM)
@@ -118,6 +125,8 @@ static const btn_map_t button_map[] = {
     /* Shoulders = weapon cycling */
     { OF_BTN_L1,     0x27, 0x00 },  /* L      -> ';'    = Prev Weapon  */
     { OF_BTN_R1,     0x28, 0x00 },  /* R      -> '''    = Next Weapon  */
+    { OF_BTN_L2,     0x33, 0x00 },  /* L2     -> ','    = Strafe Left  */
+    { OF_BTN_R2,     0x34, 0x00 },  /* R2     -> '.'    = Strafe Right */
 
     /* Menu */
     { OF_BTN_START,  0x01, 0x00 },  /* Start  -> Escape = Menu         */
@@ -137,6 +146,14 @@ static const uint8_t hid_alpha_scancodes[26] = {
     0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14,
     0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C
 };
+
+static int duke_menu_active(void)
+{
+    if (myconnectindex < 0 || myconnectindex >= MAXPLAYERS)
+        return 0;
+
+    return (ps[myconnectindex].gm & MODE_MENU) != 0;
+}
 
 static const hid_key_map_t hid_key_map[] = {
     { 0x28, 0x1C, 0x00 },  /* Enter */
@@ -188,6 +205,8 @@ static uint8_t lstick_up_held    = 0;
 static uint8_t lstick_down_held  = 0;
 static uint8_t lstick_left_held  = 0;
 static uint8_t lstick_right_held = 0;
+static int32_t dock_mouse_accum_x = 0;
+static int32_t dock_mouse_accum_y = 0;
 
 /* ======================================================================
  * Helpers
@@ -276,6 +295,16 @@ static void send_modifier_edges(uint16_t modifiers, int pressed)
         if (modifiers & keymod_map[i].mask)
             send_key(keymod_map[i].scancode, keymod_map[i].extended, pressed);
     }
+}
+
+static int32_t consume_scaled_mouse_delta(int32_t *accum, int32_t delta)
+{
+    int32_t scaled;
+
+    *accum += delta;
+    scaled = *accum / DOCK_MOUSE_DIVISOR;
+    *accum -= scaled * DOCK_MOUSE_DIVISOR;
+    return scaled;
 }
 
 
@@ -706,6 +735,7 @@ static void handle_events(void)
     of_mouse_state_t ms;
     uint32_t buttons;
     uint32_t pressed, released;
+    int menu_active;
     int i;
 
     memset(&kb, 0, sizeof(kb));
@@ -720,6 +750,7 @@ static void handle_events(void)
     pressed  = buttons & ~prev_buttons;   /* just went down */
     released = ~buttons & prev_buttons;   /* just went up   */
     prev_buttons = buttons;
+    menu_active = duke_menu_active();
 
     /* --- Poll interact menu for Run Mode changes --- */
     current_run_mode = (int)of_interact_get(INTERACT_RUN_MODE);
@@ -735,17 +766,39 @@ static void handle_events(void)
     /* --- Digital buttons -> scancodes --- */
     for (i = 0; i < (int)NUM_BTN_MAPS; i++) {
         const btn_map_t *m = &button_map[i];
+        uint8_t scancode = m->scancode;
+        uint8_t extended = m->extended;
+
+        if (m->btn == OF_BTN_B) {
+            if (pressed & m->btn) {
+                scancode = menu_active ? OPEN_BUTTON_MENU_SCANCODE : m->scancode;
+                extended = menu_active ? 0x00 : m->extended;
+                open_button_held_scancode = scancode;
+                open_button_held_extended = extended;
+                send_key(scancode, extended, 1);
+            }
+            if (released & m->btn) {
+                scancode = open_button_held_scancode ? open_button_held_scancode :
+                    (menu_active ? OPEN_BUTTON_MENU_SCANCODE : m->scancode);
+                extended = open_button_held_scancode ? open_button_held_extended :
+                    (menu_active ? 0x00 : m->extended);
+                send_key(scancode, extended, 0);
+                open_button_held_scancode = 0;
+                open_button_held_extended = 0;
+            }
+            continue;
+        }
 
         if (pressed & m->btn) {
-            send_key(m->scancode, m->extended, 1);
+            send_key(scancode, extended, 1);
         }
         if (released & m->btn) {
-            send_key(m->scancode, m->extended, 0);
+            send_key(scancode, extended, 0);
         }
     }
 
     /* --- "Use = Use + Run" mode: B also sends LShift while held --- */
-    if (current_run_mode == RUN_MODE_USE_RUN) {
+    if (!menu_active && current_run_mode == RUN_MODE_USE_RUN) {
         if (pressed & OF_BTN_B)
             send_key(0x2A, 0x00, 1);   /* LShift down = Run */
         if (released & OF_BTN_B)
@@ -808,17 +861,22 @@ static void handle_events(void)
             mouse_relative_y += ry / (32768 / STICK_MOUSE_SCALE);
     }
 
-    /* --- Physical dock mouse + controller triggers as mouse buttons --- */
+    /* --- Physical dock mouse --- */
     if (ms.present) {
-        mouse_relative_x += ms.dx;
-        mouse_relative_y += ms.dy;
+        mouse_relative_x += consume_scaled_mouse_delta(&dock_mouse_accum_x, ms.dx);
+        mouse_relative_y += consume_scaled_mouse_delta(&dock_mouse_accum_y, ms.dy);
+
+        if (ms.buttons_pressed & 1)
+            send_key(DOCK_MOUSE_FIRE_SCANCODE, 0x00, 1);
+        if (ms.buttons_released & 1)
+            send_key(DOCK_MOUSE_FIRE_SCANCODE, 0x00, 0);
+        if (ms.buttons_pressed & 2)
+            send_key(DOCK_MOUSE_USE_SCANCODE, 0x00, 1);
+        if (ms.buttons_released & 2)
+            send_key(DOCK_MOUSE_USE_SCANCODE, 0x00, 0);
     }
 
     mouse_buttons = 0;
-    if (buttons & OF_BTN_R2)
-        mouse_buttons |= 1;  /* left mouse button */
-    if (buttons & OF_BTN_L2)
-        mouse_buttons |= 2;  /* right mouse button */
     if (ms.present) {
         if (ms.buttons & 1)
             mouse_buttons |= 1;
