@@ -343,9 +343,20 @@ static scriptnode_t *SCRIPT_findinchildren (scriptnode_t *parent, char  *s)
 */
 int32 SCRIPT_Init( uint8_t  * name )
 {
-	STUBBED("Init");
-	
-	return -1;
+	(void) name;
+
+	if (script_numscriptsopen == MAX_SCRIPTS)
+		return -1;
+
+	script_numscriptsopen++;
+	script_headnode[script_nexthandle] = SCRIPT_constructnode();
+	if (script_headnode[script_nexthandle] == NULL)
+	{
+		script_numscriptsopen--;
+		return -1;
+	}
+
+	return script_nexthandle++;
 }
 
 
@@ -402,7 +413,7 @@ int32 SCRIPT_Load ( char  * filename )
 	/* The main program does not check for any sort of */
 	/* error in loading, so each SCRIPT_ function needs */
 	/* to check if the handle is -1 before doing anything */
-	fp = fopen (filename, "r");
+	fp = fopen (filename, "rb");
 
 	if (fp == NULL) return -1;
 
@@ -489,7 +500,7 @@ void SCRIPT_Save (int32 scripthandle, char*  filename)
 	if(scripthandle >= MAX_SCRIPTS || scripthandle < 0)
 		return;
 
-	fp = fopen (filename, "w");
+	fp = fopen (filename, "wb");
 	if (fp == NULL) return;
 
 	head = script_headnode[scripthandle];

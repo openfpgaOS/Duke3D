@@ -48,6 +48,18 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 
 #ifdef OPENFPGA
 #include "../../d3d_save.h"
+#include "of_file.h"
+#define OPENFPGA_SETTINGS_SLOT 9
+#define OPENFPGA_SETUPFILENAME "slot:9"
+
+static void CONFIG_RegisterSettingsSlot(void)
+{
+	static int registered = 0;
+	if (registered)
+		return;
+	of_file_slot_register(OPENFPGA_SETTINGS_SLOT, SETUPFILENAME);
+	registered = 1;
+}
 #endif
 
 //
@@ -624,12 +636,8 @@ void CONFIG_ReadSetup( void )
    printf("CONFIG_ReadSetup...\n");
 
 #ifdef OPENFPGA
-   /* Settings persisted in the "Settings" non-volatile data slot
-    * (id 9 in data.json, filename "duke3d.cfg").  SCRIPT_Load opens
-    * the slot via the OS VFS; on first boot the slot is empty and
-    * SCRIPT_Load returns -1 — defaults take over.  CONFIG_WriteSetup
-    * later writes back through the same path. */
-   strcpy(setupfilename, SETUPFILENAME);
+   CONFIG_RegisterSettingsSlot();
+   strcpy(setupfilename, OPENFPGA_SETUPFILENAME);
 #else
    if (!SafeFileExists(setupfilename))
       {
@@ -644,6 +652,10 @@ void CONFIG_ReadSetup( void )
 
    CONFIG_SetDefaults();
    scripthandle = SCRIPT_Load( setupfilename );
+#ifdef OPENFPGA
+   if (scripthandle < 0)
+      scripthandle = SCRIPT_Init((uint8_t *)setupfilename);
+#endif
 
    for(dummy = 0;dummy < 10;dummy++)
    {
@@ -792,6 +804,9 @@ void CONFIG_ReadSetup( void )
 			}
       }
    setupread = 1;
+#ifdef OPENFPGA
+   CONFIG_WriteSetup();
+#endif
    }
 
 /*
@@ -810,6 +825,16 @@ void CONFIG_WriteSetup( void )
    if (!setupread) return;
 
    printf("CONFIG_WriteSetup...\n");
+
+#ifdef OPENFPGA
+   CONFIG_RegisterSettingsSlot();
+   if (setupfilename[0] == '\0')
+      strcpy(setupfilename, OPENFPGA_SETUPFILENAME);
+   if (scripthandle < 0)
+      scripthandle = SCRIPT_Init((uint8_t *)setupfilename);
+   if (scripthandle < 0)
+      return;
+#endif
 
    SCRIPT_PutNumber( scripthandle, "Screen Setup", "Shadows",ud.shadows,false,false);
    SCRIPT_PutString( scripthandle, "Screen Setup", "Password",ud.pwlockout);
@@ -897,6 +922,7 @@ void CONFIG_WriteSetup( void )
    }
 
    SCRIPT_Save (scripthandle, setupfilename);
+#ifndef OPENFPGA
    SCRIPT_Free (scripthandle);
+#endif
    }
-

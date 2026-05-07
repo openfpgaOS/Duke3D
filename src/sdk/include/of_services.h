@@ -221,6 +221,12 @@ struct of_services_table {
      * Older firmware leaves this NULL; callers should fall back to
      * cache_flush() (full sweep) when this is absent. */
     void      (*cache_flush_range)(void *addr, uint32_t size);
+
+    /* -- Input HID extensions (append-only) --
+     * Dock keyboard and mouse are APF Player 3/4 special controller
+     * reports, exposed separately from the two gamepad player snapshots. */
+    void      (*input_get_keyboard_state)(void *out);
+    void      (*input_read_mouse_state)(void *out);
 };
 
 #ifndef OF_PC

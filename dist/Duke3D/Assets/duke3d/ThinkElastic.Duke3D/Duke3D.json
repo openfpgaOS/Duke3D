@@ -23,6 +23,10 @@
                 "filename": "bank.ofsf"
             },
             {
+                "id": 9,
+                "filename": "duke3d.cfg"
+            },
+            {
                 "id": 10,
                 "filename": "duke3d_0.sav"
             },

@@ -1,5 +1,5 @@
 /*
- * of_smp_voice.c -- Sample voice engine: 48-voice polyphony with
+ * of_smp_voice.c -- Sample voice engine for sample-based MIDI with
  *                   DAHDSR envelopes, dual LFOs, and pitch bend.
  */
 
@@ -61,7 +61,7 @@ static OF_FASTDATA uint32_t stat_pump_burst_count;
 static OF_FASTDATA uint32_t stat_pump_budget_exceeded;
 static OF_FASTDATA uint16_t stat_cutoff_delta_max;
 
-/* 2 ms budget = 500 Hz tick rate. */
+/* A single 1 kHz voice tick should stay comfortably below the pump cap. */
 #define SMP_TICK_SPIKE_US  2000u
 
 /* ------------------------------------------------------------------ */
@@ -375,6 +375,33 @@ static int32_t lfo_advance(lfo_state_t *l)
 static void voice_force_off(int idx);
 static void voice_cleanup_stolen(void);
 
+static int voice_hw_owned_by_music(const smp_voice_t *v)
+{
+    if (v->mixer_voice < 0)
+        return 0;
+    if (!of_mixer_voice_active(v->mixer_voice))
+        return 0;
+
+    int group = of_mixer_voice_group(v->mixer_voice);
+    return group < 0 || group == OF_MIXER_GROUP_MUSIC;
+}
+
+static void voice_stop_hw_if_owned(smp_voice_t *v)
+{
+    if (voice_hw_owned_by_music(v))
+        of_mixer_stop(v->mixer_voice);
+}
+
+static int voice_drop_if_stale(smp_voice_t *v)
+{
+    if (voice_hw_owned_by_music(v))
+        return 0;
+
+    v->active = 0;
+    v->mixer_voice = -1;
+    return 1;
+}
+
 /* Reclaim a slot for immediate reuse: free the hardware mixer voice and
  * mark the slot inactive.  voice_alloc's steal passes call this so the
  * caller (smp_voice_note_on) can write fresh state without leaking the
@@ -382,8 +409,7 @@ static void voice_cleanup_stolen(void);
 static void voice_reclaim(int idx)
 {
     smp_voice_t *v = &voices[idx];
-    if (v->mixer_voice >= 0)
-        of_mixer_stop(v->mixer_voice);
+    voice_stop_hw_if_owned(v);
     v->mixer_voice = -1;
     v->active = 0;
 }
@@ -463,11 +489,12 @@ static int voice_alloc(void)
 static void voice_force_off(int idx)
 {
     smp_voice_t *v = &voices[idx];
-    if (v->mixer_voice >= 0) {
-        of_mixer_set_vol_lr(v->mixer_voice, 0, 0);
-        SMP_TRACE(SMP_TRACE_OP_VOL_LR, v->mixer_voice, 0, 0, 0);
-        of_mixer_set_volume_ramp(v->mixer_voice, 16);
-    }
+    if (voice_drop_if_stale(v))
+        return;
+
+    of_mixer_set_vol_lr(v->mixer_voice, 0, 0);
+    SMP_TRACE(SMP_TRACE_OP_VOL_LR, v->mixer_voice, 0, 0, 0);
+    of_mixer_set_volume_ramp(v->mixer_voice, 16);
     v->active = STEAL_PENDING;
 }
 
@@ -475,8 +502,7 @@ static void voice_cleanup_stolen(void)
 {
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         if (voices[i].active == STEAL_PENDING) {
-            if (voices[i].mixer_voice >= 0)
-                of_mixer_stop(voices[i].mixer_voice);
+            voice_stop_hw_if_owned(&voices[i]);
             voices[i].active = 0;
             voices[i].mixer_voice = -1;
         }
@@ -708,7 +734,9 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     const uint8_t *sample_ptr = (const uint8_t *)sample_base
                               + zone->sample_offset;
 
-    int mhv = of_mixer_play(sample_ptr, zone->sample_length, sr, 0, 200);
+    int mhv = of_mixer_alloc_for_group(OF_MIXER_GROUP_MUSIC,
+                                       sample_ptr, zone->sample_length,
+                                       sr, 0, 200);
     if (mhv < 0) { v->active = 0; return -1; }
 
 
@@ -725,18 +753,18 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
         /* Looping voice: let the envelope decide when it ends. */
         v->sample_ticks_remaining = 0;
     } else {
-        /* One-shot: compute how many software ticks (500 Hz) until the
+        /* One-shot: compute how many software ticks (1 kHz) until the
          * sample walks off its natural end.
          *
          *   samples consumed per 48 kHz output tick = base_rate_fp16 / 65536
          *   seconds to finish = sample_length * 65536 / (base_rate_fp16 * 48000)
-         *   SW ticks (500 Hz) = sample_length * 65536 / (base_rate_fp16 * 96)
+         *   SW ticks (1 kHz)  = sample_length * 65536 / (base_rate_fp16 * 48)
          *
          * Adds 20 % headroom so modest pitch bends (drums: typically none)
          * don't truncate audible content. */
         if (v->base_rate_fp16 > 0 && zone->sample_length > 0) {
             uint64_t num = (uint64_t)zone->sample_length * 65536u * 6u;
-            uint64_t den = (uint64_t)v->base_rate_fp16 * 96u * 5u;
+            uint64_t den = (uint64_t)v->base_rate_fp16 * 48u * 5u;
             uint64_t ticks = num / (den ? den : 1);
             if (ticks < 1) ticks = 1;
             if (ticks > 0x7FFFFFFFu) ticks = 0x7FFFFFFFu;
@@ -745,8 +773,6 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
             v->sample_ticks_remaining = 0;
         }
     }
-
-    of_mixer_set_group(mhv, OF_MIXER_GROUP_MUSIC);
 
     /* Initialize envelopes and LFOs from pre-baked OFSF v3 fields. */
     env_init(&v->vol_env, zone->vol_delay_ticks, zone->vol_attack_rate);
@@ -813,6 +839,9 @@ void smp_voice_tick(void)
         smp_voice_t *v = &voices[i];
         if (!v->active || v->active == STEAL_PENDING)
             continue;
+        if (voice_drop_if_stale(v))
+            continue;
+
         _probe_active++;
         if (v->vol_env.stage == ENV_SUSTAIN) _probe_sustain++;
         else if (v->vol_env.stage == ENV_RELEASE) _probe_release++;
@@ -849,8 +878,7 @@ void smp_voice_tick(void)
         lfo_advance(&v->vib_lfo);
 
         if (v->vol_env.stage == ENV_DONE) {
-            if (v->mixer_voice >= 0)
-                of_mixer_stop(v->mixer_voice);
+            voice_stop_hw_if_owned(v);
             v->active = 0;
             v->mixer_voice = -1;
             continue;
@@ -959,8 +987,7 @@ void smp_voice_all_off(int midi_ch)
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         smp_voice_t *v = &voices[i];
         if (v->active && v->active != STEAL_PENDING && v->midi_ch == midi_ch) {
-            if (v->mixer_voice >= 0)
-                of_mixer_stop(v->mixer_voice);
+            voice_stop_hw_if_owned(v);
             v->active = 0;
             v->mixer_voice = -1;
         }
@@ -972,8 +999,7 @@ void smp_voice_all_off_global(void)
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         smp_voice_t *v = &voices[i];
         if (v->active) {
-            if (v->mixer_voice >= 0)
-                of_mixer_stop(v->mixer_voice);
+            voice_stop_hw_if_owned(v);
             v->active = 0;
             v->mixer_voice = -1;
         }

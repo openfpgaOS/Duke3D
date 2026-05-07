@@ -65,6 +65,32 @@ static inline uint32_t of_input_state(int player, of_input_state_t *state) {
     return state->buttons;
 }
 
+static inline void of_input_keyboard_state(of_keyboard_state_t *state) {
+    OF_SVC->input_get_keyboard_state(state);
+}
+
+static inline void of_input_mouse_state(of_mouse_state_t *state) {
+    OF_SVC->input_read_mouse_state(state);
+}
+
+static inline int of_keyboard_key(const of_keyboard_state_t *state,
+                                  uint8_t usage) {
+    return state &&
+           ((state->keys[usage >> 5] >> (usage & 31)) & 1u) != 0;
+}
+
+static inline int of_keyboard_key_pressed(const of_keyboard_state_t *state,
+                                          uint8_t usage) {
+    return state &&
+           ((state->keys_pressed[usage >> 5] >> (usage & 31)) & 1u) != 0;
+}
+
+static inline int of_keyboard_key_released(const of_keyboard_state_t *state,
+                                           uint8_t usage) {
+    return state &&
+           ((state->keys_released[usage >> 5] >> (usage & 31)) & 1u) != 0;
+}
+
 static inline void of_input_set_deadzone(int16_t deadzone) {
     OF_SVC->input_set_deadzone(deadzone);
 }
@@ -79,6 +105,8 @@ int      of_btn_p2(uint32_t mask);
 int      of_btn_pressed_p2(uint32_t mask);
 int      of_btn_released_p2(uint32_t mask);
 uint32_t of_input_state(int player, of_input_state_t *state);
+void     of_input_keyboard_state(of_keyboard_state_t *state);
+void     of_input_mouse_state(of_mouse_state_t *state);
 void     of_input_set_deadzone(int16_t deadzone);
 
 #endif /* OF_PC */

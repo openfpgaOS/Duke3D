@@ -61,10 +61,30 @@ void setviewtotile(short tilenume, int32_t tileWidth, int32_t tileHeight)
     bakxsiz[setviewcnt] = tileWidth;
     bakysiz[setviewcnt] = tileHeight;
     bakbytesperline[setviewcnt] = bytesperline;
+    bytesperline = tileHeight;
+    setBytesPerLine(tileHeight);
     bakvidoption[setviewcnt] = vidoption;
     vidoption = 2;
     bakframeplace[setviewcnt] = frameplace;
+#ifdef OPENFPGA
+    bakviewtiledata[setviewcnt] = tiles[tilenume].data;
+    if (bakviewtiledata[setviewcnt] != NULL)
+    {
+        uint32_t tileBytes = (uint32_t)tileWidth * (uint32_t)tileHeight;
+        of_cache_inval_range(bakviewtiledata[setviewcnt], tileBytes);
+        frameplace = (uint8_t *)of_uncached(bakviewtiledata[setviewcnt]);
+    }
+    else
+    {
+        frameplace = NULL;
+    }
+#else
     frameplace = tiles[tilenume].data;
+#endif
+#ifdef OPENFPGA
+    d3d_gpu_clear_rect_fb(frameplace, (uint16_t)tileHeight,
+                          (uint16_t)tileWidth, 0);
+#endif
     bakwindowx1[setviewcnt] = windowx1;
     bakwindowy1[setviewcnt] = windowy1;
     bakwindowx2[setviewcnt] = windowx2;
@@ -78,7 +98,6 @@ void setviewtotile(short tilenume, int32_t tileWidth, int32_t tileHeight)
         ylookup[i] = j;
         j += tileHeight;
     }
-    setBytesPerLine(tileHeight);
     setviewcnt++;
 }
 

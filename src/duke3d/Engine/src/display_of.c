@@ -96,6 +96,18 @@ typedef struct {
     uint8_t  extended;  /* non-zero means send 0xE0 prefix first */
 } btn_map_t;
 
+typedef struct {
+    uint8_t usage;
+    uint8_t scancode;
+    uint8_t extended;
+} hid_key_map_t;
+
+typedef struct {
+    uint16_t mask;
+    uint8_t  scancode;
+    uint8_t  extended;
+} keymod_map_t;
+
 static const btn_map_t button_map[] = {
     /* Action buttons */
     { OF_BTN_A,      0x1D, 0x00 },  /* A      -> LCtrl  = Fire         */
@@ -119,6 +131,51 @@ static const btn_map_t button_map[] = {
 };
 
 #define NUM_BTN_MAPS  (sizeof(button_map) / sizeof(button_map[0]))
+
+static const uint8_t hid_alpha_scancodes[26] = {
+    0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24,
+    0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14,
+    0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C
+};
+
+static const hid_key_map_t hid_key_map[] = {
+    { 0x28, 0x1C, 0x00 },  /* Enter */
+    { 0x29, 0x01, 0x00 },  /* Escape */
+    { 0x2A, 0x0E, 0x00 },  /* Backspace */
+    { 0x2B, 0x0F, 0x00 },  /* Tab */
+    { 0x2C, 0x39, 0x00 },  /* Space */
+    { 0x2D, 0x0C, 0x00 },  /* Minus */
+    { 0x2E, 0x0D, 0x00 },  /* Equals */
+    { 0x2F, 0x1A, 0x00 },  /* Left bracket */
+    { 0x30, 0x1B, 0x00 },  /* Right bracket */
+    { 0x31, 0x2B, 0x00 },  /* Backslash */
+    { 0x33, 0x27, 0x00 },  /* Semicolon */
+    { 0x34, 0x28, 0x00 },  /* Quote */
+    { 0x35, 0x29, 0x00 },  /* Grave/Tilde */
+    { 0x36, 0x33, 0x00 },  /* Comma */
+    { 0x37, 0x34, 0x00 },  /* Period */
+    { 0x38, 0x35, 0x00 },  /* Slash */
+
+    { 0x49, 0x52, 0xE0 },  /* Insert */
+    { 0x4A, 0x47, 0xE0 },  /* Home */
+    { 0x4B, 0x49, 0xE0 },  /* PageUp */
+    { 0x4C, 0x53, 0xE0 },  /* Delete */
+    { 0x4D, 0x4F, 0xE0 },  /* End */
+    { 0x4E, 0x51, 0xE0 },  /* PageDown */
+    { 0x4F, 0x4D, 0xE0 },  /* Right arrow */
+    { 0x50, 0x4B, 0xE0 },  /* Left arrow */
+    { 0x51, 0x50, 0xE0 },  /* Down arrow */
+    { 0x52, 0x48, 0xE0 },  /* Up arrow */
+};
+
+static const keymod_map_t keymod_map[] = {
+    { OF_KEYMOD_LCTRL,  0x1D, 0x00 },
+    { OF_KEYMOD_LSHIFT, 0x2A, 0x00 },
+    { OF_KEYMOD_LALT,   0x38, 0x00 },
+    { OF_KEYMOD_RCTRL,  0x1D, 0xE0 },
+    { OF_KEYMOD_RSHIFT, 0x36, 0x00 },
+    { OF_KEYMOD_RALT,   0x38, 0xE0 },
+};
 
 /* Left-stick virtual keys (W/A/S/D mapped to arrow keys for movement) */
 #define SC_UP     0x48
@@ -145,6 +202,80 @@ static void send_key(uint8_t scancode, uint8_t extended, int pressed)
 
     lastkey = pressed ? scancode : (scancode + 128);
     keyhandler();
+}
+
+static int hid_usage_to_scancode(uint8_t usage, uint8_t *scancode,
+                                 uint8_t *extended)
+{
+    if (usage >= 0x04 && usage <= 0x1D) {
+        *scancode = hid_alpha_scancodes[usage - 0x04];
+        *extended = 0x00;
+        return 1;
+    }
+
+    if (usage >= 0x1E && usage <= 0x27) {
+        *scancode = usage - 0x1C;
+        *extended = 0x00;
+        return 1;
+    }
+
+    if (usage >= 0x3A && usage <= 0x43) {
+        *scancode = usage + 1;
+        *extended = 0x00;
+        return 1;
+    }
+
+    if (usage == 0x44) {
+        *scancode = 0x57;
+        *extended = 0x00;
+        return 1;
+    }
+
+    if (usage == 0x45) {
+        *scancode = 0x58;
+        *extended = 0x00;
+        return 1;
+    }
+
+    for (int i = 0; i < (int)(sizeof(hid_key_map) / sizeof(hid_key_map[0])); i++) {
+        if (hid_key_map[i].usage == usage) {
+            *scancode = hid_key_map[i].scancode;
+            *extended = hid_key_map[i].extended;
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void send_hid_key(uint8_t usage, int pressed)
+{
+    uint8_t scancode;
+    uint8_t extended;
+
+    if (hid_usage_to_scancode(usage, &scancode, &extended))
+        send_key(scancode, extended, pressed);
+}
+
+static void send_hid_key_edges(const uint32_t keys[OF_KEYBOARD_WORDS],
+                               int pressed)
+{
+    for (int word = 0; word < (int)OF_KEYBOARD_WORDS; word++) {
+        uint32_t bits = keys[word];
+        while (bits) {
+            int bit = __builtin_ctz(bits);
+            send_hid_key((uint8_t)(word * 32 + bit), pressed);
+            bits &= bits - 1;
+        }
+    }
+}
+
+static void send_modifier_edges(uint16_t modifiers, int pressed)
+{
+    for (int i = 0; i < (int)(sizeof(keymod_map) / sizeof(keymod_map[0])); i++) {
+        if (modifiers & keymod_map[i].mask)
+            send_key(keymod_map[i].scancode, keymod_map[i].extended, pressed);
+    }
 }
 
 
@@ -571,11 +702,18 @@ uint8_t _readlastkeyhit(void)
 static void handle_events(void)
 {
     of_input_state_t state;
+    of_keyboard_state_t kb;
+    of_mouse_state_t ms;
     uint32_t buttons;
     uint32_t pressed, released;
     int i;
 
+    memset(&kb, 0, sizeof(kb));
+    memset(&ms, 0, sizeof(ms));
+
     of_input_poll();
+    of_input_keyboard_state(&kb);
+    of_input_mouse_state(&ms);
     of_input_state(0, &state);
 
     buttons  = state.buttons;
@@ -585,6 +723,14 @@ static void handle_events(void)
 
     /* --- Poll interact menu for Run Mode changes --- */
     current_run_mode = (int)of_interact_get(INTERACT_RUN_MODE);
+
+    /* --- Physical dock keyboard -> DOS scancodes --- */
+    if (kb.present) {
+        send_modifier_edges(kb.modifiers_pressed, 1);
+        send_hid_key_edges(kb.keys_pressed, 1);
+        send_hid_key_edges(kb.keys_released, 0);
+        send_modifier_edges(kb.modifiers_released, 0);
+    }
 
     /* --- Digital buttons -> scancodes --- */
     for (i = 0; i < (int)NUM_BTN_MAPS; i++) {
@@ -662,12 +808,25 @@ static void handle_events(void)
             mouse_relative_y += ry / (32768 / STICK_MOUSE_SCALE);
     }
 
-    /* --- R2 as mouse left-button (alt fire / useful in menus) --- */
+    /* --- Physical dock mouse + controller triggers as mouse buttons --- */
+    if (ms.present) {
+        mouse_relative_x += ms.dx;
+        mouse_relative_y += ms.dy;
+    }
+
     mouse_buttons = 0;
     if (buttons & OF_BTN_R2)
         mouse_buttons |= 1;  /* left mouse button */
     if (buttons & OF_BTN_L2)
         mouse_buttons |= 2;  /* right mouse button */
+    if (ms.present) {
+        if (ms.buttons & 1)
+            mouse_buttons |= 1;
+        if (ms.buttons & 2)
+            mouse_buttons |= 2;
+        if (ms.buttons & 4)
+            mouse_buttons |= 4;
+    }
 }
 
 void _handle_events(void)

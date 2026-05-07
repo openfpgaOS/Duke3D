@@ -24,18 +24,45 @@
 extern void copybufbyte(void *S, void *D, int32_t c);
 extern int32_t compress(uint8_t *lzwinbuf, int32_t uncompleng, uint8_t *lzwoutbuf);
 extern int32_t uncompress(uint8_t *lzwinbuf, int32_t compleng, uint8_t *lzwoutbuf);
-extern void *malloc(unsigned int size);
-extern void  free(void *ptr);
 
 #define LZWSIZE     16384
+#define LZWMAX      (LZWSIZE + (LZWSIZE >> 4))
 #define SAVE_MAGIC  0x444B5356u    /* "DKSV" */
 #define MAGIC_OFF   16
 
 static OfSaveFile save_pool[D3D_MAXSAVES];
 static int        save_pool_used[D3D_MAXSAVES];
+static uint8_t    save_lzw_in[LZWSIZE];
+static uint8_t    save_lzw_out[LZWMAX];
 
 static void slot_path(int slot, char *out, size_t out_len) {
     snprintf(out, out_len, "duke3d_%d.sav", slot);
+}
+
+static int read_save_header(FILE *fp, uint32_t *data_size, uint32_t *magic) {
+    uint32_t size = 0;
+    uint32_t mag = 0;
+
+    if (fseek(fp, 0, SEEK_SET) != 0 ||
+        fread(&size, 4, 1, fp) != 1 ||
+        fseek(fp, MAGIC_OFF, SEEK_SET) != 0 ||
+        fread(&mag, 4, 1, fp) != 1)
+        return 0;
+
+    if (data_size) *data_size = size;
+    if (magic) *magic = mag;
+    return 1;
+}
+
+static int save_header_valid(uint32_t data_size, uint32_t magic) {
+    return data_size > D3D_SAVE_HEADER &&
+           data_size <= D3D_SAVE_SIZE &&
+           magic == SAVE_MAGIC;
+}
+
+static void save_mark_error(OfSaveFile *sf) {
+    if (sf)
+        sf->error = 1;
 }
 
 OfSaveFile *save_fopen(int slot, const char *mode) {
@@ -82,9 +109,14 @@ OfSaveFile *save_fopen(int slot, const char *mode) {
          * slot ceiling so a corrupt header can't trick callers into
          * reading past the buffer. */
         uint32_t data_size = 0;
-        if (fread(&data_size, 4, 1, sf->fp) == 1 &&
-            data_size > D3D_SAVE_HEADER && data_size <= D3D_SAVE_SIZE)
-            sf->size = data_size;
+        uint32_t magic = 0;
+        if (!read_save_header(sf->fp, &data_size, &magic) ||
+            !save_header_valid(data_size, magic)) {
+            fclose(sf->fp);
+            sf->fp = NULL;
+            return NULL;
+        }
+        sf->size = data_size;
 
         /* Position at the payload start. Backward/forward seek on a "rb"
          * handle is fine — the kernel only restricts seeks on write
@@ -171,7 +203,7 @@ int save_fclose(OfSaveFile *sf) {
         status = -1;
     sf->fp = NULL;
 
-    if (writing) {
+    if (writing && status == 0) {
         /* Header back-fill via a fresh "r+b" reopen — matches the
          * savea/saveb demo's pattern (`fopen(path, offset==0 ? "wb" :
          * "r+b")`).  Some kernel VFS impls don't preserve backward
@@ -215,10 +247,10 @@ int save_slot_valid(int slot) {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
 
+    uint32_t data_size = 0;
     uint32_t magic = 0;
-    int ok = (fseek(f, MAGIC_OFF, SEEK_SET) == 0 &&
-              fread(&magic, 4, 1, f) == 1 &&
-              magic == SAVE_MAGIC);
+    int ok = read_save_header(f, &data_size, &magic) &&
+             save_header_valid(data_size, magic);
     fclose(f);
     return ok;
 }
@@ -233,86 +265,80 @@ int save_slot_valid(int slot) {
 
 void save_dfread(void *buffer, unsigned int dasizeof, unsigned int count,
                  OfSaveFile *sf) {
-    int32_t maxleng = LZWSIZE + (LZWSIZE >> 4);
-
-    uint8_t *lbuf4 = (uint8_t *)malloc(LZWSIZE);
-    uint8_t *lbuf5 = (uint8_t *)malloc(maxleng);
-    if (!lbuf4 || !lbuf5) goto out;
-
     if (dasizeof > LZWSIZE) { count *= dasizeof; dasizeof = 1; }
 
     uint8_t *ptr = (uint8_t *)buffer;
     short    leng = 0;
     int32_t  k = 0, kgoal;
 
-    if (save_fread(&leng, 2, 1, sf) != 1) goto out;
-    if (leng <= 0 || leng > maxleng) goto out;
-    if (save_fread(lbuf5, (uint32_t)leng, 1, sf) != 1) goto out;
+    if (save_fread(&leng, 2, 1, sf) != 1) goto fail;
+    if (leng <= 0 || leng > LZWMAX) goto fail;
+    if (save_fread(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
 
-    kgoal = uncompress(lbuf5, (int32_t)leng, lbuf4);
-    if (kgoal <= 0) goto out;
+    kgoal = uncompress(save_lzw_out, (int32_t)leng, save_lzw_in);
+    if (kgoal <= 0) goto fail;
 
-    copybufbyte(lbuf4, ptr, (int32_t)dasizeof);
+    copybufbyte(save_lzw_in, ptr, (int32_t)dasizeof);
     k += (int32_t)dasizeof;
 
     for (unsigned int i = 1; i < count; i++) {
         if (k >= kgoal) {
-            if (save_fread(&leng, 2, 1, sf) != 1) goto out;
-            if (leng <= 0 || leng > maxleng) goto out;
-            if (save_fread(lbuf5, (uint32_t)leng, 1, sf) != 1) goto out;
+            if (save_fread(&leng, 2, 1, sf) != 1) goto fail;
+            if (leng <= 0 || leng > LZWMAX) goto fail;
+            if (save_fread(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
             k = 0;
-            kgoal = uncompress(lbuf5, (int32_t)leng, lbuf4);
-            if (kgoal <= 0) goto out;
+            kgoal = uncompress(save_lzw_out, (int32_t)leng, save_lzw_in);
+            if (kgoal <= 0) goto fail;
         }
         for (unsigned int j = 0; j < dasizeof; j++)
-            ptr[j + dasizeof] = (uint8_t)((ptr[j] + lbuf4[j + k]) & 0xFF);
+            ptr[j + dasizeof] = (uint8_t)((ptr[j] + save_lzw_in[j + k]) & 0xFF);
         k   += dasizeof;
         ptr += dasizeof;
     }
+    return;
 
-out:
-    free(lbuf4);
-    free(lbuf5);
+fail:
+    save_mark_error(sf);
 }
 
 void save_dfwrite(void *buffer, unsigned int dasizeof, unsigned int count,
                   OfSaveFile *sf) {
-    uint8_t *lbuf4 = (uint8_t *)malloc(LZWSIZE);
-    uint8_t *lbuf5 = (uint8_t *)malloc(LZWSIZE + (LZWSIZE >> 4));
-    if (!lbuf4 || !lbuf5) { free(lbuf4); free(lbuf5); return; }
-
     if (dasizeof > LZWSIZE) { count *= dasizeof; dasizeof = 1; }
 
     uint8_t *ptr = (uint8_t *)buffer;
     unsigned int k = dasizeof;
 
-    copybufbyte(ptr, lbuf4, (int32_t)dasizeof);
+    copybufbyte(ptr, save_lzw_in, (int32_t)dasizeof);
 
     if (k > LZWSIZE - dasizeof) {
-        short leng = (short)compress(lbuf4, k, lbuf5);
+        short leng = (short)compress(save_lzw_in, k, save_lzw_out);
+        if (leng <= 0 || leng > LZWMAX) goto fail;
         k = 0;
-        save_fwrite(&leng, 2, 1, sf);
-        save_fwrite(lbuf5, (uint32_t)leng, 1, sf);
+        if (save_fwrite(&leng, 2, 1, sf) != 1) goto fail;
+        if (save_fwrite(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
     }
 
     for (unsigned int i = 1; i < count; i++) {
         for (unsigned int j = 0; j < dasizeof; j++)
-            lbuf4[j + k] = (uint8_t)((ptr[j + dasizeof] - ptr[j]) & 0xFF);
+            save_lzw_in[j + k] = (uint8_t)((ptr[j + dasizeof] - ptr[j]) & 0xFF);
         k += dasizeof;
         if (k > LZWSIZE - dasizeof) {
-            short leng = (short)compress(lbuf4, k, lbuf5);
+            short leng = (short)compress(save_lzw_in, k, save_lzw_out);
+            if (leng <= 0 || leng > LZWMAX) goto fail;
             k = 0;
-            save_fwrite(&leng, 2, 1, sf);
-            save_fwrite(lbuf5, (uint32_t)leng, 1, sf);
+            if (save_fwrite(&leng, 2, 1, sf) != 1) goto fail;
+            if (save_fwrite(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
         }
         ptr += dasizeof;
     }
     if (k > 0) {
-        short leng = (short)compress(lbuf4, k, lbuf5);
-        save_fwrite(&leng, 2, 1, sf);
-        save_fwrite(lbuf5, (uint32_t)leng, 1, sf);
+        short leng = (short)compress(save_lzw_in, k, save_lzw_out);
+        if (leng <= 0 || leng > LZWMAX) goto fail;
+        if (save_fwrite(&leng, 2, 1, sf) != 1) goto fail;
+        if (save_fwrite(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
     }
+    return;
 
-    free(lbuf4);
-    free(lbuf5);
+fail:
+    save_mark_error(sf);
 }

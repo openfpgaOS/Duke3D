@@ -26,6 +26,7 @@
 #include "engine.h"
 #include "tiles.h"
 #ifdef OPENFPGA
+#include "of_cache.h"
 #include "of_fastram.h"
 #include "of_timer.h"
 #include "../../d3d_gpu.h"
@@ -9213,6 +9214,9 @@ uint8_t  getpixel(int32_t x, int32_t y)
 int32_t setviewcnt = 0;
 int32_t bakvidoption[4];
 uint8_t* bakframeplace[4];
+#ifdef OPENFPGA
+uint8_t* bakviewtiledata[4];
+#endif
 int32_t bakxsiz[4], bakysiz[4];
 /* Saved screen-side bytesperline at each setviewtotile push.  Without
  * this restore, setviewback rebuilds ylookup[] using the still-active
@@ -9231,17 +9235,26 @@ void setviewback(void)
     if (setviewcnt <= 0) return;
     setviewcnt--;
 
+#ifdef OPENFPGA
+    if (bakviewtiledata[setviewcnt] != NULL &&
+        bakxsiz[setviewcnt] > 0 && bakysiz[setviewcnt] > 0)
+    {
+        d3d_gpu_drain();
+        of_cache_inval_range(bakviewtiledata[setviewcnt],
+                             (uint32_t)bakxsiz[setviewcnt] *
+                             (uint32_t)bakysiz[setviewcnt]);
+    }
+#endif
+
+    /* setview() computes viewoffset from the exported bytesperline. */
+    bytesperline = bakbytesperline[setviewcnt];
+    setBytesPerLine(bytesperline);
     setview(bakwindowx1[setviewcnt],bakwindowy1[setviewcnt],
             bakwindowx2[setviewcnt],bakwindowy2[setviewcnt]);
     copybufbyte(&bakumost[windowx1],&startumost[windowx1],(windowx2-windowx1+1)*sizeof(startumost[0]));
     copybufbyte(&bakdmost[windowx1],&startdmost[windowx1],(windowx2-windowx1+1)*sizeof(startdmost[0]));
     vidoption = bakvidoption[setviewcnt];
     frameplace = bakframeplace[setviewcnt];
-    /* Restore the screen-side stride BEFORE rebuilding ylookup so the
-     * loop below uses the correct row spacing.  Without this, the
-     * still-active tile stride (set by setviewtotile) leaks into the
-     * post-pop screen rendering and walls/floors land at wrong rows. */
-    setBytesPerLine(bakbytesperline[setviewcnt]);
     if (setviewcnt == 0)
         k = bakxsiz[0];
     else

@@ -3229,6 +3229,14 @@ else
         case 706: // Video setup
 			// FIX_00042: Build in Video setup.
 			c = (320>>1)-120;
+#ifdef OPENFPGA
+			int32 old_detail = ud.detail;
+			int32 old_tickrate = ud.tickrate;
+			int32 old_screen_size = ud.screen_size;
+			int32 old_extended_screen_size = ud.extended_screen_size;
+			int32 old_brightness = ud.brightness;
+			int32 old_fullscreen = FullScreen;
+#endif
             rotatesprite(320<<15,19<<16,65536L,0,MENUBAR,16,0,10,0,0,xdim-1,ydim-1);
             menutext(320>>1,24,0,0,"VIDEO SETUP");
 
@@ -3352,6 +3360,16 @@ else
 
 			menutext(c,43+16*5,SHX(-2),PHX(-2),"SHOW FPS");
 			menutext(c+160+40,43+16*5,0,0,(ud.tickrate&1)?"ON":"OFF");
+
+#ifdef OPENFPGA
+			if (old_detail != ud.detail ||
+			    old_tickrate != ud.tickrate ||
+			    old_screen_size != ud.screen_size ||
+			    old_extended_screen_size != ud.extended_screen_size ||
+			    old_brightness != ud.brightness ||
+			    old_fullscreen != FullScreen)
+				CONFIG_WriteSetup();
+#endif
 
 			break;
 

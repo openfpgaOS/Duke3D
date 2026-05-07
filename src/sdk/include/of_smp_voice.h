@@ -87,7 +87,7 @@ void smp_voice_note_off(int midi_ch, int note);
 void smp_voice_tick(void);  /* 1 kHz ISR */
 
 /* Diagnostic stats for smp_voice_tick cost.  Task #10 probe: detect
- * whether the tick exceeds its 2 ms budget (500 Hz tick rate).
+ * whether a 1 kHz voice tick exceeds the 2 ms pump cap.
  * Fields are named cycles_* but actually hold microseconds — the
  * VexRiscv here does not expose rdcycle to user mode, so of_time_us()
  * (kernel ecall) is used instead. */

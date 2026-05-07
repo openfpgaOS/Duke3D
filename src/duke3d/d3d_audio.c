@@ -85,6 +85,19 @@ static void untrack_voice(int voice) {
     last_pan_valid[voice] = 0;
 }
 
+static int d3d_voice_is_sfx_or_unknown(int voice)
+{
+    if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return 0;
+    int group = of_mixer_voice_group(voice);
+    return group < 0 || group == OF_MIXER_GROUP_SFX;
+}
+
+static void d3d_stop_sfx_voice_if_owned(int voice)
+{
+    if (d3d_voice_is_sfx_or_unknown(voice))
+        of_mixer_stop(voice);
+}
+
 static void complete_voice(int i) {
     int snd = active_voices[i].sound_num;
     int owned = active_voices[i].has_owner;
@@ -92,7 +105,7 @@ static void complete_voice(int i) {
      * time we get here. If the mixer reused the slot for a new sound,
      * track_voice_timed would have overwritten expire_ms with a future
      * time, so the expiry check wouldn't have fired. Safe to stop. */
-    of_mixer_stop(i);
+    d3d_stop_sfx_voice_if_owned(i);
     untrack_voice(i);
     if (owned) {
         extern void testcallback(int32_t num);
@@ -343,6 +356,7 @@ void d3d_sound_set_pan(int voice, int angle, int distance)
 {
     if (!audio_initialized || voice < 0) return;
     if (voice >= MAX_ACTIVE_VOICES) return;
+    if (!d3d_voice_is_sfx_or_unknown(voice)) return;
 
     int vol, pan;
     angle_dist_to_vol_pan(angle, distance, &vol, &pan);
@@ -362,30 +376,40 @@ void d3d_sound_set_pan(int voice, int angle, int distance)
 void d3d_sound_set_loop(int voice)
 {
     if (!audio_initialized || voice < 0) return;
+    if (voice >= MAX_ACTIVE_VOICES) return;
+    if (!d3d_voice_is_sfx_or_unknown(voice)) return;
+
     of_mixer_set_loop(voice, 0, -1);
     /* Cancel timer expiry — looping sounds play until explicitly stopped */
-    if (voice < MAX_ACTIVE_VOICES)
-        active_voices[voice].expire_ms = 0;
+    active_voices[voice].expire_ms = 0;
 }
 
 void d3d_sound_stop(int voice)
 {
     if (!audio_initialized) return;
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
-    of_mixer_stop(voice);
+    d3d_stop_sfx_voice_if_owned(voice);
     untrack_voice(voice);
 }
 
 void d3d_sound_stop_all(void)
 {
-    of_mixer_stop_all();
-    init_voice_tracking();
+    if (!audio_initialized) return;
+
+    for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
+        if (active_voices[i].voice < 0) continue;
+        d3d_stop_sfx_voice_if_owned(i);
+        untrack_voice(i);
+    }
 }
 
 void d3d_sound_set_volume(int voice, int volume)
 {
     if (!audio_initialized) return;
     if (voice < 0) return;
+    if (voice >= MAX_ACTIVE_VOICES) return;
+    if (!d3d_voice_is_sfx_or_unknown(voice)) return;
+
     of_mixer_set_volume(voice, volume);
 }
 

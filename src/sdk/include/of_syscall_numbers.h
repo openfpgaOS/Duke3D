@@ -117,6 +117,8 @@ enum of_input_fid {
     OF_INPUT_FID_GET_STATE    = 1,
     OF_INPUT_FID_SET_DEADZONE = 2,
     OF_INPUT_FID_POLL_P0      = 3,
+    OF_INPUT_FID_GET_KEYBOARD_STATE = 4,
+    OF_INPUT_FID_READ_MOUSE_STATE   = 5,
 };
 
 /* -- OF_EID_ANALOGIZER -- */
