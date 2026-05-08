@@ -9240,6 +9240,7 @@ void setviewback(void)
         bakxsiz[setviewcnt] > 0 && bakysiz[setviewcnt] > 0)
     {
         d3d_gpu_drain();
+        d3d_gpu_tex_invalidate();
         of_cache_inval_range(bakviewtiledata[setviewcnt],
                              (uint32_t)bakxsiz[setviewcnt] *
                              (uint32_t)bakysiz[setviewcnt]);

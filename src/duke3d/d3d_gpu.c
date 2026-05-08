@@ -39,9 +39,9 @@ int d3d_gpu_use_spans = 1;   /* Master switch.  Set to 0 BEFORE the
 int d3d_gpu_force_cpu_spans = 0;  /* Scoped gate: when non-zero, draw.c
                                    * try paths fall through to BUILD's
                                    * original CPU loops. */
-int d3d_gpu_force_rotatesprite_cpu = 1;
-int d3d_gpu_use_span4 = 0;
-int d3d_gpu_use_command_stream_batch = 0;
+int d3d_gpu_force_rotatesprite_cpu = 0;
+int d3d_gpu_use_span4 = 1;
+int d3d_gpu_use_command_stream_batch = 1;
 int d3d_gpu_perf_enable = 0;
 int d3d_gpu_perf_deep_enable = 0;
 /* Per-path timing calls of_time_us() twice per hot helper call, which is
@@ -1265,6 +1265,8 @@ void d3d_gpu_vline4(uint8_t *fb_at_y0, int num_pixels,
     span->colormap_id = current_span_colormap_id();
     span->fb_stride = (int16_t)bytesperline;
     span->tex_width = 1;
+    span->tex_w_mask = 0;
+    span->tex_h_mask = column_tex_h_mask(v_shift);
     for (int c = 0; c < 4; c++) {
         int32_t t, tstep;
         to_16_16(vplce[c], vince[c], v_shift, &t, &tstep);
@@ -1297,6 +1299,8 @@ void d3d_gpu_mvline4(uint8_t *fb_at_y0, int num_pixels,
     span->colormap_id = current_span_colormap_id();
     span->fb_stride = (int16_t)bytesperline;
     span->tex_width = 1;
+    span->tex_w_mask = 0;
+    span->tex_h_mask = column_tex_h_mask(v_shift);
     for (int c = 0; c < 4; c++) {
         int32_t t, tstep;
         to_16_16(vplce[c], vince[c], v_shift, &t, &tstep);

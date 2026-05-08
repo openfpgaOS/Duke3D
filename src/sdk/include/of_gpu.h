@@ -99,6 +99,8 @@ typedef struct {
     uint8_t  colormap_id;    /* explicit slot, including slot 0 */
     int16_t  fb_stride;      /* row stride between vertical pixels */
     uint16_t tex_width;      /* row pitch for tex_addr + t*tex_width */
+    uint16_t tex_w_mask;     /* POT wrap mask for S, 0 means no wrap */
+    uint16_t tex_h_mask;     /* POT wrap mask for T, 0 means no wrap */
     uint8_t  light[4];       /* per-lane palookup row */
 } of_gpu_span4_t;
 
@@ -190,8 +192,8 @@ static uint32_t _gpu_base;
  * CMD_FENCE), pulses the swap side-port to axi_periph_slave for one
  * cycle, then publishes the fence token. */
 #define GPU_CMD_FLIP             0x42
-#define GPU_CMD_DRAW_SPAN4       0x43  /* 16-word compact four-lane column */
-#define GPU_CMD_DRAW_SPAN4_BATCH 0x44  /* payload = 16*N compact columns */
+#define GPU_CMD_DRAW_SPAN4       0x43  /* 17-word compact four-lane column */
+#define GPU_CMD_DRAW_SPAN4_BATCH 0x44  /* payload = 17*N compact columns */
 
 /* Maximum spans per CMD_DRAW_SPANS_BATCH dispatch.  At 15 words/span
  * that's 1920 words = 7680 bytes per batch — fits comfortably in the
@@ -200,7 +202,7 @@ static uint32_t _gpu_base;
  * (e.g. game-side accumulators) can size their own buffers to flush at
  * the same boundary the SDK helper uses internally. */
 #define OF_GPU_BATCH_MAX_SPANS  128
-#define OF_GPU_SPAN4_WORDS      16u
+#define OF_GPU_SPAN4_WORDS      17u
 #define OF_GPU_SPAN4_BATCH_MAX  128
 
 /* ================================================================
@@ -629,7 +631,8 @@ static inline void _gpu_encode_span(uint32_t *p, const of_gpu_span_t *s) {
  * serialises lanes through the same fragment path as four scalar spans:
  * fb_addr + lane selects the adjacent destination column; tex_addr[lane],
  * t[lane], tstep[lane] and light[lane] select each column's source and
- * shade.  colormap_id is explicit, including slot 0. */
+ * shade.  tex_w_mask/tex_h_mask match scalar span POT wrapping.  colormap_id
+ * is explicit, including slot 0. */
 static inline void _gpu_encode_span4(uint32_t *p, const of_gpu_span4_t *s) {
     p[0] = s->fb_addr;
     p[1] = ((uint32_t)s->count << 16) |
@@ -653,6 +656,8 @@ static inline void _gpu_encode_span4(uint32_t *p, const of_gpu_span4_t *s) {
             ((uint32_t)s->light[2] << 16) |
             ((uint32_t)s->light[1] << 8) |
             (uint32_t)s->light[0];
+    p[16] = ((uint32_t)s->tex_h_mask << 16) |
+            (uint32_t)s->tex_w_mask;
 }
 
 static inline void of_gpu_draw_span4(const of_gpu_span4_t *span) {

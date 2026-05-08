@@ -1,5 +1,6 @@
 *.o
 *.elf
+._*
 app_pc
 save_*.bin
 build/

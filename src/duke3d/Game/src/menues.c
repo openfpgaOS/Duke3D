@@ -48,8 +48,10 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "soundefs.h"
 
 #ifdef OPENFPGA
+#include "of_cache.h"
 #include <stddef.h>  /* offsetof */
 #include "../../d3d_save.h"
+#include "../../d3d_gpu.h"
 #endif
 
 
@@ -4763,6 +4765,22 @@ void endanimvol43(int32_t fr)
 
 
 int32_t lastanimhack=0;
+#ifdef OPENFPGA
+static void openfpga_sync_anim_frame_for_gpu(uint8_t *ptr, uint32_t size)
+{
+    if (!ptr || size == 0)
+        return;
+
+    volatile uint8_t *dst = (volatile uint8_t *)of_uncached(ptr);
+    for (uint32_t i = 0; i < size; i++)
+        dst[i] = ptr[i];
+    __asm__ volatile("fence" ::: "memory");
+
+    of_cache_flush_range(ptr, size);
+    d3d_gpu_tex_invalidate();
+}
+#endif
+
 void playanm(char  *fn,uint8_t  t)
 {
     uint8_t  *animbuf, *palptr;
@@ -4836,7 +4854,16 @@ void playanm(char  *fn,uint8_t  t)
        else if(ud.volume_number == 1) ototalclock += 18;
        else                           ototalclock += 10;
 
+#ifdef OPENFPGA
+       d3d_gpu_drain();
+#endif
        tiles[MAXTILES-3-t].data = ANIM_DrawFrame(i);
+#ifdef OPENFPGA
+       openfpga_sync_anim_frame_for_gpu(
+           tiles[MAXTILES-3-t].data,
+           (uint32_t)tiles[MAXTILES-3-t].dim.width *
+           (uint32_t)tiles[MAXTILES-3-t].dim.height);
+#endif
        rotatesprite(0<<16,0<<16,65536L,512,MAXTILES-3-t,0,0,2+4+8+16+64, 0,0,xdim-1,ydim-1);
        nextpage();
 
@@ -4852,6 +4879,9 @@ void playanm(char  *fn,uint8_t  t)
 
     ENDOFANIMLOOP:
 
+#ifdef OPENFPGA
+    d3d_gpu_drain();
+#endif
     ANIM_FreeAnim ();
     tiles[MAXTILES-3-t].lock = 1;
 }
