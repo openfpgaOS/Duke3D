@@ -19,6 +19,9 @@
 #include <stdio.h>
 #include <string.h>
 
+typedef char d3d_gpu_stall_count_must_match[
+    ((int)D3D_GPU_STALL_COUNT == (int)OF_GPU_STALL_COUNT) ? 1 : -1];
+
 int d3d_gpu_present  = 0;
 /* Diagnostic flag — when set to 1 (e.g. via debugger), d3d_gpu_submit_span
  * counts the would-be span but skips the actual submit, isolating per-span
@@ -42,8 +45,9 @@ int d3d_gpu_force_cpu_spans = 0;  /* Scoped gate: when non-zero, draw.c
 int d3d_gpu_force_rotatesprite_cpu = 0;
 int d3d_gpu_use_span4 = 1;
 int d3d_gpu_use_command_stream_batch = 1;
-int d3d_gpu_perf_enable = 0;
+int d3d_gpu_perf_enable = 1;
 int d3d_gpu_perf_deep_enable = 0;
+int d3d_gpu_perf_dump_on_exit = 1;
 /* Per-path timing calls of_time_us() twice per hot helper call, which is
  * useful for short profiling runs but distorts the FPS we are measuring.
  * Keep path span/pixel/call counters on by default and make timings opt-in. */
@@ -199,6 +203,22 @@ typedef struct d3d_gpu_perf_s {
     uint64_t direct_submit_us;
     uint32_t max_direct_submit_us;
 
+    uint64_t tex_reqs;
+    uint64_t tex_misses;
+    uint32_t max_tex_reqs;
+    uint32_t max_tex_misses;
+    uint32_t dma_waits;
+    uint32_t dma_spin_iters;
+    uint32_t ring_waits;
+    uint32_t ring_spin_iters;
+    uint32_t ring_min_free;
+    uint32_t last_ring_free;
+    uint32_t last_gpu_status;
+    uint32_t last_ring_rdptr;
+    uint32_t last_ring_wrptr;
+    uint64_t stall_cycles[D3D_GPU_STALL_COUNT];
+    uint32_t max_stall_cycles[D3D_GPU_STALL_COUNT];
+
     uint32_t phase_calls[D3D_GPU_PERF_PHASE_COUNT];
     uint64_t phase_us[D3D_GPU_PERF_PHASE_COUNT];
     uint32_t phase_max_us[D3D_GPU_PERF_PHASE_COUNT];
@@ -212,10 +232,27 @@ typedef struct d3d_gpu_perf_s {
     uint32_t path_pixels[PERF_PATH_COUNT];
     uint64_t path_us[PERF_PATH_COUNT];
     uint32_t path_max_us[PERF_PATH_COUNT];
+
+    uint32_t tile_loads;
+    uint32_t tile_load_bytes;
+    uint64_t tile_load_us;
+    uint32_t max_tile_load_us;
+    uint32_t max_tile_load_id;
+    uint32_t max_tile_load_bytes;
+    uint32_t move_steps;
+    uint32_t max_move_steps;
+    uint32_t max_move_backlog;
+    uint32_t max_move_remaining;
 } d3d_gpu_perf_t;
 
 static d3d_gpu_perf_t gpu_perf;
 static uint32_t gpu_perf_last_report_ms;
+static uint32_t gpu_perf_hw_prev_tex_req;
+static uint32_t gpu_perf_hw_prev_tex_miss;
+static uint32_t gpu_perf_hw_prev_stall[D3D_GPU_STALL_COUNT];
+static int gpu_perf_hw_valid;
+volatile d3d_gpu_perf_capture_t d3d_gpu_perf_latest;
+volatile d3d_gpu_perf_capture_t d3d_gpu_perf_worst;
 
 static inline void perf_add_time(uint64_t *sum, uint32_t *maxv, uint32_t us)
 {
@@ -227,6 +264,348 @@ static inline void perf_add_time(uint64_t *sum, uint32_t *maxv, uint32_t us)
 static inline uint32_t perf_avg(uint64_t sum, uint32_t count)
 {
     return count ? (uint32_t)(sum / count) : 0;
+}
+
+static inline void perf_reset_interval(void)
+{
+    memset(&gpu_perf, 0, sizeof(gpu_perf));
+    gpu_perf.ring_min_free = OF_GPU_RING_SIZE;
+}
+
+static inline void perf_sample_gpu_hw(void)
+{
+    if (!d3d_gpu_present)
+        return;
+
+    of_gpu_debug_snapshot_t snap;
+    of_gpu_debug_snapshot(&snap, 1);
+
+    if (!gpu_perf_hw_valid) {
+        gpu_perf_hw_prev_tex_req = snap.tex_req_count;
+        gpu_perf_hw_prev_tex_miss = snap.tex_miss_count;
+        for (int i = 0; i < D3D_GPU_STALL_COUNT; i++)
+            gpu_perf_hw_prev_stall[i] = snap.stall_count[i];
+        gpu_perf_hw_valid = 1;
+    } else {
+        uint32_t req_delta = snap.tex_req_count - gpu_perf_hw_prev_tex_req;
+        uint32_t miss_delta = snap.tex_miss_count - gpu_perf_hw_prev_tex_miss;
+        gpu_perf_hw_prev_tex_req = snap.tex_req_count;
+        gpu_perf_hw_prev_tex_miss = snap.tex_miss_count;
+
+        gpu_perf.tex_reqs += req_delta;
+        gpu_perf.tex_misses += miss_delta;
+        if (req_delta > gpu_perf.max_tex_reqs)
+            gpu_perf.max_tex_reqs = req_delta;
+        if (miss_delta > gpu_perf.max_tex_misses)
+            gpu_perf.max_tex_misses = miss_delta;
+
+        for (int i = 0; i < D3D_GPU_STALL_COUNT; i++) {
+            uint32_t stall_delta =
+                snap.stall_count[i] - gpu_perf_hw_prev_stall[i];
+            gpu_perf_hw_prev_stall[i] = snap.stall_count[i];
+            gpu_perf.stall_cycles[i] += stall_delta;
+            if (stall_delta > gpu_perf.max_stall_cycles[i])
+                gpu_perf.max_stall_cycles[i] = stall_delta;
+        }
+    }
+
+    gpu_perf.dma_waits += snap.dma_waits;
+    gpu_perf.dma_spin_iters += snap.dma_spin_iters;
+    gpu_perf.ring_waits += snap.ring_waits;
+    gpu_perf.ring_spin_iters += snap.ring_spin_iters;
+    if (snap.min_ring_free < gpu_perf.ring_min_free)
+        gpu_perf.ring_min_free = snap.min_ring_free;
+    gpu_perf.last_ring_free = snap.ring_free;
+    gpu_perf.last_gpu_status = snap.status;
+    gpu_perf.last_ring_rdptr = snap.rdptr;
+    gpu_perf.last_ring_wrptr = snap.wrptr;
+}
+
+static void perf_capture_interval(uint32_t elapsed_ms)
+{
+    uint32_t frames = gpu_perf.frames ? gpu_perf.frames : 1;
+    d3d_gpu_perf_capture_t cap;
+    memset(&cap, 0, sizeof(cap));
+
+    cap.valid = 1;
+    cap.seq = d3d_gpu_perf_latest.seq + 1;
+    cap.elapsed_ms = elapsed_ms;
+    cap.frames = frames;
+    cap.render_avg_us = perf_avg(gpu_perf.render_us, frames);
+    cap.render_max_us = gpu_perf.max_render_us;
+    cap.page_avg_us = perf_avg(gpu_perf.page_us, frames);
+    cap.page_max_us = gpu_perf.max_page_us;
+    cap.wait_avg_us = perf_avg(gpu_perf.wait_flip_us, frames);
+    cap.wait_max_us = gpu_perf.max_wait_flip_us;
+    cap.acquire_avg_us = perf_avg(gpu_perf.acquire_us, frames);
+    cap.acquire_max_us = gpu_perf.max_acquire_us;
+    cap.finish_avg_us = perf_avg(gpu_perf.finish_us, gpu_perf.finish_calls);
+    cap.finish_max_us = gpu_perf.max_finish_us;
+    cap.sync_avg_us = perf_avg(gpu_perf.cpu_sync_us, gpu_perf.cpu_syncs);
+    cap.sync_max_us = gpu_perf.max_cpu_sync_us;
+    cap.batches = gpu_perf.batches;
+    cap.max_batch = gpu_perf.max_batch;
+    cap.submit_avg_us = perf_avg(gpu_perf.batch_submit_us, gpu_perf.batches);
+    cap.submit_max_us = gpu_perf.max_batch_submit_us;
+    cap.spans = gpu_perf.spans;
+    cap.span_pixels = gpu_perf.span_pixels;
+    cap.vline_spans = gpu_perf.path_spans[PERF_PATH_VLINE];
+    cap.vline_pixels = gpu_perf.path_pixels[PERF_PATH_VLINE];
+    cap.mvline_spans = gpu_perf.path_spans[PERF_PATH_MVLINE];
+    cap.mvline_pixels = gpu_perf.path_pixels[PERF_PATH_MVLINE];
+    cap.vline4_spans = gpu_perf.path_spans[PERF_PATH_VLINE4];
+    cap.vline4_pixels = gpu_perf.path_pixels[PERF_PATH_VLINE4];
+    cap.mvline4_spans = gpu_perf.path_spans[PERF_PATH_MVLINE4];
+    cap.mvline4_pixels = gpu_perf.path_pixels[PERF_PATH_MVLINE4];
+    cap.hline_calls = gpu_perf.path_calls[PERF_PATH_HLINE];
+    cap.hline_pixels = gpu_perf.path_pixels[PERF_PATH_HLINE];
+    cap.sprite_spans = gpu_perf.path_spans[PERF_PATH_SPRITE];
+    cap.sprite_pixels = gpu_perf.path_pixels[PERF_PATH_SPRITE];
+    cap.tile_loads = gpu_perf.tile_loads;
+    cap.tile_bytes = gpu_perf.tile_load_bytes;
+    cap.tile_load_avg_us =
+        perf_avg(gpu_perf.tile_load_us, gpu_perf.tile_loads);
+    cap.tile_load_max_us = gpu_perf.max_tile_load_us;
+    cap.tile_load_max_id = gpu_perf.max_tile_load_id;
+    cap.tile_load_max_bytes = gpu_perf.max_tile_load_bytes;
+    cap.move_steps = gpu_perf.move_steps;
+    cap.move_steps_max = gpu_perf.max_move_steps;
+    cap.move_backlog_max = gpu_perf.max_move_backlog;
+    cap.move_remaining_max = gpu_perf.max_move_remaining;
+    cap.tex_req_avg = perf_avg(gpu_perf.tex_reqs, frames);
+    cap.tex_miss_avg = perf_avg(gpu_perf.tex_misses, frames);
+    cap.tex_req_max = gpu_perf.max_tex_reqs;
+    cap.tex_miss_max = gpu_perf.max_tex_misses;
+    cap.tex_miss_permille = gpu_perf.tex_reqs ?
+        (uint32_t)((gpu_perf.tex_misses * 1000u) / gpu_perf.tex_reqs) : 0;
+    cap.dma_waits = gpu_perf.dma_waits;
+    cap.dma_spin_iters = gpu_perf.dma_spin_iters;
+    cap.ring_waits = gpu_perf.ring_waits;
+    cap.ring_spin_iters = gpu_perf.ring_spin_iters;
+    cap.ring_min_free = gpu_perf.ring_min_free;
+    cap.ring_last_free = gpu_perf.last_ring_free;
+    cap.gpu_status = gpu_perf.last_gpu_status;
+    for (int i = 0; i < D3D_GPU_STALL_COUNT; i++) {
+        cap.stall_avg[i] = perf_avg(gpu_perf.stall_cycles[i], frames);
+        cap.stall_max[i] = gpu_perf.max_stall_cycles[i];
+    }
+
+    for (int i = 0; i < D3D_GPU_PERF_PHASE_COUNT; i++) {
+        cap.phase_avg_us[i] =
+            perf_avg(gpu_perf.phase_us[i], gpu_perf.phase_calls[i]);
+        cap.phase_max_us[i] = gpu_perf.phase_max_us[i];
+    }
+    for (int i = 0; i < D3D_GPU_PERF_ZONE_COUNT; i++) {
+        cap.zone_avg_us[i] =
+            perf_avg(gpu_perf.zone_us[i], gpu_perf.zone_calls[i]);
+        cap.zone_max_us[i] = gpu_perf.zone_max_us[i];
+    }
+
+    d3d_gpu_perf_latest = cap;
+    if (!d3d_gpu_perf_worst.valid ||
+        cap.render_max_us > d3d_gpu_perf_worst.render_max_us)
+        d3d_gpu_perf_worst = cap;
+}
+
+void d3d_gpu_perf_discard_interval(void)
+{
+    if (!d3d_gpu_perf_enable)
+        return;
+
+    if (d3d_gpu_present) {
+        of_gpu_debug_snapshot_t snap;
+        of_gpu_debug_snapshot(&snap, 1);
+        gpu_perf_hw_prev_tex_req = snap.tex_req_count;
+        gpu_perf_hw_prev_tex_miss = snap.tex_miss_count;
+        for (int i = 0; i < D3D_GPU_STALL_COUNT; i++)
+            gpu_perf_hw_prev_stall[i] = snap.stall_count[i];
+        gpu_perf_hw_valid = 1;
+    } else {
+        gpu_perf_hw_valid = 0;
+    }
+
+    perf_reset_interval();
+    gpu_perf_last_report_ms = of_time_ms();
+}
+
+void d3d_gpu_perf_capture_pending(void)
+{
+    if (!d3d_gpu_perf_enable)
+        return;
+
+    if (gpu_perf.frames) {
+        uint32_t now_ms = of_time_ms();
+        uint32_t elapsed_ms = gpu_perf_last_report_ms ?
+            (now_ms - gpu_perf_last_report_ms) : 0;
+        perf_capture_interval(elapsed_ms);
+    }
+
+    d3d_gpu_perf_discard_interval();
+}
+
+void d3d_gpu_perf_dump(void)
+{
+    d3d_gpu_perf_capture_pending();
+
+    d3d_gpu_perf_capture_t cap = d3d_gpu_perf_worst.valid ?
+        d3d_gpu_perf_worst : d3d_gpu_perf_latest;
+    if (!cap.valid)
+        return;
+
+    printf("[perf-worst] seq=%u n=%u ms=%u render=%u/%u page=%u/%u "
+           "wait=%u/%u acq=%u/%u fin=%u/%u sync=%u/%u batch=%u/%u "
+           "submit=%u/%u span=%u pix=%u v=%u/%u mv=%u/%u v4=%u/%u "
+           "mv4=%u/%u h=%u/%u spr=%u/%u tex=%u/%u max=%u/%u "
+           "miss=%u.%u%% tile=%u/%u/%u/%u/%u/%u mstep=%u/%u/%u/%u "
+           "dma=%u/%u ring=%u/%u "
+           "free=%u/%u st=%08x\n",
+           cap.seq,
+           cap.frames,
+           cap.elapsed_ms,
+           cap.render_avg_us,
+           cap.render_max_us,
+           cap.page_avg_us,
+           cap.page_max_us,
+           cap.wait_avg_us,
+           cap.wait_max_us,
+           cap.acquire_avg_us,
+           cap.acquire_max_us,
+           cap.finish_avg_us,
+           cap.finish_max_us,
+           cap.sync_avg_us,
+           cap.sync_max_us,
+           cap.batches,
+           cap.max_batch,
+           cap.submit_avg_us,
+           cap.submit_max_us,
+           cap.spans,
+           cap.span_pixels,
+           cap.vline_spans,
+           cap.vline_pixels,
+           cap.mvline_spans,
+           cap.mvline_pixels,
+           cap.vline4_spans,
+           cap.vline4_pixels,
+           cap.mvline4_spans,
+           cap.mvline4_pixels,
+           cap.hline_calls,
+           cap.hline_pixels,
+           cap.sprite_spans,
+           cap.sprite_pixels,
+           cap.tex_req_avg,
+           cap.tex_miss_avg,
+           cap.tex_req_max,
+           cap.tex_miss_max,
+           cap.tex_miss_permille / 10u,
+           cap.tex_miss_permille % 10u,
+           cap.tile_loads,
+           cap.tile_bytes,
+           cap.tile_load_avg_us,
+           cap.tile_load_max_us,
+           cap.tile_load_max_id,
+           cap.tile_load_max_bytes,
+           cap.move_steps,
+           cap.move_steps_max,
+           cap.move_backlog_max,
+           cap.move_remaining_max,
+           cap.dma_waits,
+           cap.dma_spin_iters,
+           cap.ring_waits,
+           cap.ring_spin_iters,
+           cap.ring_min_free,
+           cap.ring_last_free,
+           cap.gpu_status);
+
+    printf("[perf-stall] cyc tex=%u/%u cmap=%u/%u cmapi=%u/%u "
+           "fbss=%u/%u fbwr=%u/%u infl=%u/%u persp=%u/%u\n",
+           cap.stall_avg[D3D_GPU_STALL_TEX_WAIT],
+           cap.stall_max[D3D_GPU_STALL_TEX_WAIT],
+           cap.stall_avg[D3D_GPU_STALL_CMAP_WAIT],
+           cap.stall_max[D3D_GPU_STALL_CMAP_WAIT],
+           cap.stall_avg[D3D_GPU_STALL_CMAP_ISSUE],
+           cap.stall_max[D3D_GPU_STALL_CMAP_ISSUE],
+           cap.stall_avg[D3D_GPU_STALL_FBSS_BUSY],
+           cap.stall_max[D3D_GPU_STALL_FBSS_BUSY],
+           cap.stall_avg[D3D_GPU_STALL_FB_WRITE],
+           cap.stall_max[D3D_GPU_STALL_FB_WRITE],
+           cap.stall_avg[D3D_GPU_STALL_INFLIGHT],
+           cap.stall_max[D3D_GPU_STALL_INFLIGHT],
+           cap.stall_avg[D3D_GPU_STALL_PERSP_WAIT],
+           cap.stall_max[D3D_GPU_STALL_PERSP_WAIT]);
+
+    printf("[perf-wzone] move=%u/%u misc=%u/%u disp=%u/%u "
+           "rooms=%u/%u masks=%u/%u rest=%u/%u post=%u/%u "
+           "ceil=%u/%u flor=%u/%u wall=%u/%u mscan=%u/%u "
+           "tscan=%u/%u dmwall=%u/%u spr=%u/%u rot=%u/%u\n",
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_MOVELOOP],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_MOVELOOP],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_LOOP_MISC],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_LOOP_MISC],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DISPLAYROOMS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DISPLAYROOMS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DRAWROOMS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DRAWROOMS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DRAWMASKS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DRAWMASKS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DISPLAYREST],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DISPLAYREST],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_POSTREST],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_POSTREST],
+           cap.zone_avg_us[D3D_GPU_PERF_ZONE_CEILSCAN],
+           cap.zone_max_us[D3D_GPU_PERF_ZONE_CEILSCAN],
+           cap.zone_avg_us[D3D_GPU_PERF_ZONE_FLORSCAN],
+           cap.zone_max_us[D3D_GPU_PERF_ZONE_FLORSCAN],
+           cap.zone_avg_us[D3D_GPU_PERF_ZONE_WALLSCAN],
+           cap.zone_max_us[D3D_GPU_PERF_ZONE_WALLSCAN],
+           cap.zone_avg_us[D3D_GPU_PERF_ZONE_MASKWALLSCAN],
+           cap.zone_max_us[D3D_GPU_PERF_ZONE_MASKWALLSCAN],
+           cap.zone_avg_us[D3D_GPU_PERF_ZONE_TRANSMASKWALLSCAN],
+           cap.zone_max_us[D3D_GPU_PERF_ZONE_TRANSMASKWALLSCAN],
+           cap.zone_avg_us[D3D_GPU_PERF_ZONE_DRAWMASKWALL],
+           cap.zone_max_us[D3D_GPU_PERF_ZONE_DRAWMASKWALL],
+           cap.zone_avg_us[D3D_GPU_PERF_ZONE_DRAWSPRITE],
+           cap.zone_max_us[D3D_GPU_PERF_ZONE_DRAWSPRITE],
+           cap.zone_avg_us[D3D_GPU_PERF_ZONE_DOROTATESPRITE],
+           cap.zone_max_us[D3D_GPU_PERF_ZONE_DOROTATESPRITE]);
+
+    printf("[perf-game] pkt=%u/%u dom=%u/%u setup=%u/%u input=%u/%u "
+           "fta=%u/%u weap=%u/%u trans=%u/%u ply=%u/%u fall=%u/%u "
+           "expl=%u/%u act=%u/%u eff=%u/%u stand=%u/%u anim=%u/%u "
+           "fx=%u/%u fake=%u/%u cyc=%u/%u\n",
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_MOVE_PACKETS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_MOVE_PACKETS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_TOTAL],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_TOTAL],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_SETUP],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_SETUP],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_INPUT],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_INPUT],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_FTA],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_FTA],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_WEAPONS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_WEAPONS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_TRANSPORTS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_TRANSPORTS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_PLAYERS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_PLAYERS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_FALLERS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_FALLERS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_EXPLOSIONS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_EXPLOSIONS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_ACTORS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_ACTORS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_EFFECTORS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_EFFECTORS],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_STANDABLES],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_STANDABLES],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_ANIM],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_ANIM],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_FX],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_FX],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_FAKE],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_FAKE],
+           cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_CYCLERS],
+           cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_CYCLERS]);
 }
 
 static inline uint32_t perf_dt_us(uint32_t t0)
@@ -241,6 +620,32 @@ void d3d_gpu_perf_note_cpu_fallback(void)
 {
     if (!d3d_gpu_perf_enable) return;
     gpu_perf.cpu_fallbacks++;
+}
+
+void d3d_gpu_perf_note_tile_load(uint32_t tile_id, uint32_t bytes,
+                                 uint32_t us)
+{
+    if (!d3d_gpu_perf_enable) return;
+    gpu_perf.tile_loads++;
+    gpu_perf.tile_load_bytes += bytes;
+    perf_add_time(&gpu_perf.tile_load_us, &gpu_perf.max_tile_load_us, us);
+    if (us == gpu_perf.max_tile_load_us) {
+        gpu_perf.max_tile_load_id = tile_id;
+        gpu_perf.max_tile_load_bytes = bytes;
+    }
+}
+
+void d3d_gpu_perf_note_moveloop(uint32_t steps, uint32_t backlog,
+                                uint32_t remaining)
+{
+    if (!d3d_gpu_perf_enable) return;
+    gpu_perf.move_steps += steps;
+    if (steps > gpu_perf.max_move_steps)
+        gpu_perf.max_move_steps = steps;
+    if (backlog > gpu_perf.max_move_backlog)
+        gpu_perf.max_move_backlog = backlog;
+    if (remaining > gpu_perf.max_move_remaining)
+        gpu_perf.max_move_remaining = remaining;
 }
 
 void d3d_gpu_perf_note_phase(int phase, uint32_t us)
@@ -277,6 +682,7 @@ void d3d_gpu_perf_report_frame(uint32_t frame_period_us,
         gpu_perf_last_report_ms = now_ms;
 
     gpu_perf.frames++;
+    perf_sample_gpu_hw();
     perf_add_time(&gpu_perf.frame_period_us, &gpu_perf.max_frame_period_us,
                   frame_period_us);
     perf_add_time(&gpu_perf.render_us, &gpu_perf.max_render_us, render_us);
@@ -291,145 +697,11 @@ void d3d_gpu_perf_report_frame(uint32_t frame_period_us,
     perf_add_time(&gpu_perf.audio_us, &gpu_perf.max_audio_us, audio_us);
 
     uint32_t elapsed_ms = now_ms - gpu_perf_last_report_ms;
-    if (elapsed_ms < 1000)
+    if (elapsed_ms < 3000)
         return;
 
-    uint32_t frames = gpu_perf.frames;
-    uint32_t fps = elapsed_ms ? (uint32_t)((uint64_t)frames * 1000u /
-                                           elapsed_ms) : 0;
-    uint32_t batch_submit_avg =
-        perf_avg(gpu_perf.batch_submit_us, gpu_perf.batches);
-    uint32_t clear_emit_avg =
-        perf_avg(gpu_perf.clear_emit_us, gpu_perf.clear_rects);
-    uint32_t setfb_avg =
-        perf_avg(gpu_perf.setfb_us, gpu_perf.setfb_calls);
-    uint32_t pal_upload_avg =
-        perf_avg(gpu_perf.pal_upload_us, gpu_perf.pal_uploads);
-    uint32_t pal_switch_avg =
-        perf_avg(gpu_perf.pal_switch_us, gpu_perf.pal_switches);
-    uint32_t finish_avg =
-        perf_avg(gpu_perf.finish_us, gpu_perf.finish_calls);
-    uint32_t cpu_sync_avg =
-        perf_avg(gpu_perf.cpu_sync_us, gpu_perf.cpu_syncs);
-    uint32_t direct_submit_avg =
-        perf_avg(gpu_perf.direct_submit_us, gpu_perf.direct_spans);
-
-    printf("[perf] fps=%u period=%u/%u render=%u/%u page=%u/%u wait=%u/%u "
-           "drain=%u/%u flip=%u/%u acq=%u/%u aud=%u/%u "
-           "span=%u pix=%u mask=%u trans=%u skip=%u direct=%u/%u "
-           "dsub=%u/%u batch=%u maxb=%u submit=%u/%u clear=%u/%u/%u "
-           "setfb=%u/%u texfl=%u palup=%u/%u/%u palsw=%u/%u/%u miss=%u "
-           "fbfin=%u/%u cpusync=%u/%u fallback=%u\n",
-           fps,
-           perf_avg(gpu_perf.frame_period_us, frames),
-           gpu_perf.max_frame_period_us,
-           perf_avg(gpu_perf.render_us, frames),
-           gpu_perf.max_render_us,
-           perf_avg(gpu_perf.page_us, frames),
-           gpu_perf.max_page_us,
-           perf_avg(gpu_perf.wait_flip_us, frames),
-           gpu_perf.max_wait_flip_us,
-           perf_avg(gpu_perf.drain_batch_us, frames),
-           gpu_perf.max_drain_batch_us,
-           perf_avg(gpu_perf.flip_emit_us, frames),
-           gpu_perf.max_flip_emit_us,
-           perf_avg(gpu_perf.acquire_us, frames),
-           gpu_perf.max_acquire_us,
-           perf_avg(gpu_perf.audio_us, frames),
-           gpu_perf.max_audio_us,
-           gpu_perf.spans,
-           gpu_perf.span_pixels,
-           gpu_perf.masked_spans,
-           gpu_perf.translucent_spans,
-           gpu_perf.skipped_spans,
-           gpu_perf.direct_spans,
-           gpu_perf.direct_pixels,
-           direct_submit_avg,
-           gpu_perf.max_direct_submit_us,
-           gpu_perf.batches,
-           gpu_perf.max_batch,
-           batch_submit_avg,
-           gpu_perf.max_batch_submit_us,
-           gpu_perf.clear_rects,
-           clear_emit_avg,
-           gpu_perf.max_clear_emit_us,
-           setfb_avg,
-           gpu_perf.max_setfb_us,
-           gpu_perf.tex_flushes,
-           gpu_perf.pal_uploads,
-           pal_upload_avg,
-           gpu_perf.max_pal_upload_us,
-           gpu_perf.pal_switches,
-           pal_switch_avg,
-           gpu_perf.max_pal_switch_us,
-           gpu_perf.pal_misses,
-           finish_avg,
-           gpu_perf.max_finish_us,
-           cpu_sync_avg,
-           gpu_perf.max_cpu_sync_us,
-           gpu_perf.cpu_fallbacks);
-
-#define PHASE_ARGS(p) \
-           gpu_perf.phase_calls[p], \
-           perf_avg(gpu_perf.phase_us[p], gpu_perf.phase_calls[p]), \
-           gpu_perf.phase_max_us[p]
-    printf("[perf-phase] disp=%u/%u/%u rooms=%u/%u/%u masks=%u/%u/%u\n",
-           PHASE_ARGS(D3D_GPU_PERF_PHASE_DISPLAYROOMS),
-           PHASE_ARGS(D3D_GPU_PERF_PHASE_DRAWROOMS),
-           PHASE_ARGS(D3D_GPU_PERF_PHASE_DRAWMASKS));
-#undef PHASE_ARGS
-
-#define ZONE_ARGS(z) \
-           gpu_perf.zone_calls[z], \
-           perf_avg(gpu_perf.zone_us[z], gpu_perf.zone_calls[z]), \
-           gpu_perf.zone_max_us[z]
-    uint32_t zone_call_count = 0;
-    for (int z = 0; z < D3D_GPU_PERF_ZONE_COUNT; z++)
-        zone_call_count += gpu_perf.zone_calls[z];
-    if (zone_call_count) {
-        printf("[perf-zone1] ceil=%u/%u/%u flor=%u/%u/%u wall=%u/%u/%u "
-               "mscan=%u/%u/%u tscan=%u/%u/%u\n",
-               ZONE_ARGS(D3D_GPU_PERF_ZONE_CEILSCAN),
-               ZONE_ARGS(D3D_GPU_PERF_ZONE_FLORSCAN),
-               ZONE_ARGS(D3D_GPU_PERF_ZONE_WALLSCAN),
-               ZONE_ARGS(D3D_GPU_PERF_ZONE_MASKWALLSCAN),
-               ZONE_ARGS(D3D_GPU_PERF_ZONE_TRANSMASKWALLSCAN));
-        printf("[perf-zone2] dmwall=%u/%u/%u sprite=%u/%u/%u rot=%u/%u/%u\n",
-               ZONE_ARGS(D3D_GPU_PERF_ZONE_DRAWMASKWALL),
-               ZONE_ARGS(D3D_GPU_PERF_ZONE_DRAWSPRITE),
-               ZONE_ARGS(D3D_GPU_PERF_ZONE_DOROTATESPRITE));
-    }
-#undef ZONE_ARGS
-
-#define PATH_ARGS(p) \
-           gpu_perf.path_spans[p], \
-           gpu_perf.path_pixels[p], \
-           gpu_perf.path_calls[p], \
-           perf_avg(gpu_perf.path_us[p], gpu_perf.path_calls[p]), \
-           gpu_perf.path_max_us[p]
-    printf("[perf-path1] v=%u/%u/%u/%u/%u mv=%u/%u/%u/%u/%u "
-           "v4=%u/%u/%u/%u/%u mv4=%u/%u/%u/%u/%u "
-           "h=%u/%u/%u/%u/%u mh=%u/%u/%u/%u/%u\n",
-           PATH_ARGS(PERF_PATH_VLINE),
-           PATH_ARGS(PERF_PATH_MVLINE),
-           PATH_ARGS(PERF_PATH_VLINE4),
-           PATH_ARGS(PERF_PATH_MVLINE4),
-           PATH_ARGS(PERF_PATH_HLINE),
-           PATH_ARGS(PERF_PATH_MHLINE));
-    printf("[perf-path2] th=%u/%u/%u/%u/%u tv=%u/%u/%u/%u/%u "
-           "tv2=%u/%u/%u/%u/%u rh=%u/%u/%u/%u/%u "
-           "rmh=%u/%u/%u/%u/%u spr=%u/%u/%u/%u/%u "
-           "mir=%u/%u/%u/%u/%u\n",
-           PATH_ARGS(PERF_PATH_THLINE),
-           PATH_ARGS(PERF_PATH_TVLINE),
-           PATH_ARGS(PERF_PATH_TVLINE2),
-           PATH_ARGS(PERF_PATH_RHLINE),
-           PATH_ARGS(PERF_PATH_RMHLINE),
-           PATH_ARGS(PERF_PATH_SPRITE),
-           PATH_ARGS(PERF_PATH_MIRROR));
-#undef PATH_ARGS
-
-    memset(&gpu_perf, 0, sizeof(gpu_perf));
+    perf_capture_interval(elapsed_ms);
+    perf_reset_interval();
     gpu_perf_last_report_ms = now_ms;
 }
 
@@ -442,6 +714,8 @@ void d3d_gpu_perf_report_frame(uint32_t frame_period_us,
 
 void d3d_gpu_init(void)
 {
+    perf_reset_interval();
+    gpu_perf_hw_valid = 0;
     gpu_perf_last_report_ms = of_time_ms();
 
     /* A/B test escape hatch — leave d3d_gpu_present at 0 so every

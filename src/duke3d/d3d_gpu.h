@@ -44,7 +44,8 @@ extern int d3d_gpu_use_span4;
  * scalar DRAW_SPANS_BATCH; 1 batches complete DRAW_SPAN/SPAN4 commands. */
 extern int d3d_gpu_use_command_stream_batch;
 
-/* Runtime perf logging.  Default-off so UART logging does not distort FPS. */
+/* Runtime perf capture.  Samples are kept in RAM; UART dump is explicit or
+ * exit-only so active gameplay timing is not distorted by serial writes. */
 extern int d3d_gpu_perf_enable;
 extern int d3d_gpu_perf_deep_enable;
 /* Opt-in only: per-path timings call the timer syscall in the inner render
@@ -55,6 +56,27 @@ enum {
     D3D_GPU_PERF_PHASE_DISPLAYROOMS = 0,
     D3D_GPU_PERF_PHASE_DRAWROOMS,
     D3D_GPU_PERF_PHASE_DRAWMASKS,
+    D3D_GPU_PERF_PHASE_MOVELOOP,
+    D3D_GPU_PERF_PHASE_LOOP_MISC,
+    D3D_GPU_PERF_PHASE_DISPLAYREST,
+    D3D_GPU_PERF_PHASE_POSTREST,
+    D3D_GPU_PERF_PHASE_MOVE_PACKETS,
+    D3D_GPU_PERF_PHASE_DOMOVE_TOTAL,
+    D3D_GPU_PERF_PHASE_DOMOVE_SETUP,
+    D3D_GPU_PERF_PHASE_DOMOVE_INPUT,
+    D3D_GPU_PERF_PHASE_DOMOVE_FTA,
+    D3D_GPU_PERF_PHASE_DOMOVE_WEAPONS,
+    D3D_GPU_PERF_PHASE_DOMOVE_TRANSPORTS,
+    D3D_GPU_PERF_PHASE_DOMOVE_PLAYERS,
+    D3D_GPU_PERF_PHASE_DOMOVE_FALLERS,
+    D3D_GPU_PERF_PHASE_DOMOVE_EXPLOSIONS,
+    D3D_GPU_PERF_PHASE_DOMOVE_ACTORS,
+    D3D_GPU_PERF_PHASE_DOMOVE_EFFECTORS,
+    D3D_GPU_PERF_PHASE_DOMOVE_STANDABLES,
+    D3D_GPU_PERF_PHASE_DOMOVE_ANIM,
+    D3D_GPU_PERF_PHASE_DOMOVE_FX,
+    D3D_GPU_PERF_PHASE_DOMOVE_FAKE,
+    D3D_GPU_PERF_PHASE_DOMOVE_CYCLERS,
     D3D_GPU_PERF_PHASE_COUNT
 };
 
@@ -70,12 +92,74 @@ enum {
     D3D_GPU_PERF_ZONE_COUNT
 };
 
+enum {
+    D3D_GPU_STALL_TEX_WAIT = 0,
+    D3D_GPU_STALL_CMAP_WAIT,
+    D3D_GPU_STALL_CMAP_ISSUE,
+    D3D_GPU_STALL_FBSS_BUSY,
+    D3D_GPU_STALL_FB_WRITE,
+    D3D_GPU_STALL_INFLIGHT,
+    D3D_GPU_STALL_PERSP_WAIT,
+    D3D_GPU_STALL_COUNT
+};
+
+typedef struct d3d_gpu_perf_capture_s {
+    uint32_t valid;
+    uint32_t seq;
+    uint32_t elapsed_ms;
+    uint32_t frames;
+    uint32_t render_avg_us, render_max_us;
+    uint32_t page_avg_us, page_max_us;
+    uint32_t wait_avg_us, wait_max_us;
+    uint32_t acquire_avg_us, acquire_max_us;
+    uint32_t finish_avg_us, finish_max_us;
+    uint32_t sync_avg_us, sync_max_us;
+    uint32_t batches, max_batch;
+    uint32_t submit_avg_us, submit_max_us;
+    uint32_t spans, span_pixels;
+    uint32_t vline_spans, vline_pixels;
+    uint32_t mvline_spans, mvline_pixels;
+    uint32_t vline4_spans, vline4_pixels;
+    uint32_t mvline4_spans, mvline4_pixels;
+    uint32_t hline_calls, hline_pixels;
+    uint32_t sprite_spans, sprite_pixels;
+    uint32_t tile_loads, tile_bytes;
+    uint32_t tile_load_avg_us, tile_load_max_us;
+    uint32_t tile_load_max_id, tile_load_max_bytes;
+    uint32_t move_steps, move_steps_max;
+    uint32_t move_backlog_max, move_remaining_max;
+    uint32_t tex_req_avg, tex_miss_avg;
+    uint32_t tex_req_max, tex_miss_max;
+    uint32_t tex_miss_permille;
+    uint32_t dma_waits, dma_spin_iters;
+    uint32_t ring_waits, ring_spin_iters;
+    uint32_t ring_min_free, ring_last_free;
+    uint32_t gpu_status;
+    uint32_t stall_avg[D3D_GPU_STALL_COUNT];
+    uint32_t stall_max[D3D_GPU_STALL_COUNT];
+    uint32_t phase_avg_us[D3D_GPU_PERF_PHASE_COUNT];
+    uint32_t phase_max_us[D3D_GPU_PERF_PHASE_COUNT];
+    uint32_t zone_avg_us[D3D_GPU_PERF_ZONE_COUNT];
+    uint32_t zone_max_us[D3D_GPU_PERF_ZONE_COUNT];
+} d3d_gpu_perf_capture_t;
+
+extern volatile d3d_gpu_perf_capture_t d3d_gpu_perf_latest;
+extern volatile d3d_gpu_perf_capture_t d3d_gpu_perf_worst;
+extern int d3d_gpu_perf_dump_on_exit;
+
 void d3d_gpu_init(void);
 void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels);
 void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades);
 void d3d_gpu_flush(void);
+void d3d_gpu_perf_capture_pending(void);
+void d3d_gpu_perf_discard_interval(void);
+void d3d_gpu_perf_dump(void);
 
 void d3d_gpu_perf_note_cpu_fallback(void);
+void d3d_gpu_perf_note_tile_load(uint32_t tile_id, uint32_t bytes,
+                                 uint32_t us);
+void d3d_gpu_perf_note_moveloop(uint32_t steps, uint32_t backlog,
+                                uint32_t remaining);
 void d3d_gpu_perf_note_phase(int phase, uint32_t us);
 void d3d_gpu_perf_note_zone(int zone, uint32_t us);
 void d3d_gpu_perf_report_frame(uint32_t frame_period_us,

@@ -153,11 +153,23 @@ static uint32_t _gpu_base;
 #define GPU_TRANSLUC_DATA       OF_GPU_REG(0x24)  /* W: 32-bit word into transluc[] */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
 #define GPU_DMA_KICK            OF_GPU_REG(0x2C)  /* W: write 1 to fire DMA pull from (SRC, LEN) */
+#define GPU_DBG_SELECT          OF_GPU_REG(0x3C)  /* W/R: indexed GPU debug counter */
 
 /* GPU_STATUS bit definitions */
 #define GPU_STATUS_BUSY        0x1u
 #define GPU_STATUS_RING_EMPTY  0x2u
 #define GPU_STATUS_DMA_BUSY    0x4u
+
+enum {
+    OF_GPU_STALL_TEX_WAIT = 0,
+    OF_GPU_STALL_CMAP_WAIT,
+    OF_GPU_STALL_CMAP_ISSUE,
+    OF_GPU_STALL_FBSS_BUSY,
+    OF_GPU_STALL_FB_WRITE,
+    OF_GPU_STALL_INFLIGHT,
+    OF_GPU_STALL_PERSP_WAIT,
+    OF_GPU_STALL_COUNT
+};
 
 /* ================================================================
  * Command IDs
@@ -261,6 +273,11 @@ static const uint32_t _gpu_ring_mask = OF_GPU_RING_SIZE - 1;
  * falls back to per-span MMIO. */
 static uint32_t *_gpu_batch_buf;
 static uint32_t  _gpu_batch_slot;
+static uint32_t  _gpu_dbg_dma_waits;
+static uint32_t  _gpu_dbg_dma_spin_iters;
+static uint32_t  _gpu_dbg_ring_waits;
+static uint32_t  _gpu_dbg_ring_spin_iters;
+static uint32_t  _gpu_dbg_min_ring_free;
 
 #define OF_GPU_BATCH_WORDS_PER_SPAN   15u
 #define OF_GPU_BATCH_SLOT_WORDS       (OF_GPU_SPAN4_BATCH_MAX * OF_GPU_SPAN4_WORDS)
@@ -274,6 +291,16 @@ static uint32_t  _gpu_batch_slot;
 
 /* ---- Internal helpers ---- */
 
+static inline void _gpu_wait_dma_idle_debug(void) {
+    uint32_t dma_spins = 0;
+    while (GPU_STATUS & GPU_STATUS_DMA_BUSY)
+        dma_spins++;
+    if (dma_spins) {
+        _gpu_dbg_dma_waits++;
+        _gpu_dbg_dma_spin_iters += dma_spins;
+    }
+}
+
 static inline void _gpu_ring_ensure(uint32_t bytes) {
     /* Wait for any in-flight doorbell-DMA before letting the caller
      * write into the ring.  CPU MMIO writes and DMA writes share
@@ -284,19 +311,32 @@ static inline void _gpu_ring_ensure(uint32_t bytes) {
      * DMA fill, while of_gpu_draw_spans_batch can return immediately
      * after kicking — overlapping the DMA's ~23 µs fill with the
      * caller's between-batch CPU work. */
-    while (GPU_STATUS & GPU_STATUS_DMA_BUSY)
-        ;
+    _gpu_wait_dma_idle_debug();
 
     /* Fast path: enough free space already, return immediately. */
-    if (((GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask) >= bytes)
+    uint32_t ring_free = (GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask;
+    if (ring_free < _gpu_dbg_min_ring_free)
+        _gpu_dbg_min_ring_free = ring_free;
+    if (ring_free >= bytes)
         return;
 
     /* Slow path: ring is full.  Publish our current write pointer to
      * the GPU first — otherwise the GPU is sitting at its old wrptr
      * with nothing to drain, and we'd spin forever. */
     GPU_RING_WRPTR = _gpu_wrptr;
-    while (((GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask) < bytes)
-        ;
+    {
+        uint32_t ring_spins = 0;
+        do {
+            ring_free = (GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask;
+            if (ring_free < _gpu_dbg_min_ring_free)
+                _gpu_dbg_min_ring_free = ring_free;
+            if (ring_free >= bytes)
+                break;
+            ring_spins++;
+        } while (1);
+        _gpu_dbg_ring_waits++;
+        _gpu_dbg_ring_spin_iters += ring_spins;
+    }
 }
 
 /* Write a word to the ring BRAM via MMIO (no cache issues). */
@@ -325,6 +365,11 @@ static inline void of_gpu_init(void) {
     _gpu_wrptr = 0;
     _gpu_fence_next = 1;
     _gpu_batch_slot = 0;
+    _gpu_dbg_dma_waits = 0;
+    _gpu_dbg_dma_spin_iters = 0;
+    _gpu_dbg_ring_waits = 0;
+    _gpu_dbg_ring_spin_iters = 0;
+    _gpu_dbg_min_ring_free = OF_GPU_RING_SIZE;
     GPU_CTRL = 4;               /* ring_reset: clear wr_addr + wrptr + rdptr */
     GPU_RING_WRPTR = 0;
     GPU_CTRL = 1;               /* enable */
@@ -513,6 +558,57 @@ static inline int of_gpu_ring_can_fit(uint32_t bytes) {
     return of_gpu_ring_free() >= bytes;
 }
 
+typedef struct {
+    uint32_t status;
+    uint32_t rdptr;
+    uint32_t wrptr;
+    uint32_t fence_reached;
+    uint32_t tex_req_count;
+    uint32_t tex_miss_count;
+    uint32_t stall_count[OF_GPU_STALL_COUNT];
+    uint32_t dma_waits;
+    uint32_t dma_spin_iters;
+    uint32_t ring_waits;
+    uint32_t ring_spin_iters;
+    uint32_t min_ring_free;
+    uint32_t ring_free;
+} of_gpu_debug_snapshot_t;
+
+static inline void of_gpu_debug_snapshot(of_gpu_debug_snapshot_t *snap,
+                                         int reset_wait_counters) {
+    if (snap == NULL)
+        return;
+
+    memset(snap, 0, sizeof(*snap));
+    snap->status = GPU_STATUS;
+    snap->rdptr = GPU_RING_RDPTR;
+    snap->wrptr = GPU_RING_WRPTR;
+    snap->fence_reached = GPU_FENCE_REACHED;
+    snap->tex_req_count = GPU_TRANSLUC_ADDR;
+    snap->tex_miss_count = GPU_TRANSLUC_DATA;
+
+    for (uint32_t i = 0; i < OF_GPU_STALL_COUNT; i++) {
+        GPU_DBG_SELECT = i;
+        snap->stall_count[i] = GPU_DBG_SELECT;
+    }
+
+    snap->ring_free = of_gpu_ring_free();
+    snap->min_ring_free = _gpu_dbg_min_ring_free < snap->ring_free ?
+        _gpu_dbg_min_ring_free : snap->ring_free;
+    snap->dma_waits = _gpu_dbg_dma_waits;
+    snap->dma_spin_iters = _gpu_dbg_dma_spin_iters;
+    snap->ring_waits = _gpu_dbg_ring_waits;
+    snap->ring_spin_iters = _gpu_dbg_ring_spin_iters;
+
+    if (reset_wait_counters) {
+        _gpu_dbg_dma_waits = 0;
+        _gpu_dbg_dma_spin_iters = 0;
+        _gpu_dbg_ring_waits = 0;
+        _gpu_dbg_ring_spin_iters = 0;
+        _gpu_dbg_min_ring_free = snap->ring_free;
+    }
+}
+
 /* ---- State commands ---- */
 
 static inline void of_gpu_set_framebuffer(uint32_t addr, uint16_t stride) {
@@ -691,8 +787,7 @@ static inline void of_gpu_draw_span4_batch(const of_gpu_span4_t *spans,
         if (_gpu_batch_slot >= OF_GPU_BATCH_SLOTS)
             _gpu_batch_slot = 0;
 #else
-        while (GPU_STATUS & GPU_STATUS_DMA_BUSY)
-            ;
+        _gpu_wait_dma_idle_debug();
 #endif
         for (int i = 0; i < n; i++)
             _gpu_encode_span4(&batch_buf[i * OF_GPU_SPAN4_WORDS],
@@ -750,8 +845,7 @@ static inline void of_gpu_submit_command_stream_batch(const uint32_t *words,
     if (_gpu_batch_slot >= OF_GPU_BATCH_SLOTS)
         _gpu_batch_slot = 0;
 #else
-    while (GPU_STATUS & GPU_STATUS_DMA_BUSY)
-        ;
+    _gpu_wait_dma_idle_debug();
 #endif
 
     for (int i = 0; i < word_count; i++)
@@ -812,8 +906,7 @@ static inline void of_gpu_draw_spans_batch(const of_gpu_span_t *spans,
         if (_gpu_batch_slot >= OF_GPU_BATCH_SLOTS)
             _gpu_batch_slot = 0;
 #else
-        while (GPU_STATUS & GPU_STATUS_DMA_BUSY)
-            ;
+        _gpu_wait_dma_idle_debug();
 #endif
 
         /* Build the batch in cached SDRAM at scalar-store speed. */
