@@ -37,6 +37,9 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "keyboard.h"
 #include "names.h"
 #include "sounds.h"
+#ifdef OPENFPGA
+#include "../../d3d_audio.h"
+#endif
 
 extern uint8_t  everyothertime;
 short which_palookup = 9;
@@ -44,7 +47,38 @@ short which_palookup = 9;
 
 static void tloadtile(short tilenume)
 {
+    if ((uint32_t)tilenume >= (uint32_t)MAXTILES)
+        return;
+
     gotpic[tilenume>>3] |= (1<<(tilenume&7));
+}
+
+static void tloadtile_anim(short tilenume)
+{
+    int32_t flags, frames, j;
+
+    if ((uint32_t)tilenume >= (uint32_t)MAXTILES)
+        return;
+
+    tloadtile(tilenume);
+
+    flags = tiles[tilenume].animFlags;
+    frames = flags & 63;
+    if ((flags & 192) == 0 || frames <= 0)
+        return;
+
+    switch (flags & 192)
+    {
+        case 64:
+        case 128:
+            for (j = 1; j <= frames; j++)
+                tloadtile((short)(tilenume + j));
+            break;
+        case 192:
+            for (j = 1; j <= frames; j++)
+                tloadtile((short)(tilenume - j));
+            break;
+    }
 }
 
 void cachespritenum(short i)
@@ -164,8 +198,7 @@ void cachespritenum(short i)
     }
 
     for(j = PN; j < (PN+maxc); j++)
-        if(tiles[j].data == NULL)
-            tloadtile(j);
+        tloadtile_anim(j);
 }
 
 void cachegoodsprites(void)
@@ -185,6 +218,13 @@ void cachegoodsprites(void)
                     tloadtile(i);
         }
     }
+
+    for(i=FIRSTAID_ICON;i<=ACCESS_ICON;i++)
+        if(tiles[i].dim.width > 0 && tiles[i].dim.height > 0)
+            tloadtile(i);
+
+    for(i=DIGITALNUM;i<DIGITALNUM+10;i++)
+        tloadtile(i);
 
     tloadtile(VIEWSCREEN);
 
@@ -241,6 +281,17 @@ void cachegoodsprites(void)
             tloadtile(i);
 }
 
+#ifdef OPENFPGA
+static void cacheallarttiles(void)
+{
+    int32_t i;
+
+    for(i=0;i<MAXTILES;i++)
+        if(tiles[i].dim.width > 0 && tiles[i].dim.height > 0)
+            tloadtile((short)i);
+}
+#endif
+
 uint8_t  getsound(uint16_t num)
 {
     short fp;
@@ -281,8 +332,16 @@ uint8_t  getsound(uint16_t num)
 void precachenecessarysounds(void)
 {
 #ifdef OPENFPGA
-    /* Skip precaching — sounds will load on demand via loadsound() */
-    return;
+    short i;
+
+    if (FXDevice == SC_Unknown) return;
+
+    for(i=0;i<NUM_SOUNDS;i++)
+    {
+        if((i&7) == 0)
+            getpackets();
+        d3d_sound_precache(i);
+    }
 #else
     short i, j;
 
@@ -308,23 +367,23 @@ void cacheit(void)
     precachenecessarysounds();
 
     cachegoodsprites();
+#ifdef OPENFPGA
+    cacheallarttiles();
+#endif
 
     for(i=0;i<numwalls;i++)
-        if( tiles[wall[i].picnum].data == NULL)
     {
-        if(tiles[wall[i].picnum].data == NULL)
-            tloadtile(wall[i].picnum);
-        if(wall[i].overpicnum >= 0 && tiles[wall[i].overpicnum].data == NULL )
-            tloadtile(wall[i].overpicnum);
+        tloadtile_anim(wall[i].picnum);
+        if(wall[i].overpicnum >= 0)
+            tloadtile_anim(wall[i].overpicnum);
     }
 
     for(i=0;i<numsectors;i++)
     {
-        if( tiles[sector[i].floorpicnum].data == NULL )
-            tloadtile( sector[i].floorpicnum );
+        tloadtile_anim( sector[i].floorpicnum );
+        tloadtile_anim( sector[i].ceilingpicnum );
         if( tiles[sector[i].ceilingpicnum].data == NULL )
         {
-            tloadtile( sector[i].ceilingpicnum );
             if( tiles[sector[i].ceilingpicnum].data == (uint8_t*)LA)
             {
                 tloadtile(LA+1);
@@ -336,8 +395,7 @@ void cacheit(void)
         while(j >= 0)
         {
             if(sprite[j].xrepeat != 0 && sprite[j].yrepeat != 0 && (sprite[j].cstat&32768) == 0)
-                if(tiles[sprite[j].picnum].data == NULL)
-                    cachespritenum(j);
+                cachespritenum(j);
             j = nextspritesect[j];
         }
     }

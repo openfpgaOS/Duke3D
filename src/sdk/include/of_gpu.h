@@ -153,7 +153,7 @@ static uint32_t _gpu_base;
 #define GPU_TRANSLUC_DATA       OF_GPU_REG(0x24)  /* W: 32-bit word into transluc[] */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
 #define GPU_DMA_KICK            OF_GPU_REG(0x2C)  /* W: write 1 to fire DMA pull from (SRC, LEN) */
-#define GPU_DBG_SELECT          OF_GPU_REG(0x3C)  /* W/R: indexed GPU debug counter */
+#define GPU_DBG_SELECT          OF_GPU_REG(0x3C)  /* area mode: legacy stall counter reads zero */
 
 /* GPU_STATUS bit definitions */
 #define GPU_STATUS_BUSY        0x1u

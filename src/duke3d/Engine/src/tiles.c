@@ -15,6 +15,7 @@
 #include "filesystem.h"
 #ifdef OPENFPGA
 #include "of_cache.h"
+#include "of_timer.h"
 #include "../../d3d_gpu.h"
 #endif
 
@@ -157,6 +158,9 @@ void loadtile(short tilenume)
 {
     uint8_t  *ptr;
     int32_t i, tileFilesize;
+#ifdef OPENFPGA
+    uint32_t load_t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+#endif
     
     
     
@@ -208,6 +212,10 @@ void loadtile(short tilenume)
 
 #ifdef OPENFPGA
     tile_sync_for_gpu(ptr, (uint32_t)tileFilesize);
+    if (load_t0)
+        d3d_gpu_perf_note_tile_load((uint32_t)(uint16_t)tilenume,
+                                    (uint32_t)tileFilesize,
+                                    of_time_us() - load_t0);
 #endif
 }
 
@@ -332,8 +340,8 @@ int loadpics(char  *filename, char * gamedir)
 #ifdef OPENFPGA
     /* openfpgaOS has 64MB SDRAM — use generous cache to avoid eviction */
     cachesize = max(artsize, 1048576);
-    if (cachesize > 16 * 1024 * 1024)
-        cachesize = 16 * 1024 * 1024;
+    if (cachesize > 32 * 1024 * 1024)
+        cachesize = 32 * 1024 * 1024;
 #else
     cachesize = max(artsize, 1048576);
 #endif

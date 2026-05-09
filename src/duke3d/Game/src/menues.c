@@ -3756,6 +3756,9 @@ else
             if( KB_KeyPressed(sc_Space) || KB_KeyPressed(sc_Enter) || KB_KeyPressed(sc_kpad_Enter) || KB_KeyPressed(sc_Y) || KB_KeyPressed(0x1D) || LMB )
             {
                 KB_FlushKeyboardQueue();
+#ifdef OPENFPGA
+                d3d_gpu_perf_dump();
+#endif
                 ps[myconnectindex].gm = MODE_DEMO;
                 if(ud.recstat == 1)
                     closedemowrite();
@@ -4321,6 +4324,10 @@ void palto(uint8_t  r,uint8_t  g,uint8_t  b,int32_t e, int present)
         temparray[i+2] =ps[myconnectindex].palette[i+2]+((((int32_t)b-(int32_t)ps[myconnectindex].palette[i+2])*(int32_t)(e&127))>>6);
     }
 
+#ifdef OPENFPGA
+    if (present)
+        VBE_syncNextPaletteUpdate();
+#endif
     setbrightness(ud.brightness>>2,temparray);
 
 	if (present)

@@ -6,6 +6,7 @@
 #define D3D_AUDIO_H
 
 void d3d_audio_init(void);
+int  d3d_sound_precache(int sound_num);
 int  d3d_sound_play(int sound_num, int priority, int volume);
 int  d3d_sound_play_3d(int sound_num, int priority, int angle, int distance);
 int  d3d_sound_play_pitch(int sound_num, int priority, int volume, int pitch);

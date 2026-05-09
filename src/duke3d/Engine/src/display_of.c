@@ -69,6 +69,7 @@ static uint8_t drawpixel_color = 0;
 
 /* Cached palette in 0x00RRGGBB format for of_video_palette_bulk */
 static uint32_t of_palette[256];
+static int sync_next_palette_update = 0;
 
 /* Analog stick dead zone (out of +/-32767) */
 #define STICK_DEADZONE  8000
@@ -153,6 +154,17 @@ static int duke_menu_active(void)
         return 0;
 
     return (ps[myconnectindex].gm & MODE_MENU) != 0;
+}
+
+static int duke_perf_gameplay_active(void)
+{
+    if (myconnectindex < 0 || myconnectindex >= MAXPLAYERS)
+        return 0;
+
+    return (ps[myconnectindex].gm & MODE_GAME) &&
+           !(ps[myconnectindex].gm & (MODE_MENU | MODE_TYPE |
+                                      MODE_EOL | MODE_RESTART |
+                                      MODE_END));
 }
 
 static const hid_key_map_t hid_key_map[] = {
@@ -439,11 +451,12 @@ static void ensure_video_init(void) {
         of_video_set_display_mode(OF_DISPLAY_FRAMEBUFFER);
         of_video_palette_bulk(of_palette, 256);
         /* Clear all 3 triple-buffer frames using the kernel-driven flip
-         * path — this leaves buf_display, buf_ready, buf_draw in a
-         * known state for the GPU-triggered flip path that takes over
-         * in _nextpage(). */
-        of_video_clear(0); of_video_flip();
-        of_video_clear(0); of_video_flip();
+         * path.  Wait each startup flip out before handing the stream to
+         * GPU-triggered CMD_FLIP; otherwise two back-to-back nonblocking
+         * flips can leave the kernel's software roles one vsync ahead of
+         * the hardware queue. */
+        of_video_clear(0); of_video_flip(); of_video_wait_flip();
+        of_video_clear(0); of_video_flip(); of_video_wait_flip();
         of_video_clear(0);
         /* Bring up the GPU before the first frame.  Safe no-op on
          * targets without a GPU window (caps->gpu_base == 0). */
@@ -498,6 +511,7 @@ void _nextpage(void)
     uint32_t page_begin_us = d3d_gpu_perf_enable ? of_time_us() : 0;
     uint32_t frame_period_us = 0;
     uint32_t render_us = 0;
+    int perf_gameplay = d3d_gpu_perf_enable && duke_perf_gameplay_active();
     if (d3d_gpu_perf_enable) {
         frame_period_us = last_page_begin_us ?
             (page_begin_us - last_page_begin_us) : 0;
@@ -558,13 +572,21 @@ void _nextpage(void)
     d3d_audio_pump();
     uint32_t audio_us = t0 ? (of_time_us() - t0) : 0;
 
+    perf_gameplay = d3d_gpu_perf_enable && duke_perf_gameplay_active();
     if (d3d_gpu_perf_enable) {
         uint32_t page_end_us = of_time_us();
         uint32_t page_us = page_end_us - page_begin_us;
-        d3d_gpu_perf_report_frame(frame_period_us, render_us, page_us,
-                                  wait_flip_us, drain_batch_us, flip_emit_us,
-                                  acquire_us, audio_us);
-        last_page_end_us = of_time_us();
+        if (perf_gameplay)
+            d3d_gpu_perf_report_frame(frame_period_us, render_us, page_us,
+                                      wait_flip_us, drain_batch_us,
+                                      flip_emit_us, acquire_us, audio_us);
+        else {
+            d3d_gpu_perf_discard_interval();
+            last_page_begin_us = 0;
+            last_page_end_us = 0;
+            return;
+        }
+        last_page_end_us = page_end_us;
     }
 }
 
@@ -586,8 +608,15 @@ void VBE_setPalette(uint8_t *palettebuffer)
         of_palette[i] = ((uint32_t)r8 << 16) | ((uint32_t)g8 << 8) | (uint32_t)b8;
     }
 
-    if (video_initialized)
+    if (video_initialized) {
+        if (sync_next_palette_update) {
+            sync_next_palette_update = 0;
+            of_video_wait_flip();
+            if (OF_SVC && OF_SVC->video_vsync)
+                OF_SVC->video_vsync();
+        }
         of_video_palette_bulk(of_palette, 256);
+    }
 }
 
 void VBE_getPalette(int32_t start, int32_t num, uint8_t *palettebuffer)
@@ -619,6 +648,16 @@ void VBE_presentPalette(void)
      *
      * One-frame delay so each fade step is visible (~60 Hz pacing). */
     usleep(16000);
+}
+
+void VBE_syncNextPaletteUpdate(void)
+{
+    /* Palette RAM is live during scanout. Startup fades rewrite all 256
+     * entries, so align the actual hardware bulk write to vblank. This arms
+     * VBE_setPalette() to wait only after BUILD has finished constructing and
+     * converting the palette, keeping the write as close to vblank as possible.
+     */
+    sync_next_palette_update = 1;
 }
 
 void getvalidvesamodes(void)

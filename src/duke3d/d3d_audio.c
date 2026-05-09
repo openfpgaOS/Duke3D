@@ -257,6 +257,13 @@ static int ensure_decoded(int num)
     return 1;
 }
 
+int d3d_sound_precache(int sound_num)
+{
+    if (!audio_initialized) return 0;
+    if (sound_num < 0 || sound_num >= NUM_SOUNDS) return 0;
+    return ensure_decoded(sound_num);
+}
+
 /*
  * Play a sound effect. Returns voice handle or -1.
  */

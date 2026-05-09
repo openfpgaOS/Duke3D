@@ -66,6 +66,26 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#ifdef OPENFPGA
+#define D3D_MAX_MOVE_STEPS_PER_FRAME 2
+#define D3D_PHASE_BEGIN() (d3d_gpu_perf_enable ? of_time_us() : 0)
+#define D3D_PHASE_END(phase, t0) \
+    do { \
+        if (t0) \
+            d3d_gpu_perf_note_phase((phase), of_time_us() - (t0)); \
+    } while (0)
+#define D3D_PROFILE_STMT(phase, stmt) \
+    do { \
+        uint32_t d3d_profile_t0 = D3D_PHASE_BEGIN(); \
+        stmt; \
+        D3D_PHASE_END((phase), d3d_profile_t0); \
+    } while (0)
+#else
+#define D3D_PHASE_BEGIN() 0
+#define D3D_PHASE_END(phase, t0) do { (void)(t0); } while (0)
+#define D3D_PROFILE_STMT(phase, stmt) do { stmt; } while (0)
+#endif
+
 
 
 #define MINITEXT_BLUE	0
@@ -2450,6 +2470,11 @@ void gameexit(char  *msg)
 
     Shutdown();
 
+#ifdef OPENFPGA
+    if (d3d_gpu_perf_dump_on_exit)
+        d3d_gpu_perf_dump();
+#endif
+
     if(*t != 0)
     {
         setvmode(0x3);
@@ -2830,6 +2855,10 @@ void displayrest(int32_t smoothratio)
             clearsoundlocks();
 
             intomenusounds();
+
+#ifdef OPENFPGA
+            d3d_gpu_perf_capture_pending();
+#endif
 
             ps[myconnectindex].gm |= MODE_MENU;
 
@@ -8537,21 +8566,25 @@ int main(int argc,char  **argv)
 
     ud.warp_on = 0;
 
-	//The main game loop is here.
+    //The main game loop is here.
     while ( !(ps[myconnectindex].gm&MODE_END) )
     {
-    	sampletimer();
+        sampletimer();
         if( ud.recstat == 2 || ud.multimode > 1 || ( ud.show_help == 0 && (ps[myconnectindex].gm&MODE_MENU) != MODE_MENU ) )
             if( ps[myconnectindex].gm&MODE_GAME )
-			{
+            {
+                uint32_t d3d_move_t0 = D3D_PHASE_BEGIN();
                 // (" It's stuck here ")
-				//printf("ps[myconnectindex].gm&MODE_GAME\n");
-				if( moveloop() ) 
-				{
-					continue;
-				}
-			}
+                //printf("ps[myconnectindex].gm&MODE_GAME\n");
+                if( moveloop() )
+                {
+                    D3D_PHASE_END(D3D_GPU_PERF_PHASE_MOVELOOP, d3d_move_t0);
+                    continue;
+                }
+                D3D_PHASE_END(D3D_GPU_PERF_PHASE_MOVELOOP, d3d_move_t0);
+            }
 
+        uint32_t d3d_misc_t0 = D3D_PHASE_BEGIN();
         if( ps[myconnectindex].gm&MODE_EOL || ps[myconnectindex].gm&MODE_RESTART )
         {
 
@@ -8605,21 +8638,26 @@ int main(int argc,char  **argv)
             i = min(max((totalclock-ototalclock)*(65536L/TICSPERFRAME),0),65536);
         else
             i = 65536;
+        D3D_PHASE_END(D3D_GPU_PERF_PHASE_LOOP_MISC, d3d_misc_t0);
 
         displayrooms(screenpeek,i);
+        uint32_t d3d_rest_t0 = D3D_PHASE_BEGIN();
         displayrest(i);
+        D3D_PHASE_END(D3D_GPU_PERF_PHASE_DISPLAYREST, d3d_rest_t0);
 
         if(ps[myconnectindex].gm&MODE_DEMO)
             goto MAIN_LOOP_RESTART;
 
+        uint32_t d3d_post_t0 = D3D_PHASE_BEGIN();
         if(debug_on)
-			caches();
+            caches();
 
         checksync();
 
-		if (VOLUMEONE)
-        	if(ud.show_help == 0 && show_shareware > 0 && (ps[myconnectindex].gm&MODE_MENU) == 0 )
-            	rotatesprite((320-50)<<16,9<<16,65536L,0,BETAVERSION,0,0,2+8+16+128,0,0,xdim-1,ydim-1);
+        if (VOLUMEONE)
+            if(ud.show_help == 0 && show_shareware > 0 && (ps[myconnectindex].gm&MODE_MENU) == 0 )
+                rotatesprite((320-50)<<16,9<<16,65536L,0,BETAVERSION,0,0,2+8+16+128,0,0,xdim-1,ydim-1);
+        D3D_PHASE_END(D3D_GPU_PERF_PHASE_POSTREST, d3d_post_t0);
 
         nextpage();
     }
@@ -9049,26 +9087,57 @@ int32_t playback(void)
 uint8_t  moveloop()
 {
     int32_t i;
+#ifdef OPENFPGA
+    uint32_t d3d_move_steps = 0;
+    uint32_t d3d_move_backlog = 0;
+#endif
 
     if (numplayers > 1)
 	{
-		while (fakemovefifoplc < movefifoend[myconnectindex]) 
+			while (fakemovefifoplc < movefifoend[myconnectindex])
 		{
 			fakedomovethings();
 		}
 	}
 
 
-    getpackets();
+    D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_MOVE_PACKETS, getpackets());
 
     if (numplayers < 2) bufferjitter = 0;
+#ifdef OPENFPGA
+    i = movefifoend[myconnectindex] - movefifoplc - bufferjitter;
+    if (i > 0)
+        d3d_move_backlog = (uint32_t)i;
+#endif
     while (movefifoend[myconnectindex]-movefifoplc > bufferjitter)
     {
         for(i=connecthead;i>=0;i=connectpoint2[i])
             if (movefifoplc == movefifoend[i]) break;
         if (i >= 0) break;
-        if( domovethings() ) return 1;
+        uint32_t d3d_domove_t0 = D3D_PHASE_BEGIN();
+        if( domovethings() )
+        {
+            D3D_PHASE_END(D3D_GPU_PERF_PHASE_DOMOVE_TOTAL, d3d_domove_t0);
+#ifdef OPENFPGA
+            d3d_move_steps++;
+            i = movefifoend[myconnectindex] - movefifoplc - bufferjitter;
+            d3d_gpu_perf_note_moveloop(d3d_move_steps, d3d_move_backlog,
+                                       (i > 0) ? (uint32_t)i : 0);
+#endif
+            return 1;
+        }
+        D3D_PHASE_END(D3D_GPU_PERF_PHASE_DOMOVE_TOTAL, d3d_domove_t0);
+#ifdef OPENFPGA
+        d3d_move_steps++;
+        if (d3d_move_steps >= D3D_MAX_MOVE_STEPS_PER_FRAME)
+            break;
+#endif
     }
+#ifdef OPENFPGA
+    i = movefifoend[myconnectindex] - movefifoplc - bufferjitter;
+    d3d_gpu_perf_note_moveloop(d3d_move_steps, d3d_move_backlog,
+                               (i > 0) ? (uint32_t)i : 0);
+#endif
     return 0;
 }
 
@@ -9547,6 +9616,7 @@ uint8_t  domovethings(void)
 {
     short i, j;
     uint8_t  ch;
+    uint32_t d3d_setup_t0 = D3D_PHASE_BEGIN();
 
 
     for(i=connecthead;i>=0;i=connectpoint2[i])
@@ -9602,6 +9672,7 @@ uint8_t  domovethings(void)
                     strcpy(fta_quotes[122],"MULTIPLAYER GAME LOADED");
                     FTA(122,&ps[myconnectindex],1);
                 }
+                D3D_PHASE_END(D3D_GPU_PERF_PHASE_DOMOVE_SETUP, d3d_setup_t0);
                 return 1;
             }
         }
@@ -9698,7 +9769,10 @@ uint8_t  domovethings(void)
         global_random = TRAND;
         movedummyplayers();//ST 13
     }
+    D3D_PHASE_END(D3D_GPU_PERF_PHASE_DOMOVE_SETUP, d3d_setup_t0);
 
+    D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_INPUT,
+    {
     for(i=connecthead;i>=0;i=connectpoint2[i])
     {
         cheatkeys(i);
@@ -9709,32 +9783,36 @@ uint8_t  domovethings(void)
             checksectors(i);
         }
     }
+    });
 
     if( ud.pause_on == 0 )
     {
-        movefta();//ST 2
-        moveweapons();          //ST 5 (must be last)
-        movetransports();       //ST 9
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_FTA, movefta());//ST 2
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_WEAPONS, moveweapons()); //ST 5 (must be last)
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_TRANSPORTS, movetransports()); //ST 9
 
-        moveplayers();          //ST 10
-        movefallers();          //ST 12
-        moveexplosions();       //ST 4
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_PLAYERS, moveplayers()); //ST 10
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_FALLERS, movefallers()); //ST 12
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_EXPLOSIONS, moveexplosions()); //ST 4
 
-        moveactors();           //ST 1
-        moveeffectors();        //ST 3
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_ACTORS, moveactors()); //ST 1
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_EFFECTORS, moveeffectors()); //ST 3
 
-        movestandables();       //ST 6
-        doanimations();
-        movefx();               //ST 11
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_STANDABLES, movestandables()); //ST 6
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_ANIM, doanimations());
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_FX, movefx()); //ST 11
     }
 
-    fakedomovethingscorrect();
+    D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_FAKE, fakedomovethingscorrect());
 
     if( (everyothertime&1) == 0)
     {
+        D3D_PROFILE_STMT(D3D_GPU_PERF_PHASE_DOMOVE_CYCLERS,
+        {
         animatewalls();
         movecyclers();
         pan3dsound();
+        });
     }
 
 

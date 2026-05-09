@@ -64,6 +64,9 @@ void getvalidvesamodes(void);
 void VBE_getPalette(int32_t start, int32_t num, uint8_t  *dapal);
 void VBE_setPalette(uint8_t  *palettebuffer);
 void VBE_presentPalette();
+#ifdef OPENFPGA
+void VBE_syncNextPaletteUpdate(void);
+#endif
 
 
 void setvmode(int mode);
