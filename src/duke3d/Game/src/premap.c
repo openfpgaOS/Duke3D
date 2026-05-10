@@ -282,8 +282,6 @@ void cachegoodsprites(void)
 }
 
 #ifdef OPENFPGA
-int duke_openfpga_precache_all_art = 0;
-
 static void cacheallarttiles(void)
 {
     int32_t i;
@@ -370,8 +368,7 @@ void cacheit(void)
 
     cachegoodsprites();
 #ifdef OPENFPGA
-    if (duke_openfpga_precache_all_art)
-        cacheallarttiles();
+    cacheallarttiles();
 #endif
 
     for(i=0;i<numwalls;i++)

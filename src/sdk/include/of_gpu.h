@@ -146,25 +146,25 @@ static uint32_t _gpu_base;
 #define GPU_RING_DATA           OF_GPU_REG(0x08)  /* W: write next word to ring BRAM (auto-increment) */
 #define GPU_DMA_SRC             OF_GPU_REG(0x0C)  /* W: SDRAM byte address of command buffer to pull */
 #define GPU_RING_RDPTR          OF_GPU_REG(0x10)  /* R: GPU read pointer */
-#define GPU_STATUS              OF_GPU_REG(0x14)  /* R: {29'b0, dma_busy, ring_empty, busy} */
+#define GPU_STATUS              OF_GPU_REG(0x14)  /* R: bit2=upload busy, bit1=ring empty, bit0=busy */
 #define GPU_FENCE_REACHED       OF_GPU_REG(0x18)  /* R: last completed fence token */
 #define GPU_DMA_LEN             OF_GPU_REG(0x1C)  /* W: word count to pull (≤4096) */
 #define GPU_TRANSLUC_ADDR       OF_GPU_REG(0x20)  /* W: byte addr into transluc[] (auto-inc by 4) */
 #define GPU_TRANSLUC_DATA       OF_GPU_REG(0x24)  /* W: 32-bit word into transluc[] */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
 #define GPU_DMA_KICK            OF_GPU_REG(0x2C)  /* W: write 1 to fire DMA pull from (SRC, LEN) */
+#define GPU_DMA_DBG             OF_GPU_REG(0x38)  /* R: compact DMA/debug status */
 #define GPU_DBG_SELECT          OF_GPU_REG(0x3C)  /* area mode: legacy stall counter reads zero */
 
-/* Texture-cache debug counters are compact in the Pocket bitstream to keep
- * the cache instrumentation out of the timing/resource path.  They are
- * zero-extended at MMIO, so consumers must compute deltas modulo this width. */
+/* Texture-cache debug counters may be compact in small bitstreams.  Consumers
+ * should compute deltas modulo this mask. */
 #define OF_GPU_TEX_DBG_COUNTER_BITS 20u
 #define OF_GPU_TEX_DBG_COUNTER_MASK ((1u << OF_GPU_TEX_DBG_COUNTER_BITS) - 1u)
 
 /* GPU_STATUS bit definitions */
 #define GPU_STATUS_BUSY        0x1u
 #define GPU_STATUS_RING_EMPTY  0x2u
-#define GPU_STATUS_DMA_BUSY    0x4u
+#define GPU_STATUS_DMA_BUSY    0x4u  /* SDRAM command/payload DMA busy */
 
 enum {
     OF_GPU_STALL_TEX_WAIT = 0,
@@ -256,7 +256,7 @@ enum {
  * m_rd_* AXI master only reaches the SDRAM arbiter (see core_top.v's
  * sdram_arb instantiation: GPU is m0, no other targets are wired).
  * Placed right above the palookup window (0x100000..0x140000); 16 KB
- * reserved leaves headroom over the 7680-byte max batch payload. */
+ * reserved leaves headroom over the 10 KB mixed command-stream payload. */
 #define OF_GPU_BATCH_BUF_AXI_OFFSET  0x00140000u
 #define OF_GPU_BATCH_BUF_BYTES       0x00004000u  /* 16 KB reserved */
 
@@ -286,13 +286,25 @@ static uint32_t  _gpu_dbg_ring_spin_iters;
 static uint32_t  _gpu_dbg_min_ring_free;
 
 #define OF_GPU_BATCH_WORDS_PER_SPAN   15u
-#define OF_GPU_BATCH_SLOT_WORDS       (OF_GPU_SPAN4_BATCH_MAX * OF_GPU_SPAN4_WORDS)
+#define OF_GPU_COMMAND_STREAM_BATCH_WORDS 2560u  /* 10 KB raw mixed stream */
+#define OF_GPU_BATCH_SLOT_WORDS       OF_GPU_COMMAND_STREAM_BATCH_WORDS
 #define OF_GPU_BATCH_SLOT_BYTES       (OF_GPU_BATCH_SLOT_WORDS * 4u)
 #define OF_GPU_BATCH_SLOTS            (OF_GPU_BATCH_BUF_BYTES / OF_GPU_BATCH_SLOT_BYTES)
-#define OF_GPU_COMMAND_STREAM_BATCH_WORDS OF_GPU_BATCH_SLOT_WORDS
 
 #if OF_GPU_BATCH_SLOTS < 1
 #error "OF_GPU_BATCH_BUF_BYTES must hold at least one GPU batch slot"
+#endif
+
+#if (OF_GPU_BATCH_MAX_SPANS * OF_GPU_BATCH_WORDS_PER_SPAN) > OF_GPU_BATCH_SLOT_WORDS
+#error "OF_GPU_BATCH_SLOT_WORDS too small for scalar span batch"
+#endif
+
+#if (OF_GPU_SPAN4_BATCH_MAX * OF_GPU_SPAN4_WORDS) > OF_GPU_BATCH_SLOT_WORDS
+#error "OF_GPU_BATCH_SLOT_WORDS too small for SPAN4 batch"
+#endif
+
+#if OF_GPU_BATCH_SLOT_BYTES > (OF_GPU_RING_SIZE - 4u)
+#error "GPU batch slot must fit in the ring with guard space"
 #endif
 
 /* ---- Internal helpers ---- */
@@ -819,11 +831,13 @@ static inline void of_gpu_draw_span4_batch(const of_gpu_span4_t *spans,
 /* Submit an already-encoded command stream through the doorbell-DMA path.
  *
  * `words` must contain complete GPU commands, including each command
- * header.  Unlike DRAW_SPANS_BATCH/DRAW_SPAN4_BATCH, this is not one
- * homogeneous GPU command with a payload; the DMA writes raw ring words
- * and then publishes ring_wrptr when the stream has landed.  That lets
- * callers batch order-sensitive mixtures such as DRAW_SPAN and
- * DRAW_SPAN4 without flushing whenever descriptor type changes.
+ * header.  Unlike DRAW_SPANS_BATCH/DRAW_SPAN4_BATCH, this is not a
+ * homogeneous command with one payload; the hardware pulls raw command
+ * words from SDRAM into the canonical ring, then publishes ring_wrptr when
+ * the stream has landed.  That lets callers batch
+ * order-sensitive mixtures such as DRAW_SPAN and DRAW_SPAN4 without
+ * flushing whenever descriptor type changes, while avoiding per-word MMIO
+ * writes and any extra on-chip staging copy.
  *
  * The helper does not split the stream because splitting inside a
  * command would publish an incomplete command to the decoder.  Callers
@@ -835,14 +849,16 @@ static inline void of_gpu_submit_command_stream_batch(const uint32_t *words,
     if ((uint32_t)word_count > OF_GPU_COMMAND_STREAM_BATCH_WORDS)
         __builtin_trap();
 
+    uint32_t payload_words = (uint32_t)word_count;
+
     if (_gpu_batch_buf == NULL) {
-        _gpu_ring_ensure((uint32_t)word_count * 4u);
+        _gpu_ring_ensure(payload_words * 4u);
         for (int i = 0; i < word_count; i++)
             _gpu_ring_write(words[i]);
+        GPU_RING_WRPTR = _gpu_wrptr;
         return;
     }
 
-    uint32_t payload_words = (uint32_t)word_count;
     uint32_t *batch_buf = _gpu_batch_buf;
 
 #if OF_GPU_BATCH_SLOTS > 1
