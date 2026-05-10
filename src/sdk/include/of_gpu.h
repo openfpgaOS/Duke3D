@@ -155,6 +155,12 @@ static uint32_t _gpu_base;
 #define GPU_DMA_KICK            OF_GPU_REG(0x2C)  /* W: write 1 to fire DMA pull from (SRC, LEN) */
 #define GPU_DBG_SELECT          OF_GPU_REG(0x3C)  /* area mode: legacy stall counter reads zero */
 
+/* Texture-cache debug counters are compact in the Pocket bitstream to keep
+ * the cache instrumentation out of the timing/resource path.  They are
+ * zero-extended at MMIO, so consumers must compute deltas modulo this width. */
+#define OF_GPU_TEX_DBG_COUNTER_BITS 20u
+#define OF_GPU_TEX_DBG_COUNTER_MASK ((1u << OF_GPU_TEX_DBG_COUNTER_BITS) - 1u)
+
 /* GPU_STATUS bit definitions */
 #define GPU_STATUS_BUSY        0x1u
 #define GPU_STATUS_RING_EMPTY  0x2u

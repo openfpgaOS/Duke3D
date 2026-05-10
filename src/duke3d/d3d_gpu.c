@@ -102,11 +102,20 @@ static inline void d3d_spin_log(uint32_t t) {
  * for palookup[0] (the pal0 default that the GPU resets to). */
 #define D3D_GPU_MAX_SHADES   64
 #define D3D_GPU_PAL_SLOTS    OF_GPU_PALOOKUP_SLOTS  /* fabric advertises 16 */
+#define D3D_GPU_SHADE_CACHE_SIZE 32
 
 static const uint8_t *gpu_pal_base_of_slot[D3D_GPU_PAL_SLOTS];
 static int            gpu_pal_next_slot;     /* number of slots in use */
 static int            gpu_current_slot;      /* Last resolved span slot, -1 = unset */
 extern short          numpalookups;
+
+typedef struct d3d_gpu_shade_cache_entry_s {
+    const uint8_t *row;
+    uint8_t        shade;
+    uint8_t        slot;
+} d3d_gpu_shade_cache_entry_t;
+
+static d3d_gpu_shade_cache_entry_t gpu_shade_cache[D3D_GPU_SHADE_CACHE_SIZE];
 
 static inline int d3d_gpu_pal_shades(void)
 {
@@ -121,6 +130,56 @@ static inline int d3d_gpu_pal_shades(void)
 static inline uint32_t d3d_gpu_pal_bytes(void)
 {
     return (uint32_t)d3d_gpu_pal_shades() * 256u;
+}
+
+static inline void d3d_gpu_shade_cache_clear(void)
+{
+    memset(gpu_shade_cache, 0, sizeof(gpu_shade_cache));
+}
+
+static inline uint32_t d3d_gpu_shade_cache_index(const uint8_t *row)
+{
+    return (uint32_t)(((uintptr_t)row >> 8) & (D3D_GPU_SHADE_CACHE_SIZE - 1u));
+}
+
+static inline void d3d_gpu_shade_cache_store(const uint8_t *row,
+                                             int shade, int slot)
+{
+    if (!row || shade < 0 || slot < 0)
+        return;
+    d3d_gpu_shade_cache_entry_t *e =
+        &gpu_shade_cache[d3d_gpu_shade_cache_index(row)];
+    e->row = row;
+    e->shade = (uint8_t)shade;
+    e->slot = (uint8_t)slot;
+}
+
+static inline int d3d_gpu_shade_cache_lookup(const uint8_t *row, int *slot_out)
+{
+    if (!row)
+        return -1;
+
+    const d3d_gpu_shade_cache_entry_t *e =
+        &gpu_shade_cache[d3d_gpu_shade_cache_index(row)];
+    if (e->row != row)
+        return -1;
+
+    int slot = (int)e->slot;
+    if (slot < 0 || slot >= gpu_pal_next_slot)
+        return -1;
+
+    const uint8_t *base = gpu_pal_base_of_slot[slot];
+    if (!base)
+        return -1;
+
+    ptrdiff_t off = row - base;
+    if ((uintptr_t)off >= d3d_gpu_pal_bytes())
+        return -1;
+
+    gpu_current_slot = slot;
+    if (slot_out)
+        *slot_out = slot;
+    return (int)e->shade;
 }
 
 enum {
@@ -266,6 +325,11 @@ static inline uint32_t perf_avg(uint64_t sum, uint32_t count)
     return count ? (uint32_t)(sum / count) : 0;
 }
 
+static inline uint32_t perf_gpu_tex_counter_delta(uint32_t now, uint32_t prev)
+{
+    return (now - prev) & OF_GPU_TEX_DBG_COUNTER_MASK;
+}
+
 static inline void perf_reset_interval(void)
 {
     memset(&gpu_perf, 0, sizeof(gpu_perf));
@@ -287,8 +351,12 @@ static inline void perf_sample_gpu_hw(void)
             gpu_perf_hw_prev_stall[i] = snap.stall_count[i];
         gpu_perf_hw_valid = 1;
     } else {
-        uint32_t req_delta = snap.tex_req_count - gpu_perf_hw_prev_tex_req;
-        uint32_t miss_delta = snap.tex_miss_count - gpu_perf_hw_prev_tex_miss;
+        uint32_t req_delta =
+            perf_gpu_tex_counter_delta(snap.tex_req_count,
+                                       gpu_perf_hw_prev_tex_req);
+        uint32_t miss_delta =
+            perf_gpu_tex_counter_delta(snap.tex_miss_count,
+                                       gpu_perf_hw_prev_tex_miss);
         gpu_perf_hw_prev_tex_req = snap.tex_req_count;
         gpu_perf_hw_prev_tex_miss = snap.tex_miss_count;
 
@@ -755,8 +823,6 @@ static int            span_buf_count;
 static uint32_t       span_cmd_buf[D3D_GPU_CMD_STREAM_WORDS];
 static int            span_cmd_words;
 static int            span_cmd_count;
-static of_gpu_span_t  span_scratch;
-static of_gpu_span4_t span4_scratch;
 
 static inline void d3d_gpu_flush_batch(void) {
     if (span_buf_count > 0) {
@@ -904,19 +970,6 @@ void d3d_gpu_blit_mirror(uint8_t *dst, const uint8_t *src,
     of_gpu_kick();
 }
 
-/* Direct-write submit: caller gets a pointer to the next free span
- * slot, writes the fields directly (skipping a stack-construct +
- * struct-copy roundtrip), then calls commit_span to advance the
- * counter and trigger a buffer-full flush if needed.  Saves ~16
- * stores per span vs the stack+memcpy pattern. */
-static inline of_gpu_span_t *d3d_gpu_alloc_span(void) {
-    return &span_scratch;
-}
-
-static inline of_gpu_span4_t *d3d_gpu_alloc_span4(void) {
-    return &span4_scratch;
-}
-
 static inline uint32_t perf_path_begin(void)
 {
     return (d3d_gpu_perf_enable && d3d_gpu_perf_time_paths) ? of_time_us() : 0;
@@ -932,20 +985,17 @@ static inline void perf_note_path_time(int path, uint32_t t0)
                   &gpu_perf.path_max_us[path], perf_dt_us(t0));
 }
 
-static inline void perf_note_path_span(int path, const of_gpu_span_t *span)
+static inline void perf_note_path_span_values(int path, uint32_t pixels)
 {
     if (!d3d_gpu_perf_enable) return;
     if (path < 0 || path >= PERF_PATH_COUNT) return;
     gpu_perf.path_spans[path]++;
-    gpu_perf.path_pixels[path] += span->count;
+    gpu_perf.path_pixels[path] += pixels;
 }
 
-static inline void perf_note_path_span4(int path, const of_gpu_span4_t *span)
+static inline void perf_note_path_span(int path, const of_gpu_span_t *span)
 {
-    if (!d3d_gpu_perf_enable) return;
-    if (path < 0 || path >= PERF_PATH_COUNT) return;
-    gpu_perf.path_spans[path]++;
-    gpu_perf.path_pixels[path] += (uint32_t)span->count * 4u;
+    perf_note_path_span_values(path, span->count);
 }
 
 static inline uint8_t current_span_colormap_id(void)
@@ -958,59 +1008,215 @@ static inline uint8_t span_colormap_id_for_slot(int slot)
     return (slot > 0) ? (uint8_t)(slot & 0xF) : 0;
 }
 
-static inline void d3d_gpu_commit_span(int path) {
-    of_gpu_span_t *span = &span_scratch;
-    if (d3d_gpu_perf_enable) {
-        gpu_perf.spans++;
-        gpu_perf.span_pixels += span->count;
-        if (span->flags & OF_GPU_SPAN_SKIP_ZERO)
-            gpu_perf.masked_spans++;
-        if (span->flags & OF_GPU_SPAN_TRANSLUC)
-            gpu_perf.translucent_spans++;
-        if (d3d_gpu_skip_submit)
-            gpu_perf.skipped_spans++;
-        perf_note_path_span(path, span);
-    }
+static inline void perf_note_span_values(int path, uint16_t count,
+                                         uint8_t flags)
+{
+    if (!d3d_gpu_perf_enable) return;
+    gpu_perf.spans++;
+    gpu_perf.span_pixels += count;
+    if (flags & OF_GPU_SPAN_SKIP_ZERO)
+        gpu_perf.masked_spans++;
+    if (flags & OF_GPU_SPAN_TRANSLUC)
+        gpu_perf.translucent_spans++;
+    if (d3d_gpu_skip_submit)
+        gpu_perf.skipped_spans++;
+    perf_note_path_span_values(path, count);
+}
+
+static inline void perf_note_span4_values(int path, uint16_t count,
+                                          uint8_t flags)
+{
+    if (!d3d_gpu_perf_enable) return;
+    gpu_perf.spans++;
+    gpu_perf.span_pixels += (uint32_t)count * 4u;
+    if (flags & OF_GPU_SPAN_SKIP_ZERO)
+        gpu_perf.masked_spans++;
+    if (flags & OF_GPU_SPAN_TRANSLUC)
+        gpu_perf.translucent_spans++;
+    if (d3d_gpu_skip_submit)
+        gpu_perf.skipped_spans++;
+    perf_note_path_span_values(path, (uint32_t)count * 4u);
+}
+
+static inline void d3d_gpu_store_span(of_gpu_span_t *span,
+                                      uint32_t fb_addr, uint32_t tex_addr,
+                                      int32_t s, int32_t t,
+                                      int32_t sstep, int32_t tstep,
+                                      uint16_t count, uint8_t light,
+                                      uint8_t flags, uint8_t colormap_id,
+                                      int16_t fb_stride, uint16_t tex_width,
+                                      uint16_t tex_w_mask,
+                                      uint16_t tex_h_mask,
+                                      int32_t sdivz, int32_t tdivz,
+                                      int32_t zi_persp,
+                                      int32_t sdivz_step,
+                                      int32_t tdivz_step,
+                                      int32_t zi_step)
+{
+    span->fb_addr = fb_addr;
+    span->tex_addr = tex_addr;
+    span->s = s;
+    span->t = t;
+    span->sstep = sstep;
+    span->tstep = tstep;
+    span->count = count;
+    span->light = light;
+    span->flags = flags;
+    span->colormap_id = colormap_id;
+    span->fb_stride = fb_stride;
+    span->tex_width = tex_width;
+    span->tex_w_mask = tex_w_mask;
+    span->tex_h_mask = tex_h_mask;
+    span->sdivz = sdivz;
+    span->tdivz = tdivz;
+    span->zi_persp = zi_persp;
+    span->sdivz_step = sdivz_step;
+    span->tdivz_step = tdivz_step;
+    span->zi_step = zi_step;
+}
+
+static inline void d3d_gpu_emit_span_encoded(int path,
+                                             uint32_t fb_addr,
+                                             uint32_t tex_addr,
+                                             int32_t s, int32_t t,
+                                             int32_t sstep, int32_t tstep,
+                                             uint16_t count, uint8_t light,
+                                             uint8_t flags,
+                                             uint8_t colormap_id,
+                                             int16_t fb_stride,
+                                             uint16_t tex_width,
+                                             uint16_t tex_w_mask,
+                                             uint16_t tex_h_mask,
+                                             int32_t sdivz, int32_t tdivz,
+                                             int32_t zi_persp,
+                                             int32_t sdivz_step,
+                                             int32_t tdivz_step,
+                                             int32_t zi_step)
+{
+    perf_note_span_values(path, count, flags);
     if (d3d_gpu_skip_submit) return;
+
     if (d3d_gpu_use_command_stream_batch) {
         d3d_gpu_reserve_cmd_words(D3D_GPU_CMD_DRAW_SPAN_WORDS);
-        span_cmd_buf[span_cmd_words++] =
+        uint32_t w = (uint32_t)span_cmd_words;
+        span_cmd_buf[w++] =
             ((uint32_t)GPU_CMD_DRAW_SPAN << 24) | OF_GPU_BATCH_WORDS_PER_SPAN;
-        _gpu_encode_span(&span_cmd_buf[span_cmd_words], span);
-        span_cmd_words += OF_GPU_BATCH_WORDS_PER_SPAN;
+        uint32_t *p = &span_cmd_buf[w];
+        p[0]  = fb_addr;
+        p[1]  = tex_addr;
+        p[2]  = (uint32_t)s;
+        p[3]  = (uint32_t)t;
+        p[4]  = (uint32_t)sstep;
+        p[5]  = (uint32_t)tstep;
+        p[6]  = ((uint32_t)(colormap_id & 0x0Fu) << 28) |
+                (((uint32_t)count & 0x0FFFu) << 16) |
+                ((uint32_t)light << 8) |
+                (uint32_t)flags;
+        p[7]  = ((uint32_t)(uint16_t)fb_stride << 16) | tex_width;
+        p[8]  = ((uint32_t)tex_h_mask << 16) | tex_w_mask;
+        p[9]  = (uint32_t)sdivz;
+        p[10] = (uint32_t)tdivz;
+        p[11] = (uint32_t)zi_persp;
+        p[12] = (uint32_t)sdivz_step;
+        p[13] = (uint32_t)tdivz_step;
+        p[14] = (uint32_t)zi_step;
+        span_cmd_words = (int)(w + OF_GPU_BATCH_WORDS_PER_SPAN);
         span_cmd_count++;
     } else {
         if (span_buf_count >= OF_GPU_BATCH_MAX_SPANS)
             d3d_gpu_flush_batch();
-        span_buf[span_buf_count++] = *span;
+        d3d_gpu_store_span(&span_buf[span_buf_count++],
+                           fb_addr, tex_addr, s, t, sstep, tstep,
+                           count, light, flags, colormap_id,
+                           fb_stride, tex_width, tex_w_mask, tex_h_mask,
+                           sdivz, tdivz, zi_persp,
+                           sdivz_step, tdivz_step, zi_step);
     }
     mark_gpu_fb_dirty();
 }
 
-static inline void d3d_gpu_commit_span4(int path) {
-    of_gpu_span4_t *span = &span4_scratch;
-    if (d3d_gpu_perf_enable) {
-        gpu_perf.spans++;
-        gpu_perf.span_pixels += (uint32_t)span->count * 4u;
-        if (span->flags & OF_GPU_SPAN_SKIP_ZERO)
-            gpu_perf.masked_spans++;
-        if (span->flags & OF_GPU_SPAN_TRANSLUC)
-            gpu_perf.translucent_spans++;
-        if (d3d_gpu_skip_submit)
-            gpu_perf.skipped_spans++;
-        perf_note_path_span4(path, span);
+static inline void d3d_gpu_store_span4(of_gpu_span4_t *span,
+                                       uint32_t fb_addr, uint16_t count,
+                                       uint8_t flags, uint8_t colormap_id,
+                                       int16_t fb_stride,
+                                       uint16_t tex_width,
+                                       uint16_t tex_w_mask,
+                                       uint16_t tex_h_mask,
+                                       const uint32_t tex_addr[4],
+                                       const int32_t t[4],
+                                       const int32_t tstep[4],
+                                       const uint8_t light[4])
+{
+    span->fb_addr = fb_addr;
+    span->count = count;
+    span->flags = flags;
+    span->colormap_id = colormap_id;
+    span->fb_stride = fb_stride;
+    span->tex_width = tex_width;
+    span->tex_w_mask = tex_w_mask;
+    span->tex_h_mask = tex_h_mask;
+    for (int c = 0; c < 4; c++) {
+        span->tex_addr[c] = tex_addr[c];
+        span->t[c] = t[c];
+        span->tstep[c] = tstep[c];
+        span->light[c] = light[c];
     }
+}
+
+static inline void d3d_gpu_emit_span4_encoded(int path,
+                                              uint32_t fb_addr,
+                                              uint16_t count,
+                                              uint8_t flags,
+                                              uint8_t colormap_id,
+                                              int16_t fb_stride,
+                                              uint16_t tex_width,
+                                              uint16_t tex_w_mask,
+                                              uint16_t tex_h_mask,
+                                              const uint32_t tex_addr[4],
+                                              const int32_t t[4],
+                                              const int32_t tstep[4],
+                                              const uint8_t light[4])
+{
+    perf_note_span4_values(path, count, flags);
     if (d3d_gpu_skip_submit) return;
+
     if (d3d_gpu_use_command_stream_batch) {
         d3d_gpu_reserve_cmd_words(D3D_GPU_CMD_DRAW_SPAN4_WORDS);
-        span_cmd_buf[span_cmd_words++] =
+        uint32_t w = (uint32_t)span_cmd_words;
+        span_cmd_buf[w++] =
             ((uint32_t)GPU_CMD_DRAW_SPAN4 << 24) | OF_GPU_SPAN4_WORDS;
-        _gpu_encode_span4(&span_cmd_buf[span_cmd_words], span);
-        span_cmd_words += OF_GPU_SPAN4_WORDS;
+        uint32_t *p = &span_cmd_buf[w];
+        p[0]  = fb_addr;
+        p[1]  = ((uint32_t)count << 16) |
+                ((uint32_t)flags << 8) |
+                (uint32_t)(colormap_id & 0x0Fu);
+        p[2]  = ((uint32_t)(uint16_t)fb_stride << 16) | tex_width;
+        p[3]  = tex_addr[0];
+        p[4]  = tex_addr[1];
+        p[5]  = tex_addr[2];
+        p[6]  = tex_addr[3];
+        p[7]  = (uint32_t)t[0];
+        p[8]  = (uint32_t)t[1];
+        p[9]  = (uint32_t)t[2];
+        p[10] = (uint32_t)t[3];
+        p[11] = (uint32_t)tstep[0];
+        p[12] = (uint32_t)tstep[1];
+        p[13] = (uint32_t)tstep[2];
+        p[14] = (uint32_t)tstep[3];
+        p[15] = ((uint32_t)light[3] << 24) |
+                ((uint32_t)light[2] << 16) |
+                ((uint32_t)light[1] << 8) |
+                (uint32_t)light[0];
+        p[16] = ((uint32_t)tex_h_mask << 16) | tex_w_mask;
+        span_cmd_words = (int)(w + OF_GPU_SPAN4_WORDS);
         span_cmd_count++;
     } else {
+        of_gpu_span4_t span;
         d3d_gpu_flush_batch();
-        of_gpu_draw_span4(span);
+        d3d_gpu_store_span4(&span, fb_addr, count, flags, colormap_id,
+                            fb_stride, tex_width, tex_w_mask, tex_h_mask,
+                            tex_addr, t, tstep, light);
+        of_gpu_draw_span4(&span);
     }
     mark_gpu_fb_dirty();
 }
@@ -1069,6 +1275,7 @@ void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades)
         perf_add_time(&gpu_perf.pal_upload_us,
                       &gpu_perf.max_pal_upload_us, dt);
     }
+    d3d_gpu_shade_cache_clear();
 }
 
 void d3d_gpu_upload_transluc(const uint8_t *table, uint32_t size)
@@ -1325,6 +1532,7 @@ static inline void ensure_pal0_uploaded(void)
     /* Stale or first time: reset cache + upload pal0 to slot 0. */
     for (int i = 0; i < D3D_GPU_PAL_SLOTS; i++)
         gpu_pal_base_of_slot[i] = NULL;
+    d3d_gpu_shade_cache_clear();
     if (d3d_gpu_perf_enable)
         gpu_perf.pal_uploads++;
     uint32_t upload_t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
@@ -1362,6 +1570,10 @@ int d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out)
         return -1;   /* palookup[0] not ready */
     }
 
+    int cached = d3d_gpu_shade_cache_lookup(palookupoffse, slot_out);
+    if (cached >= 0)
+        return cached;
+
     /* Hot path: same slot as previous call? */
     if (gpu_current_slot >= 0) {
         const uint8_t *base = gpu_pal_base_of_slot[gpu_current_slot];
@@ -1370,7 +1582,10 @@ int d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out)
             if ((uintptr_t)off < pal_bytes) {
                 if (slot_out)
                     *slot_out = gpu_current_slot;
-                return (int)(off >> 8);
+                int shade = (int)(off >> 8);
+                d3d_gpu_shade_cache_store(palookupoffse, shade,
+                                          gpu_current_slot);
+                return shade;
             }
         }
     }
@@ -1384,7 +1599,9 @@ int d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out)
             gpu_current_slot = s;
             if (slot_out)
                 *slot_out = s;
-            return (int)(off >> 8);
+            int shade = (int)(off >> 8);
+            d3d_gpu_shade_cache_store(palookupoffse, shade, s);
+            return shade;
         }
     }
 
@@ -1416,7 +1633,9 @@ int d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out)
         gpu_current_slot = s;
         if (slot_out)
             *slot_out = s;
-        return (int)(off >> 8);
+        int shade = (int)(off >> 8);
+        d3d_gpu_shade_cache_store(palookupoffse, shade, s);
+        return shade;
     }
     if (d3d_gpu_perf_enable)
         gpu_perf.pal_misses++;
@@ -1435,31 +1654,18 @@ static inline void emit_column_span_slot(uint8_t *dest, int num_pixels, int shad
                                          uint16_t tex_h_mask,
                                          uint8_t flags, int path, int slot)
 {
-    of_gpu_span_t *span = d3d_gpu_alloc_span();
-    span->fb_addr   = (uint32_t)(uintptr_t)dest;
-    span->tex_addr  = (uint32_t)(uintptr_t)texture;
-    span->s         = 0;
-    span->t         = t;
-    span->sstep     = 0;
-    span->tstep     = tstep;
-    span->count     = (uint16_t)num_pixels;
-    span->light     = (uint8_t)(shade & 0x3F);
-    span->flags     = flags;
-    span->colormap_id = span_colormap_id_for_slot(slot);
-    span->fb_stride = (int16_t)bytesperline;
-    span->tex_width = 1;
     /* BUILD's vline index is (vplce >> v_shift), which naturally wraps to
      * the tile-height bit range.  Keep that same T mask on the GPU; leave S
      * unconstrained because column spans always use s=0/sstep=0. */
-    span->tex_w_mask = 0;
-    span->tex_h_mask = tex_h_mask;
-    span->sdivz = 0;
-    span->tdivz = 0;
-    span->zi_persp = 0;
-    span->sdivz_step = 0;
-    span->tdivz_step = 0;
-    span->zi_step = 0;
-    d3d_gpu_commit_span(path);
+    d3d_gpu_emit_span_encoded(path,
+                              (uint32_t)(uintptr_t)dest,
+                              (uint32_t)(uintptr_t)texture,
+                              0, t, 0, tstep,
+                              (uint16_t)num_pixels,
+                              (uint8_t)(shade & 0x3F),
+                              flags, span_colormap_id_for_slot(slot),
+                              (int16_t)bytesperline, 1, 0, tex_h_mask,
+                              0, 0, 0, 0, 0, 0);
 }
 
 static inline void emit_column_span(uint8_t *dest, int num_pixels, int shade,
@@ -1519,6 +1725,33 @@ void d3d_gpu_mvline(uint8_t *dest, int num_pixels, int shade,
     perf_note_path_time(PERF_PATH_MVLINE, t0);
 }
 
+static inline void emit_vline4_span(uint8_t *fb_at_y0, int num_pixels,
+                                    const int shade[4],
+                                    const uint32_t vplce[4],
+                                    const uint32_t vince[4],
+                                    uint8_t v_shift,
+                                    const uint8_t *const texture[4],
+                                    uint8_t flags, int path)
+{
+    uint32_t tex_addr[4];
+    int32_t t[4];
+    int32_t tstep[4];
+    uint8_t light[4];
+    for (int c = 0; c < 4; c++) {
+        to_16_16(vplce[c], vince[c], v_shift, &t[c], &tstep[c]);
+        tex_addr[c] = (uint32_t)(uintptr_t)texture[c];
+        light[c] = (uint8_t)(shade[c] & 0x3F);
+    }
+    d3d_gpu_emit_span4_encoded(path,
+                               (uint32_t)(uintptr_t)fb_at_y0,
+                               (uint16_t)num_pixels,
+                               flags,
+                               current_span_colormap_id(),
+                               (int16_t)bytesperline, 1, 0,
+                               column_tex_h_mask(v_shift),
+                               tex_addr, t, tstep, light);
+}
+
 void d3d_gpu_vline4(uint8_t *fb_at_y0, int num_pixels,
                     const int shade[4],
                     const uint32_t vplce[4],
@@ -1531,25 +1764,8 @@ void d3d_gpu_vline4(uint8_t *fb_at_y0, int num_pixels,
 
     ensure_pal0_uploaded();
     uint32_t t0 = perf_path_begin();
-
-    of_gpu_span4_t *span = d3d_gpu_alloc_span4();
-    span->fb_addr = (uint32_t)(uintptr_t)fb_at_y0;
-    span->count = (uint16_t)num_pixels;
-    span->flags = OF_GPU_SPAN_COLORMAP;
-    span->colormap_id = current_span_colormap_id();
-    span->fb_stride = (int16_t)bytesperline;
-    span->tex_width = 1;
-    span->tex_w_mask = 0;
-    span->tex_h_mask = column_tex_h_mask(v_shift);
-    for (int c = 0; c < 4; c++) {
-        int32_t t, tstep;
-        to_16_16(vplce[c], vince[c], v_shift, &t, &tstep);
-        span->tex_addr[c] = (uint32_t)(uintptr_t)texture[c];
-        span->t[c] = t;
-        span->tstep[c] = tstep;
-        span->light[c] = (uint8_t)(shade[c] & 0x3F);
-    }
-    d3d_gpu_commit_span4(PERF_PATH_VLINE4);
+    emit_vline4_span(fb_at_y0, num_pixels, shade, vplce, vince, v_shift,
+                     texture, OF_GPU_SPAN_COLORMAP, PERF_PATH_VLINE4);
     perf_note_path_time(PERF_PATH_VLINE4, t0);
 }
 
@@ -1566,24 +1782,10 @@ void d3d_gpu_mvline4(uint8_t *fb_at_y0, int num_pixels,
     ensure_pal0_uploaded();
     uint32_t t0 = perf_path_begin();
 
-    of_gpu_span4_t *span = d3d_gpu_alloc_span4();
-    span->fb_addr = (uint32_t)(uintptr_t)fb_at_y0;
-    span->count = (uint16_t)num_pixels;
-    span->flags = (uint8_t)(OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_SKIP_ZERO);
-    span->colormap_id = current_span_colormap_id();
-    span->fb_stride = (int16_t)bytesperline;
-    span->tex_width = 1;
-    span->tex_w_mask = 0;
-    span->tex_h_mask = column_tex_h_mask(v_shift);
-    for (int c = 0; c < 4; c++) {
-        int32_t t, tstep;
-        to_16_16(vplce[c], vince[c], v_shift, &t, &tstep);
-        span->tex_addr[c] = (uint32_t)(uintptr_t)texture[c];
-        span->t[c] = t;
-        span->tstep[c] = tstep;
-        span->light[c] = (uint8_t)(shade[c] & 0x3F);
-    }
-    d3d_gpu_commit_span4(PERF_PATH_MVLINE4);
+    emit_vline4_span(fb_at_y0, num_pixels, shade, vplce, vince, v_shift,
+                     texture,
+                     (uint8_t)(OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_SKIP_ZERO),
+                     PERF_PATH_MVLINE4);
     perf_note_path_time(PERF_PATH_MVLINE4, t0);
 }
 
@@ -1622,8 +1824,9 @@ int d3d_gpu_try_vline1(uint8_t *dest, int num_pixels,
                        int32_t *vplce_out)
 {
     if (d3d_gpu_force_cpu_spans) return 0;
-    if (!d3d_gpu_use_spans || !d3d_gpu_present) return 0;
-    int shade = d3d_gpu_shade_for(palookupoffse);
+    if (!d3d_gpu_use_spans || !d3d_gpu_present || !fb_base) return 0;
+    int slot;
+    int shade = d3d_gpu_shade_slot_for(palookupoffse, &slot);
     if (shade < 0) {
         d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_prepare_cpu_fb_write();
@@ -1632,8 +1835,13 @@ int d3d_gpu_try_vline1(uint8_t *dest, int num_pixels,
 
     /* num_pixels here matches the SW path's `numPixels++; while(numPixels)`
      * — caller passes (numPixels + 1) explicitly. */
-    d3d_gpu_vline(dest, num_pixels, shade,
-                  (uint32_t)vplce, (uint32_t)vince, v_shift, texture);
+    uint32_t t0 = perf_path_begin();
+    int32_t t, tstep;
+    to_16_16((uint32_t)vplce, (uint32_t)vince, v_shift, &t, &tstep);
+    emit_column_span_slot(dest, num_pixels, shade, t, tstep, texture,
+                          column_tex_h_mask(v_shift),
+                          OF_GPU_SPAN_COLORMAP, PERF_PATH_VLINE, slot);
+    perf_note_path_time(PERF_PATH_VLINE, t0);
     if (vplce_out) *vplce_out = vplce + vince * num_pixels;
     return 1;
 }
@@ -1645,16 +1853,23 @@ int d3d_gpu_try_mvline1(uint8_t *dest, int num_pixels,
                         int32_t *vplce_out)
 {
     if (d3d_gpu_force_cpu_spans) return 0;
-    if (!d3d_gpu_use_spans || !d3d_gpu_present) return 0;
-    int shade = d3d_gpu_shade_for(palookupoffse);
+    if (!d3d_gpu_use_spans || !d3d_gpu_present || !fb_base) return 0;
+    int slot;
+    int shade = d3d_gpu_shade_slot_for(palookupoffse, &slot);
     if (shade < 0) {
         d3d_gpu_perf_note_cpu_fallback();
         d3d_gpu_prepare_cpu_fb_write();
         return 0;
     }
 
-    d3d_gpu_mvline(dest, num_pixels, shade,
-                   (uint32_t)vplce, (uint32_t)vince, v_shift, texture);
+    uint32_t t0 = perf_path_begin();
+    int32_t t, tstep;
+    to_16_16((uint32_t)vplce, (uint32_t)vince, v_shift, &t, &tstep);
+    emit_column_span_slot(dest, num_pixels, shade, t, tstep, texture,
+                          column_tex_h_mask(v_shift),
+                          OF_GPU_SPAN_COLORMAP | OF_GPU_SPAN_SKIP_ZERO,
+                          PERF_PATH_MVLINE, slot);
+    perf_note_path_time(PERF_PATH_MVLINE, t0);
     if (vplce_out) *vplce_out = vplce + vince * num_pixels;
     return 1;
 }
@@ -1671,12 +1886,38 @@ static int try_vline4_common(uint8_t *framebuffer, int num_pixels,
                              uint8_t v_shift, int masked)
 {
     if (d3d_gpu_force_cpu_spans) return 0;
-    if (!d3d_gpu_use_spans || !d3d_gpu_present) return 0;
+    if (!d3d_gpu_use_spans || !d3d_gpu_present || !fb_base) return 0;
 
     int    shades[4];
     int    slots[4];
     const uint8_t *tex[4];
-    for (int c = 0; c < 4; c++) {
+
+    shades[0] = d3d_gpu_shade_slot_for(palookupoffse[0], &slots[0]);
+    if (shades[0] < 0) {
+        d3d_gpu_perf_note_cpu_fallback();
+        d3d_gpu_prepare_cpu_fb_write();
+        return 0;
+    }
+    tex[0] = (const uint8_t *)bufplce[0];
+
+    const uint8_t *slot0_base = NULL;
+    uint32_t pal_bytes = d3d_gpu_pal_bytes();
+    if (slots[0] >= 0 && slots[0] < gpu_pal_next_slot)
+        slot0_base = gpu_pal_base_of_slot[slots[0]];
+
+    for (int c = 1; c < 4; c++) {
+        if (slot0_base && palookupoffse[c]) {
+            ptrdiff_t off = palookupoffse[c] - slot0_base;
+            if ((uintptr_t)off < pal_bytes) {
+                shades[c] = (int)(off >> 8);
+                slots[c] = slots[0];
+                d3d_gpu_shade_cache_store(palookupoffse[c],
+                                          shades[c], slots[c]);
+                tex[c] = (const uint8_t *)bufplce[c];
+                continue;
+            }
+        }
+
         shades[c] = d3d_gpu_shade_slot_for(palookupoffse[c], &slots[c]);
         if (shades[c] < 0) {
             d3d_gpu_perf_note_cpu_fallback();
@@ -1694,15 +1935,16 @@ static int try_vline4_common(uint8_t *framebuffer, int num_pixels,
             }
         }
 
-        if (masked) {
-            d3d_gpu_mvline4(framebuffer, num_pixels, shades,
-                            (const uint32_t *)vplce,
-                            (const uint32_t *)vince, v_shift, tex);
-        } else {
-            d3d_gpu_vline4(framebuffer, num_pixels, shades,
-                           (const uint32_t *)vplce,
-                           (const uint32_t *)vince, v_shift, tex);
-        }
+        int path = masked ? PERF_PATH_MVLINE4 : PERF_PATH_VLINE4;
+        uint8_t flags = OF_GPU_SPAN_COLORMAP;
+        uint32_t t0 = perf_path_begin();
+        if (masked)
+            flags = (uint8_t)(flags | OF_GPU_SPAN_SKIP_ZERO);
+        emit_vline4_span(framebuffer, num_pixels, shades,
+                         (const uint32_t *)vplce,
+                         (const uint32_t *)vince, v_shift, tex,
+                         flags, path);
+        perf_note_path_time(path, t0);
     } else {
         int path = masked ? PERF_PATH_MVLINE4 : PERF_PATH_VLINE4;
         uint8_t flags = OF_GPU_SPAN_COLORMAP;
@@ -1738,6 +1980,13 @@ int d3d_gpu_try_mvline4(uint8_t *framebuffer, int num_pixels,
     return try_vline4_common(framebuffer, num_pixels, v_shift, 1);
 }
 
+static inline void emit_hline_span(uint8_t *dest_right, int num_pixels,
+                                   int shade_x256,
+                                   uint32_t i4, uint32_t i5,
+                                   uint32_t asm1, uint32_t asm2,
+                                   uint8_t width_bits, uint8_t shifter,
+                                   const uint8_t *texture);
+
 int d3d_gpu_try_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
                       uint32_t i4, uint32_t i5,
                       uint32_t asm1, uint32_t asm2,
@@ -1745,7 +1994,7 @@ int d3d_gpu_try_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
                       const uint8_t *texture)
 {
     if (d3d_gpu_force_cpu_spans) return 0;
-    if (!d3d_gpu_use_spans || !d3d_gpu_present) return 0;
+    if (!d3d_gpu_use_spans || !d3d_gpu_present || !fb_base) return 0;
     /* hlineasm4 reads via globalpalwritten[shade|s]; resolve that row's
      * palookup slot so the emitted span can carry it explicitly. */
     extern uint8_t *globalpalwritten;
@@ -1755,8 +2004,10 @@ int d3d_gpu_try_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
         return 0;
     }
 
-    d3d_gpu_hline(dest_right, num_pixels, shade_x256, i4, i5,
-                  asm1, asm2, width_bits, shifter, texture);
+    uint32_t t0 = perf_path_begin();
+    emit_hline_span(dest_right, num_pixels, shade_x256, i4, i5,
+                    asm1, asm2, width_bits, shifter, texture);
+    perf_note_path_time(PERF_PATH_HLINE, t0);
     return 1;
 }
 
@@ -1853,28 +2104,18 @@ static inline void emit_rotsprite_hline(uint8_t *dest, int num_pixels, int shade
      * but with NEGATIVE per-pixel steps (BUILD walks `texture -= …`)
      * and fb_stride = -1 (dest writes go dest[-1], dest[-2], …).
      * fb_addr is dest - 1 so the first GPU write lands at dest[-1]. */
-    of_gpu_span_t *span = d3d_gpu_alloc_span();
-    span->fb_addr   = (uint32_t)(uintptr_t)(dest - 1);
-    span->tex_addr  = (uint32_t)(uintptr_t)texture;
-    span->s         = (int32_t)(by_frac >> 16);
-    span->t         = (int32_t)(bx_frac >> 16);
-    span->sstep     = -(int32_t)rs_yv2_full;
-    span->tstep     = -(int32_t)rs_xv2_full;
-    span->count     = (uint16_t)num_pixels;
-    span->light     = (uint8_t)(shade & 0x3F);
-    span->flags     = flags;
-    span->colormap_id = current_span_colormap_id();
-    span->fb_stride = (int16_t)-1;
-    span->tex_width = (uint16_t)rs_tileHeight;
-    span->tex_w_mask = 0;
-    span->tex_h_mask = 0;
-    span->sdivz = 0;
-    span->tdivz = 0;
-    span->zi_persp = 0;
-    span->sdivz_step = 0;
-    span->tdivz_step = 0;
-    span->zi_step = 0;
-    d3d_gpu_commit_span(path);
+    d3d_gpu_emit_span_encoded(path,
+                              (uint32_t)(uintptr_t)(dest - 1),
+                              (uint32_t)(uintptr_t)texture,
+                              (int32_t)(by_frac >> 16),
+                              (int32_t)(bx_frac >> 16),
+                              -(int32_t)rs_yv2_full,
+                              -(int32_t)rs_xv2_full,
+                              (uint16_t)num_pixels,
+                              (uint8_t)(shade & 0x3F),
+                              flags, current_span_colormap_id(),
+                              (int16_t)-1, (uint16_t)rs_tileHeight,
+                              0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 int d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
@@ -1942,28 +2183,18 @@ void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
      * upper 16 bits; integer parts are already baked into `texture`
      * by the caller.  Convert to GPU 16.16 (frac in low 16) by
      * shifting right 16. */
-    of_gpu_span_t *span = d3d_gpu_alloc_span();
-    span->fb_addr   = (uint32_t)(uintptr_t)dest;
-    span->tex_addr  = (uint32_t)(uintptr_t)texture;
-    span->s         = (int32_t)(by_frac >> 16);     /* Y-axis init frac */
-    span->t         = (int32_t)(bx_frac >> 16);     /* X-axis init frac */
-    span->sstep     = (int32_t)yv_step;             /* full 16.16 yv */
-    span->tstep     = (int32_t)xv_step;             /* full 16.16 xv */
-    span->count     = (uint16_t)num_pixels;
-    span->light     = (uint8_t)(shade & 0x3F);
-    span->flags     = flags;
-    span->colormap_id = current_span_colormap_id();
-    span->fb_stride = (int16_t)bytesperline;
-    span->tex_width = tile_height;
-    span->tex_w_mask = 0;
-    span->tex_h_mask = 0;
-    span->sdivz = 0;
-    span->tdivz = 0;
-    span->zi_persp = 0;
-    span->sdivz_step = 0;
-    span->tdivz_step = 0;
-    span->zi_step = 0;
-    d3d_gpu_commit_span(PERF_PATH_SPRITE);
+    d3d_gpu_emit_span_encoded(PERF_PATH_SPRITE,
+                              (uint32_t)(uintptr_t)dest,
+                              (uint32_t)(uintptr_t)texture,
+                              (int32_t)(by_frac >> 16),
+                              (int32_t)(bx_frac >> 16),
+                              (int32_t)yv_step,
+                              (int32_t)xv_step,
+                              (uint16_t)num_pixels,
+                              (uint8_t)(shade & 0x3F),
+                              flags, current_span_colormap_id(),
+                              (int16_t)bytesperline, tile_height,
+                              0, 0, 0, 0, 0, 0, 0, 0);
     perf_note_path_time(PERF_PATH_SPRITE, t0);
 }
 
@@ -1990,28 +2221,17 @@ static inline void emit_fwd_hline(uint8_t *dest, int num_pixels, int shade_x256,
                                        : (int32_t)(asm1 << -t_rshift);
     uint16_t tex_w   = (uint16_t)(1u << width_bits);
     uint16_t tex_h   = (uint16_t)(1u << (32u - shifter));
-    of_gpu_span_t *span = d3d_gpu_alloc_span();
-    span->fb_addr    = (uint32_t)(uintptr_t)dest;
-    span->tex_addr   = (uint32_t)(uintptr_t)texture;
-    span->s          = sp_s;
-    span->t          = sp_t;
-    span->sstep      = sp_sstep;
-    span->tstep      = sp_tstep;
-    span->count      = (uint16_t)num_pixels;
-    span->light      = (uint8_t)((shade_x256 >> 8) & 0x3F);
-    span->flags      = flags;
-    span->colormap_id = current_span_colormap_id();
-    span->fb_stride  = (int16_t)+1;
-    span->tex_width  = tex_w;
-    span->tex_w_mask = (uint16_t)(tex_w - 1);
-    span->tex_h_mask = (uint16_t)(tex_h - 1);
-    span->sdivz = 0;
-    span->tdivz = 0;
-    span->zi_persp = 0;
-    span->sdivz_step = 0;
-    span->tdivz_step = 0;
-    span->zi_step = 0;
-    d3d_gpu_commit_span(path);
+    d3d_gpu_emit_span_encoded(path,
+                              (uint32_t)(uintptr_t)dest,
+                              (uint32_t)(uintptr_t)texture,
+                              sp_s, sp_t, sp_sstep, sp_tstep,
+                              (uint16_t)num_pixels,
+                              (uint8_t)((shade_x256 >> 8) & 0x3F),
+                              flags, current_span_colormap_id(),
+                              (int16_t)+1, tex_w,
+                              (uint16_t)(tex_w - 1),
+                              (uint16_t)(tex_h - 1),
+                              0, 0, 0, 0, 0, 0);
 }
 
 void d3d_gpu_mhline(uint8_t *dest, int num_pixels, int shade_x256,
@@ -2054,20 +2274,13 @@ void d3d_gpu_thline(uint8_t *dest, int num_pixels, int shade_x256,
     perf_note_path_time(PERF_PATH_THLINE, t0);
 }
 
-void d3d_gpu_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
-                   uint32_t i4, uint32_t i5,
-                   uint32_t asm1, uint32_t asm2,
-                   uint8_t width_bits, uint8_t shifter,
-                   const uint8_t *texture)
+static inline void emit_hline_span(uint8_t *dest_right, int num_pixels,
+                                   int shade_x256,
+                                   uint32_t i4, uint32_t i5,
+                                   uint32_t asm1, uint32_t asm2,
+                                   uint8_t width_bits, uint8_t shifter,
+                                   const uint8_t *texture)
 {
-    if (num_pixels <= 0) return;
-    if (!d3d_gpu_present || !fb_base) return;
-
-    ensure_pal0_uploaded();
-    uint32_t t0 = perf_path_begin();
-    /* Caller (hlineasm4) must have already resolved the floor palookup
-     * slot via the public predicate — see hlineasm4's gate in draw.c. */
-
     /* GPU multiply-mode + POT wrap masks reproduce BUILD's hlineasm4
      * shld addressing exactly:
      *   BUILD: src = ((i5 >> shifter) << width_bits) | (i4 >> (32 - width_bits))
@@ -2098,27 +2311,34 @@ void d3d_gpu_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
                                        : -(int32_t)(asm1 << -t_rshift);
     uint16_t tex_w   = (uint16_t)(1u << width_bits);
     uint16_t tex_h   = (uint16_t)(1u << (32u - shifter));
-    of_gpu_span_t *span = d3d_gpu_alloc_span();
-    span->fb_addr    = (uint32_t)(uintptr_t)dest_right;
-    span->tex_addr   = (uint32_t)(uintptr_t)texture;
-    span->s          = sp_s;
-    span->t          = sp_t;
-    span->sstep      = sp_sstep;
-    span->tstep      = sp_tstep;
-    span->count      = (uint16_t)num_pixels;
-    span->light      = (uint8_t)((shade_x256 >> 8) & 0x3F);
-    span->flags      = OF_GPU_SPAN_COLORMAP;
-    span->colormap_id = current_span_colormap_id();
-    span->fb_stride  = (int16_t)-1;        /* walk left, matching SW dest-- */
-    span->tex_width  = tex_w;
-    span->tex_w_mask = (uint16_t)(tex_w - 1);
-    span->tex_h_mask = (uint16_t)(tex_h - 1);
-    span->sdivz = 0;
-    span->tdivz = 0;
-    span->zi_persp = 0;
-    span->sdivz_step = 0;
-    span->tdivz_step = 0;
-    span->zi_step = 0;
-    d3d_gpu_commit_span(PERF_PATH_HLINE);
+    d3d_gpu_emit_span_encoded(PERF_PATH_HLINE,
+                              (uint32_t)(uintptr_t)dest_right,
+                              (uint32_t)(uintptr_t)texture,
+                              sp_s, sp_t, sp_sstep, sp_tstep,
+                              (uint16_t)num_pixels,
+                              (uint8_t)((shade_x256 >> 8) & 0x3F),
+                              OF_GPU_SPAN_COLORMAP,
+                              current_span_colormap_id(),
+                              (int16_t)-1, tex_w,
+                              (uint16_t)(tex_w - 1),
+                              (uint16_t)(tex_h - 1),
+                              0, 0, 0, 0, 0, 0);
+}
+
+void d3d_gpu_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
+                   uint32_t i4, uint32_t i5,
+                   uint32_t asm1, uint32_t asm2,
+                   uint8_t width_bits, uint8_t shifter,
+                   const uint8_t *texture)
+{
+    if (num_pixels <= 0) return;
+    if (!d3d_gpu_present || !fb_base) return;
+
+    ensure_pal0_uploaded();
+    uint32_t t0 = perf_path_begin();
+    /* Caller (hlineasm4) must have already resolved the floor palookup
+     * slot via the public predicate — see hlineasm4's gate in draw.c. */
+    emit_hline_span(dest_right, num_pixels, shade_x256, i4, i5,
+                    asm1, asm2, width_bits, shifter, texture);
     perf_note_path_time(PERF_PATH_HLINE, t0);
 }
