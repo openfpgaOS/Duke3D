@@ -69,6 +69,23 @@ static char menuname[256][17];
 //
 uint8_t  szCurrentDirectory[1024] = {'\0'};
 
+#ifdef OPENFPGA
+static void openfpga_sync_save_preview_for_gpu(uint8_t *ptr, uint32_t size)
+{
+    if (!ptr || size == 0)
+        return;
+
+    volatile uint8_t *dst = (volatile uint8_t *)of_uncached(ptr);
+    for (uint32_t i = 0; i < size; i++)
+        dst[i] = ptr[i];
+    __asm__ volatile("fence" ::: "memory");
+
+    of_cache_flush_range(ptr, size);
+    d3d_gpu_drain();
+    d3d_gpu_tex_invalidate();
+}
+#endif
+
 #define FILETYPE_DIRECTORY 0
 #define FILETYPE_FILE      1
 
@@ -230,6 +247,7 @@ int loadpheader(uint8_t  spot,int32 *vn,int32 *ln,int32 *psk,int32 *nump)
     tiles[MAXTILES-3].dim.width = 100;
     tiles[MAXTILES-3].dim.height = 160;
     save_dfread(tiles[MAXTILES-3].data, 160, 100, fil);
+    openfpga_sync_save_preview_for_gpu(tiles[MAXTILES-3].data, 160*100);
     save_fclose(fil);
     return(0);
 #else
