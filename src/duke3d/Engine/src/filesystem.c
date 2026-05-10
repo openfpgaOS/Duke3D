@@ -354,6 +354,51 @@ int32_t kopen4load(const char  *filename, int openOnlyFromGRP){
     
 }
 
+int32_t kgrp_find_file(const char *filename, int32_t *grpID,
+                       int32_t *fileIndex, int32_t *offset, int32_t *size)
+{
+    int32_t i, k;
+
+    for (k = grpSet.num - 1; k >= 0; k--) {
+        grpArchive_t *archive = &grpSet.archives[k];
+
+        for (i = archive->numFiles - 1; i >= 0; i--) {
+            if (!strncasecmp((char *)archive->gfilelist[i], filename, 12)) {
+                if (grpID) *grpID = k;
+                if (fileIndex) *fileIndex = i;
+                if (offset) *offset = archive->fileOffsets[i];
+                if (size) *size = archive->filesizes[i];
+                return 0;
+            }
+        }
+    }
+
+    return -1;
+}
+
+int32_t kgrp_read_at(int32_t grpID, int32_t offset, void *buffer, int32_t leng)
+{
+    int32_t total = 0;
+
+    if (grpID < 0 || grpID >= grpSet.num || buffer == NULL || leng < 0)
+        return -1;
+
+    grpArchive_t *archive = &grpSet.archives[grpID];
+    if (lseek(archive->fileDescriptor, offset, SEEK_SET) < 0)
+        return -1;
+
+    while (total < leng) {
+        int32_t n = read(archive->fileDescriptor,
+                         (uint8_t *)buffer + total,
+                         leng - total);
+        if (n <= 0)
+            break;
+        total += n;
+    }
+
+    return total;
+}
+
 int32_t kread(int32_t handle, void *buffer, int32_t leng){
     
     openFile_t      * openFile ;

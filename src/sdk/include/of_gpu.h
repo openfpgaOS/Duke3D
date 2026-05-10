@@ -153,10 +153,10 @@ static uint32_t _gpu_base;
 #define GPU_TRANSLUC_DATA       OF_GPU_REG(0x24)  /* W: 32-bit word into transluc[] */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
 #define GPU_DMA_KICK            OF_GPU_REG(0x2C)  /* W: write 1 to fire DMA pull from (SRC, LEN) */
-#define GPU_DMA_DBG             OF_GPU_REG(0x38)  /* R: compact DMA/debug status */
+#define GPU_DMA_DBG             OF_GPU_REG(0x38)  /* R: compact DMA diagnostic status */
 #define GPU_DBG_SELECT          OF_GPU_REG(0x3C)  /* area mode: legacy stall counter reads zero */
 
-/* Texture-cache debug counters may be compact in small bitstreams.  Consumers
+/* Texture-cache diagnostic counters may be compact in small bitstreams.  Consumers
  * should compute deltas modulo this mask. */
 #define OF_GPU_TEX_DBG_COUNTER_BITS 20u
 #define OF_GPU_TEX_DBG_COUNTER_MASK ((1u << OF_GPU_TEX_DBG_COUNTER_BITS) - 1u)

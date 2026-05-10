@@ -16,6 +16,7 @@
 #ifdef OPENFPGA
 #include "of_cache.h"
 #include "of_timer.h"
+#include "../../d3d_audio.h"
 #include "../../d3d_gpu.h"
 #endif
 
@@ -32,6 +33,9 @@ uint8_t  *pic = NULL;
 uint8_t  gotpic[(MAXTILES+7)>>3];
 
 #ifdef OPENFPGA
+static int tile_bulk_preload_depth = 0;
+static int tile_bulk_preload_dirty = 0;
+
 static void tile_sync_for_gpu(uint8_t *ptr, uint32_t size)
 {
     if (!ptr || size == 0)
@@ -43,12 +47,78 @@ static void tile_sync_for_gpu(uint8_t *ptr, uint32_t size)
      * the uncached SDRAM alias so the texture cache fills from committed DRAM.
      */
     volatile uint8_t *dst = (volatile uint8_t *)of_uncached(ptr);
-    for (uint32_t i = 0; i < size; i++)
+    for (uint32_t i = 0; i < size; i++) {
         dst[i] = ptr[i];
+        if ((i & 4095u) == 4095u)
+            d3d_audio_pump_loading();
+    }
     __asm__ volatile("fence" ::: "memory");
 
+    d3d_audio_pump_loading();
     of_cache_flush_range(ptr, size);
+    d3d_audio_pump_loading();
     d3d_gpu_mark_tex_dirty();
+}
+
+static void tile_note_loaded_for_gpu(uint8_t *ptr, uint32_t size)
+{
+    if (!ptr || size == 0)
+        return;
+
+    if (tile_bulk_preload_depth > 0) {
+        tile_bulk_preload_dirty = 1;
+        return;
+    }
+
+    tile_sync_for_gpu(ptr, size);
+}
+
+static void tile_begin_bulk_preload(void)
+{
+    tile_bulk_preload_depth++;
+}
+
+static void tile_end_bulk_preload(void)
+{
+    if (tile_bulk_preload_depth <= 0)
+        return;
+
+    tile_bulk_preload_depth--;
+    if (tile_bulk_preload_depth != 0 || !tile_bulk_preload_dirty)
+        return;
+
+    /* Level preload does not render with the freshly loaded textures until
+     * after docacheit() returns, so one full D-cache flush is enough. Avoid
+     * the per-tile uncached byte mirror, which is correct for hot loads but
+     * dominates the all-ART preload path.
+     */
+    d3d_audio_pump_loading();
+    of_cache_flush();
+    d3d_audio_pump_loading();
+    __asm__ volatile("fence" ::: "memory");
+    d3d_gpu_drain();
+    d3d_audio_pump_loading();
+    d3d_gpu_tex_invalidate();
+    tile_bulk_preload_dirty = 0;
+}
+
+static void tile_art_filename(char *dst, int32_t filenum)
+{
+    strcpy(dst, artfilename);
+    dst[7] = (filenum % 10) + 48;
+    dst[6] = ((filenum / 10) % 10) + 48;
+    dst[5] = ((filenum / 100) % 10) + 48;
+}
+
+static int tile_marked_for_load(int32_t tilenume)
+{
+    if ((gotpic[tilenume >> 3] & (1 << (tilenume & 7))) == 0)
+        return 0;
+    if (tiles[tilenume].data != NULL)
+        return 0;
+    if (tiles[tilenume].dim.width <= 0 || tiles[tilenume].dim.height <= 0)
+        return 0;
+    return 1;
 }
 #endif
 
@@ -206,18 +276,156 @@ void loadtile(short tilenume)
     }
     ptr = tiles[tilenume].data;
 
+#ifdef OPENFPGA
+    d3d_audio_pump_loading();
+#endif
     kread(artfil,ptr,tileFilesize);
+#ifdef OPENFPGA
+    d3d_audio_pump_loading();
+#endif
     faketimerhandler();
     artfilplc = tilefileoffs[tilenume]+tileFilesize;
 
 #ifdef OPENFPGA
-    tile_sync_for_gpu(ptr, (uint32_t)tileFilesize);
+    tile_note_loaded_for_gpu(ptr, (uint32_t)tileFilesize);
     if (load_t0)
         d3d_gpu_perf_note_tile_load((uint32_t)(uint16_t)tilenume,
                                     (uint32_t)tileFilesize,
                                     of_time_us() - load_t0);
 #endif
 }
+
+#ifdef OPENFPGA
+#define TILE_BULK_READ_CHUNK (64 * 1024)
+
+static int TILE_PreloadMarkedSlow(void)
+{
+    int32_t i;
+    int loaded = 0;
+
+    tile_begin_bulk_preload();
+    for (i = 0; i < MAXTILES; i++) {
+        if (!tile_marked_for_load(i))
+            continue;
+
+        loadtile((short)i);
+        loaded++;
+        if ((loaded & 7) == 0)
+            faketimerhandler();
+    }
+    tile_end_bulk_preload();
+
+    return loaded;
+}
+
+int TILE_PreloadMarked(void)
+{
+    uint8_t *chunk;
+    int32_t filenum, i;
+    int loaded = 0;
+
+    chunk = (uint8_t *)malloc(TILE_BULK_READ_CHUNK);
+    if (chunk == NULL)
+        return TILE_PreloadMarkedSlow();
+
+    if (artfil != -1) {
+        kclose(artfil);
+        artfil = -1;
+        artfilnum = -1;
+        artfilplc = 0L;
+    }
+
+    tile_begin_bulk_preload();
+
+    for (filenum = 0; filenum < numtilefiles; filenum++) {
+        int has_needed_tile = 0;
+        int fil;
+        char filename[20];
+        int32_t chunk_start = -1;
+        int32_t chunk_len = 0;
+
+        d3d_audio_pump_loading();
+
+        for (i = 0; i < MAXTILES; i++) {
+            if (tilefilenum[i] == filenum && tile_marked_for_load(i)) {
+                has_needed_tile = 1;
+                break;
+            }
+        }
+
+        if (!has_needed_tile)
+            continue;
+
+        tile_art_filename(filename, filenum);
+        fil = TCkopen4load(filename, 0);
+        if (fil == -1) {
+            printf("Error, unable to load artfile:'%s'.\n", filename);
+            getchar();
+            exit(0);
+        }
+
+        for (i = 0; i < MAXTILES; i++) {
+            int32_t remaining, tile_off;
+            uint8_t *dst;
+            int32_t tileFilesize;
+
+            if (tilefilenum[i] != filenum || !tile_marked_for_load(i))
+                continue;
+
+            tileFilesize = tiles[i].dim.width * tiles[i].dim.height;
+            tiles[i].lock = 199;
+            allocache(&tiles[i].data, tileFilesize,
+                      (uint8_t *)&tiles[i].lock);
+
+            dst = tiles[i].data;
+            tile_off = tilefileoffs[i];
+            remaining = tileFilesize;
+
+            while (remaining > 0) {
+                int32_t chunk_end = chunk_start + chunk_len;
+                int32_t avail, copy_len;
+
+                if (chunk_len <= 0 || tile_off < chunk_start ||
+                    tile_off >= chunk_end) {
+                    klseek(fil, tile_off, SEEK_SET);
+                    chunk_start = tile_off;
+                    d3d_audio_pump_loading();
+                    chunk_len = kread(fil, chunk, TILE_BULK_READ_CHUNK);
+                    d3d_audio_pump_loading();
+                    faketimerhandler();
+                    if (chunk_len <= 0) {
+                        printf("Error reading artfile:'%s'.\n", filename);
+                        getchar();
+                        exit(0);
+                    }
+                    chunk_end = chunk_start + chunk_len;
+                }
+
+                avail = chunk_end - tile_off;
+                copy_len = (remaining < avail) ? remaining : avail;
+                memcpy(dst, chunk + (tile_off - chunk_start), copy_len);
+                dst += copy_len;
+                tile_off += copy_len;
+                remaining -= copy_len;
+            }
+
+            tile_note_loaded_for_gpu(tiles[i].data, (uint32_t)tileFilesize);
+            loaded++;
+            if ((loaded & 3) == 0)
+                d3d_audio_pump_loading();
+            if ((loaded & 7) == 0)
+                faketimerhandler();
+        }
+
+        kclose(fil);
+    }
+
+    tile_end_bulk_preload();
+    free(chunk);
+
+    return loaded;
+}
+#endif
 
 
 

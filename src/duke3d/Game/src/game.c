@@ -56,6 +56,7 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #ifdef OPENFPGA
 #include "of_file.h"
 #include "of_timer.h"
+#include "display.h"
 #include "../../d3d_gpu.h"
 #endif
 
@@ -2470,11 +2471,6 @@ void gameexit(char  *msg)
 
     Shutdown();
 
-#ifdef OPENFPGA
-    if (d3d_gpu_perf_dump_on_exit)
-        d3d_gpu_perf_dump();
-#endif
-
     if(*t != 0)
     {
         setvmode(0x3);
@@ -2913,6 +2909,9 @@ void displayrest(int32_t smoothratio)
     }
     else if( restorepalette )
     {
+#ifdef OPENFPGA
+        VBE_syncNextPaletteUpdate();
+#endif
         setbrightness(ud.brightness>>2,&pp->palette[0]);
         restorepalette = 0;
     }
@@ -8918,7 +8917,14 @@ int32_t playback(void)
 
     flushperms();
 
-	if(numplayers < 2 && ud.multimode_bot<2) foundemo = opendemoread(which_demo);
+	if(numplayers < 2 && ud.multimode_bot<2) {
+#ifdef OPENFPGA
+        if (firstdemofile[0] != '\0')
+            foundemo = opendemoread(which_demo);
+#else
+        foundemo = opendemoread(which_demo);
+#endif
+    }
 
     if(foundemo == 0)
     {

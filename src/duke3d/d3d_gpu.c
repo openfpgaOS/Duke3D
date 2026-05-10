@@ -45,9 +45,10 @@ int d3d_gpu_force_cpu_spans = 0;  /* Scoped gate: when non-zero, draw.c
 int d3d_gpu_force_rotatesprite_cpu = 0;
 int d3d_gpu_use_span4 = 1;
 int d3d_gpu_use_command_stream_batch = 1;
-int d3d_gpu_perf_enable = 1;
+int d3d_gpu_use_translucent_spans = 1;
+int d3d_gpu_perf_enable = 0;
 int d3d_gpu_perf_deep_enable = 0;
-int d3d_gpu_perf_dump_on_exit = 1;
+int d3d_gpu_perf_dump_on_exit = 0;
 /* Per-path timing calls of_time_us() twice per hot helper call, which is
  * useful for short profiling runs but distorts the FPS we are measuring.
  * Keep path span/pixel/call counters on by default and make timings opt-in. */
@@ -62,6 +63,7 @@ static uint8_t *fb_base;
 extern int32_t  bytesperline;   /* BUILD's live row stride in bytes */
 static int gpu_fb_drained_for_cpu;
 static int cpu_fb_read_coherent;
+static int gpu_fb_read_barrier_needed;
 
 static inline void mark_gpu_fb_dirty(void)
 {
@@ -864,6 +866,22 @@ static inline void d3d_gpu_flush_batch(void) {
     }
 }
 
+static inline void d3d_gpu_barrier_before_fb_read(void)
+{
+    if (!gpu_fb_read_barrier_needed)
+        return;
+
+    /* Translucent spans read the current framebuffer byte before writing the
+     * blended result.  If an earlier span batch is still buffered, or older
+     * fabric has pending FB writes in flight, the RMW read can sample stale
+     * pixels.  Insert a GPU-side fence before framebuffer readback spans.
+     */
+    d3d_gpu_flush_batch();
+    of_gpu_fence();
+    of_gpu_kick();
+    gpu_fb_read_barrier_needed = 0;
+}
+
 static inline void d3d_gpu_reserve_cmd_words(uint32_t words) {
     if (words > D3D_GPU_CMD_STREAM_WORDS)
         __builtin_trap();
@@ -1096,6 +1114,9 @@ static inline void d3d_gpu_emit_span_encoded(int path,
     perf_note_span_values(path, count, flags);
     if (d3d_gpu_skip_submit) return;
 
+    if (flags & OF_GPU_SPAN_TRANSLUC)
+        d3d_gpu_barrier_before_fb_read();
+
     if (d3d_gpu_use_command_stream_batch) {
         d3d_gpu_reserve_cmd_words(D3D_GPU_CMD_DRAW_SPAN_WORDS);
         uint32_t w = (uint32_t)span_cmd_words;
@@ -1133,6 +1154,7 @@ static inline void d3d_gpu_emit_span_encoded(int path,
                            sdivz_step, tdivz_step, zi_step);
     }
     mark_gpu_fb_dirty();
+    gpu_fb_read_barrier_needed = 1;
 }
 
 static inline void d3d_gpu_store_span4(of_gpu_span4_t *span,
@@ -1180,6 +1202,9 @@ static inline void d3d_gpu_emit_span4_encoded(int path,
     perf_note_span4_values(path, count, flags);
     if (d3d_gpu_skip_submit) return;
 
+    if (flags & OF_GPU_SPAN_TRANSLUC)
+        d3d_gpu_barrier_before_fb_read();
+
     if (d3d_gpu_use_command_stream_batch) {
         d3d_gpu_reserve_cmd_words(D3D_GPU_CMD_DRAW_SPAN4_WORDS);
         uint32_t w = (uint32_t)span_cmd_words;
@@ -1219,6 +1244,7 @@ static inline void d3d_gpu_emit_span4_encoded(int path,
         of_gpu_draw_span4(&span);
     }
     mark_gpu_fb_dirty();
+    gpu_fb_read_barrier_needed = 1;
 }
 
 void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels)
@@ -1230,6 +1256,7 @@ void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels)
     fb_base = fb_pixels;
     gpu_fb_drained_for_cpu = 0;
     cpu_fb_read_coherent = 0;
+    gpu_fb_read_barrier_needed = 0;
     if (!d3d_gpu_present) return;
 
     if (d3d_gpu_perf_enable) {
@@ -1281,7 +1308,28 @@ void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades)
 void d3d_gpu_upload_transluc(const uint8_t *table, uint32_t size)
 {
     if (!d3d_gpu_present || !table) return;
-    of_gpu_translucency_upload(table, size);
+    if (size != 65536) return;
+
+    /* Duke's CPU TRANS_NORMAL computes:
+     *     transluc[(dst << 8) | src]
+     * but the fabric blend unit has a fixed 32 KB key:
+     *     { src[7:1], dst[7:0] }
+     * Upload a transposed, source-decimated table so the normal Duke
+     * path stays GPU-accelerated.  TRANS_REVERSE falls back to the CPU
+     * because the current hardware no longer has a per-span reverse bit.
+     */
+    GPU_TRANSLUC_ADDR = 0;
+    for (int s7 = 0; s7 < 128; s7++) {
+        int src = s7 << 1;
+        for (int d = 0; d < 256; d += 4) {
+            uint32_t w =
+                ((uint32_t)table[((d + 0) << 8) | src]      ) |
+                ((uint32_t)table[((d + 1) << 8) | src] <<  8) |
+                ((uint32_t)table[((d + 2) << 8) | src] << 16) |
+                ((uint32_t)table[((d + 3) << 8) | src] << 24);
+            GPU_TRANSLUC_DATA = w;
+        }
+    }
 }
 
 void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
@@ -1320,6 +1368,7 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
                                w, h,
                                (uint16_t)bytesperline,
                                color);
+    gpu_fb_read_barrier_needed = 1;
     if (d3d_gpu_perf_enable) {
         uint32_t dt = perf_dt_us(t0);
         perf_add_time(&gpu_perf.clear_emit_us,
@@ -2038,7 +2087,7 @@ void d3d_gpu_tvline(uint8_t *dest, int num_pixels, int shade,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    (void)reverse;  /* TRANSLUC_REV retired — rev path collapsed to fwd */
+    (void)reverse;  /* draw.c calls this only for TRANS_NORMAL. */
     emit_column_span(dest, num_pixels, shade, t, tstep, texture, tex_h_mask, flags,
                      PERF_PATH_TVLINE);
     perf_note_path_time(PERF_PATH_TVLINE, t0);
@@ -2062,7 +2111,7 @@ void d3d_gpu_tvline2(uint8_t *dest_a, int num_pixels,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    (void)reverse;  /* TRANSLUC_REV retired — rev path collapsed to fwd */
+    (void)reverse;  /* draw.c calls this only for TRANS_NORMAL. */
 
     int32_t ta, tstepa, tb, tstepb;
     to_16_16(vplce_a, vince_a, v_shift, &ta, &tstepa);
@@ -2103,12 +2152,28 @@ static inline void emit_rotsprite_hline(uint8_t *dest, int num_pixels, int shade
     /* Same column-major-via-swapped-S/T model as d3d_gpu_sprite_vline
      * but with NEGATIVE per-pixel steps (BUILD walks `texture -= …`)
      * and fb_stride = -1 (dest writes go dest[-1], dest[-2], …).
-     * fb_addr is dest - 1 so the first GPU write lands at dest[-1]. */
+     * fb_addr is dest - 1 so the first GPU write lands at dest[-1].
+     *
+     * gpu_core sign-extends S but its row multiply zero-extends T.  A
+     * rotated sprite can legitimately step T below zero relative to the
+     * per-line `texture` base; without a bias, that -1 row becomes 65535
+     * rows and samples unrelated SDRAM.  The Duke death tilt path renders
+     * the world into MAXTILES-2 and immediately rotates it back, making
+     * that unsigned-row wrap show up as full-screen static while the HUD
+     * remains correct.  Bias T into the unsigned range and subtract the
+     * matching byte offset from the texture base so the final address is
+     * unchanged for both positive and negative row deltas. */
+    enum { T_BIAS_ROWS = 32768 };
+    uint32_t tex_addr = (uint32_t)(uintptr_t)texture -
+                        (uint32_t)T_BIAS_ROWS * (uint32_t)rs_tileHeight;
+    int32_t t_biased = (int32_t)((uint32_t)(bx_frac >> 16) +
+                                 ((uint32_t)T_BIAS_ROWS << 16));
+
     d3d_gpu_emit_span_encoded(path,
                               (uint32_t)(uintptr_t)(dest - 1),
-                              (uint32_t)(uintptr_t)texture,
+                              tex_addr,
                               (int32_t)(by_frac >> 16),
-                              (int32_t)(bx_frac >> 16),
+                              t_biased,
                               -(int32_t)rs_yv2_full,
                               -(int32_t)rs_xv2_full,
                               (uint16_t)num_pixels,
@@ -2171,7 +2236,7 @@ void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    (void)reverse;  /* TRANSLUC_REV retired — rev path collapsed to fwd */
+    (void)reverse;  /* draw.c calls this only for TRANS_NORMAL. */
 
     /* Column-major sprite addressing via swapped S/T:
      *   GPU:  addr = base + t_int * tex_width + s_int
@@ -2268,7 +2333,7 @@ void d3d_gpu_thline(uint8_t *dest, int num_pixels, int shade_x256,
     uint8_t flags = (uint8_t)(OF_GPU_SPAN_COLORMAP |
                               OF_GPU_SPAN_SKIP_ZERO |
                               OF_GPU_SPAN_TRANSLUC);
-    (void)reverse;  /* TRANSLUC_REV retired — rev path collapsed to fwd */
+    (void)reverse;  /* draw.c calls this only for TRANS_NORMAL. */
     emit_fwd_hline(dest, num_pixels, shade_x256, i2, i5, asm1, asm2,
                    width_bits, shifter, texture, flags, PERF_PATH_THLINE);
     perf_note_path_time(PERF_PATH_THLINE, t0);

@@ -43,6 +43,9 @@ extern int d3d_gpu_use_span4;
 /* A/B switch for the raw mixed command-stream DMA path. 0 uses homogeneous
  * scalar DRAW_SPANS_BATCH; 1 batches complete DRAW_SPAN/SPAN4 commands. */
 extern int d3d_gpu_use_command_stream_batch;
+/* A/B switch for the hardware translucency unit.  The app uploads the LUT
+ * transposed for Duke TRANS_NORMAL; TRANS_REVERSE falls back to CPU. */
+extern int d3d_gpu_use_translucent_spans;
 
 /* Runtime perf capture.  Samples are kept in RAM; UART dump is explicit or
  * exit-only so active gameplay timing is not distorted by serial writes. */
@@ -335,9 +338,10 @@ void d3d_gpu_mvline4(uint8_t *fb_at_y0, int num_pixels,
  * (capability gating is stage 7); on bitstreams without the BLEND unit
  * these calls render with COLORMAP+SKIP_ZERO and look opaque. -------- */
 
-/* Translucent vertical wall column — replaces draw.c::tvlineasm1.
- * `texture` is the 1-D column data (BUILD's `source` arg in tvlineasm1).
- * `reverse` non-zero => emit OF_GPU_SPAN_TRANSLUC_REV (BUILD's transrev). */
+/* Translucent vertical wall column — replaces draw.c::tvlineasm1 for
+ * Duke TRANS_NORMAL. `texture` is the 1-D column data (BUILD's `source`
+ * arg in tvlineasm1). TRANS_REVERSE falls back to CPU because current
+ * fabric no longer exposes a per-span reverse bit. */
 void d3d_gpu_tvline(uint8_t *dest, int num_pixels, int shade,
                     uint32_t vplce, uint32_t vince, uint8_t v_shift,
                     const uint8_t *texture, int reverse);
@@ -412,8 +416,9 @@ void d3d_gpu_mhline(uint8_t *dest, int num_pixels, int shade_x256,
                     uint8_t width_bits, uint8_t shifter,
                     const uint8_t *texture);
 
-/* Translucent horizontal span (thlineskipmodify replacement).  Same as
- * mhline plus SPAN_TRANSLUC; `reverse` non-zero adds TRANSLUC_REV. */
+/* Translucent horizontal span (thlineskipmodify replacement) for Duke
+ * TRANS_NORMAL. Same as mhline plus SPAN_TRANSLUC; TRANS_REVERSE falls
+ * back to CPU at the draw.c call site. */
 void d3d_gpu_thline(uint8_t *dest, int num_pixels, int shade_x256,
                     uint32_t i2, uint32_t i5,
                     uint32_t asm1, uint32_t asm2,

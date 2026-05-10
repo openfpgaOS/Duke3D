@@ -159,47 +159,6 @@ void smp_voice_set_master_volume(int vol);
 void smp_voice_enable_awe_backend(int on);
 int  smp_voice_awe_backend_enabled(void);
 
-/* ------------------------------------------------------------------ */
-/* Mixer-write trace (OF_TRACE_MIXER_WRITES)                          */
-/* ------------------------------------------------------------------ */
-/* Compile with -DOF_TRACE_MIXER_WRITES to log every rate / vol / filter
- * mixer write the voice engine performs into an in-memory ring buffer.
- * Used for bit-identical pre/post-refactor verification by replaying a
- * deterministic MIDI clip before and after a change and diffing the
- * dumped traces.
- *
- * Zero overhead when the flag is not defined — the API symbols exist
- * but are no-ops. */
-
-#define SMP_TRACE_OP_RATE        1u   /* arg0=rate_fp16 */
-#define SMP_TRACE_OP_VOL_LR      2u   /* arg0=vol_l, arg1=vol_r */
-#define SMP_TRACE_OP_VOICE_RAW   3u   /* arg0=rate_fp16, arg1=vol_l, arg2=vol_r */
-#define SMP_TRACE_OP_FILTER      4u   /* arg0=cutoff_q016, arg1=q, arg2=enable */
-
-typedef struct {
-    uint32_t seq;       /* monotonic sequence number since last reset */
-    uint8_t  op;        /* SMP_TRACE_OP_* */
-    uint8_t  voice;     /* hardware mixer voice index */
-    uint16_t _pad;
-    uint32_t arg0;
-    uint32_t arg1;
-    uint32_t arg2;
-} smp_mixer_trace_entry_t;
-
-/* Zero the ring and the sequence counter. */
-void smp_mixer_trace_reset(void);
-
-/* Copy up to `max` oldest-first entries into `out`.  Returns the number
- * copied (0 if out==NULL or tracing is disabled).  Entries older than
- * the ring capacity are dropped; the returned count never exceeds the
- * smaller of `max` and the ring capacity. */
-uint32_t smp_mixer_trace_dump(smp_mixer_trace_entry_t *out, uint32_t max);
-
-/* Total entries recorded since reset (including ones overwritten by
- * ring wrap) — lets the caller detect wrap so it can warn / run a
- * shorter clip. */
-uint32_t smp_mixer_trace_total(void);
-
 #ifdef __cplusplus
 }
 #endif

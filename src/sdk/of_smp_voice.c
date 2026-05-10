@@ -64,77 +64,6 @@ static OF_FASTDATA uint16_t stat_cutoff_delta_max;
 /* A single 1 kHz voice tick should stay comfortably below the pump cap. */
 #define SMP_TICK_SPIKE_US  2000u
 
-/* ------------------------------------------------------------------ */
-/* Mixer-write trace (OF_TRACE_MIXER_WRITES)                          */
-/* ------------------------------------------------------------------ */
-
-#ifdef OF_TRACE_MIXER_WRITES
-
-/* ~640 KB ring at 20 B/entry.  Enough to hold ~0.7 s of a dense drum
- * MIDI with every rate/vol/filter write captured, at which point the
- * ring wraps.  Short-clip bit-identical diffs are the intended use
- * case; the stats counters remain for aggregate checks on long runs. */
-#define SMP_TRACE_CAP 32768u
-
-static smp_mixer_trace_entry_t smp_trace_buf[SMP_TRACE_CAP];
-static uint32_t smp_trace_next;   /* next write index in ring */
-static uint32_t smp_trace_total;  /* monotonic entries recorded (wraps never) */
-
-static void smp_mixer_trace_log(uint8_t op, int voice,
-                                uint32_t a0, uint32_t a1, uint32_t a2)
-{
-    uint32_t idx = smp_trace_next;
-    smp_trace_next = (idx + 1u) % SMP_TRACE_CAP;
-
-    smp_mixer_trace_entry_t *e = &smp_trace_buf[idx];
-    e->seq   = smp_trace_total++;
-    e->op    = op;
-    e->voice = (uint8_t)voice;
-    e->_pad  = 0;
-    e->arg0  = a0;
-    e->arg1  = a1;
-    e->arg2  = a2;
-}
-
-#define SMP_TRACE(op, v, a, b, c) smp_mixer_trace_log((op), (v), (a), (b), (c))
-
-void smp_mixer_trace_reset(void)
-{
-    smp_trace_next  = 0;
-    smp_trace_total = 0;
-}
-
-uint32_t smp_mixer_trace_total(void) { return smp_trace_total; }
-
-uint32_t smp_mixer_trace_dump(smp_mixer_trace_entry_t *out, uint32_t max)
-{
-    if (!out || max == 0) return 0;
-
-    uint32_t total = smp_trace_total;
-    uint32_t count = total > SMP_TRACE_CAP ? SMP_TRACE_CAP : total;
-    if (count > max) count = max;
-
-    uint32_t start = total > SMP_TRACE_CAP ? smp_trace_next : 0;
-    for (uint32_t i = 0; i < count; i++) {
-        out[i] = smp_trace_buf[(start + i) % SMP_TRACE_CAP];
-    }
-    return count;
-}
-
-#else  /* !OF_TRACE_MIXER_WRITES */
-
-#define SMP_TRACE(op, v, a, b, c) ((void)0)
-
-void     smp_mixer_trace_reset(void)                                   { }
-uint32_t smp_mixer_trace_total(void)                                   { return 0; }
-uint32_t smp_mixer_trace_dump(smp_mixer_trace_entry_t *out, uint32_t max)
-{
-    (void)out; (void)max;
-    return 0;
-}
-
-#endif /* OF_TRACE_MIXER_WRITES */
-
 void smp_voice_tick_get_stats(smp_tick_stats_t *out)
 {
     if (!out) return;
@@ -493,7 +422,6 @@ static void voice_force_off(int idx)
         return;
 
     of_mixer_set_vol_lr(v->mixer_voice, 0, 0);
-    SMP_TRACE(SMP_TRACE_OP_VOL_LR, v->mixer_voice, 0, 0, 0);
     of_mixer_set_volume_ramp(v->mixer_voice, 16);
     v->active = STEAL_PENDING;
 }
@@ -742,7 +670,6 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
 
     v->mixer_voice = mhv;
     of_mixer_set_rate_raw(mhv, v->base_rate_fp16);
-    SMP_TRACE(SMP_TRACE_OP_RATE, mhv, v->base_rate_fp16, 0, 0);
     stat_rate_writes++;
 
     /* Loop setup */
@@ -795,7 +722,6 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     int vl, vr;
     compute_vol_lr(v, &vl, &vr);
     of_mixer_set_vol_lr(mhv, vl, vr);
-    SMP_TRACE(SMP_TRACE_OP_VOL_LR, mhv, (uint32_t)vl, (uint32_t)vr, 0);
     stat_vol_writes++;
     prev_vol_l[idx] = vl;
     prev_vol_r[idx] = vr;
@@ -890,8 +816,6 @@ void smp_voice_tick(void)
         if (vl != prev_vol_l[i] || vr != prev_vol_r[i] ||
             rate != prev_rate[i]) {
             of_mixer_set_voice_raw(v->mixer_voice, rate, vl, vr);
-            SMP_TRACE(SMP_TRACE_OP_VOICE_RAW, v->mixer_voice,
-                      rate, (uint32_t)vl, (uint32_t)vr);
             /* set_voice_raw coalesces rate + vol; count each independently
              * changed field so the stats reflect the underlying load. */
             if (rate != prev_rate[i]) stat_rate_writes++;

@@ -55,6 +55,9 @@ void squarerotatetile(short tilenume);
 void loadtile(short tilenume);
 uint8_t* allocatepermanenttile(short tilenume, int32_t width, int32_t height);
 int loadpics(char  *filename, char * gamedir);
+#ifdef OPENFPGA
+int TILE_PreloadMarked(void);
+#endif
 void copytilepiece(int32_t tilenume1, int32_t sx1, int32_t sy1, int32_t xsiz, int32_t ysiz,int32_t tilenume2, int32_t sx2, int32_t sy2);
 
 

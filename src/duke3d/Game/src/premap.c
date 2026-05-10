@@ -39,6 +39,12 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 #include "sounds.h"
 #ifdef OPENFPGA
 #include "../../d3d_audio.h"
+#ifndef OPENFPGA_PRELOAD_ALL_ART
+#define OPENFPGA_PRELOAD_ALL_ART 0
+#endif
+#ifndef OPENFPGA_PRECACHE_ALL_SOUNDS
+#define OPENFPGA_PRECACHE_ALL_SOUNDS 1
+#endif
 #endif
 
 extern uint8_t  everyothertime;
@@ -332,16 +338,14 @@ uint8_t  getsound(uint16_t num)
 void precachenecessarysounds(void)
 {
 #ifdef OPENFPGA
-    short i;
-
+#if OPENFPGA_PRECACHE_ALL_SOUNDS
     if (FXDevice == SC_Unknown) return;
-
-    for(i=0;i<NUM_SOUNDS;i++)
-    {
-        if((i&7) == 0)
-            getpackets();
-        d3d_sound_precache(i);
-    }
+    getpackets();
+    d3d_sound_precache_all();
+    getpackets();
+#else
+    getpackets();
+#endif
 #else
     short i, j;
 
@@ -367,7 +371,7 @@ void cacheit(void)
     precachenecessarysounds();
 
     cachegoodsprites();
-#ifdef OPENFPGA
+#if defined(OPENFPGA) && OPENFPGA_PRELOAD_ALL_ART
     cacheallarttiles();
 #endif
 
@@ -408,6 +412,9 @@ void docacheit(void)
 
     j = 0;
 
+#ifdef OPENFPGA
+    j = TILE_PreloadMarked();
+#else
     for(i=0;i<MAXTILES;i++)
         if( (gotpic[i>>3]&(1<<(i&7))) && tiles[i].data == NULL)
     {
@@ -415,6 +422,7 @@ void docacheit(void)
         j++;
         if((j&7) == 0) getpackets();
     }
+#endif
 
     clearbufbyte(gotpic,sizeof(gotpic),0L);
 

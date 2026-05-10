@@ -75,15 +75,37 @@ static void openfpga_sync_save_preview_for_gpu(uint8_t *ptr, uint32_t size)
     if (!ptr || size == 0)
         return;
 
-    volatile uint8_t *dst = (volatile uint8_t *)of_uncached(ptr);
-    for (uint32_t i = 0; i < size; i++)
-        dst[i] = ptr[i];
-    __asm__ volatile("fence" ::: "memory");
-
-    of_cache_flush_range(ptr, size);
     d3d_gpu_drain();
+    of_cache_flush_range(ptr, size);
+    __asm__ volatile("fence" ::: "memory");
     d3d_gpu_tex_invalidate();
 }
+
+static void openfpga_sync_save_preview_from_gpu(uint8_t *ptr, uint32_t size)
+{
+    if (!ptr || size == 0)
+        return;
+
+    d3d_gpu_drain();
+    of_cache_inval_range(ptr, size);
+}
+
+static void openfpga_rotatesprite_save_preview(int32_t sx, int32_t sy,
+                                               int32_t z, short a,
+                                               short picnum, int8_t dashade,
+                                               uint8_t dapalnum,
+                                               uint8_t dastat, int32_t cx1,
+                                               int32_t cy1, int32_t cx2,
+                                               int32_t cy2)
+{
+    int saved_force_cpu = d3d_gpu_force_rotatesprite_cpu;
+    d3d_gpu_force_rotatesprite_cpu = 1;
+    rotatesprite(sx, sy, z, a, picnum, dashade, dapalnum, dastat,
+                 cx1, cy1, cx2, cy2);
+    d3d_gpu_force_rotatesprite_cpu = saved_force_cpu;
+}
+#else
+#define openfpga_rotatesprite_save_preview rotatesprite
 #endif
 
 #define FILETYPE_DIRECTORY 0
@@ -765,6 +787,9 @@ int saveplayer(int8_t spot)
     SAVE_WRITE(&ud.volume_number, sizeof(ud.volume_number), 1, fil);
     SAVE_WRITE(&ud.level_number, sizeof(ud.level_number), 1, fil);
     SAVE_WRITE(&ud.player_skill, sizeof(ud.player_skill), 1, fil);
+#ifdef OPENFPGA
+    openfpga_sync_save_preview_from_gpu(tiles[MAXTILES - 1].data, 160*100);
+#endif
     SAVE_WRITE(tiles[MAXTILES - 1].data, 160, 100, fil);
 
     SAVE_WRITE(&numwalls, 2, 1, fil);
@@ -1820,7 +1845,7 @@ void menus(void)
             rotatesprite(160<<16,200<<15,65536L,0,MENUSCREEN,16,0,10+64,0,0,xdim-1,ydim-1);
             rotatesprite(160<<16,19<<16,65536L,0,MENUBAR,16,0,10,0,0,xdim-1,ydim-1);
             menutext(160,24,0,0,"LOAD GAME");
-            rotatesprite(101<<16,97<<16,65536,512,MAXTILES-3,-32,0,4+10+64,0,0,xdim-1,ydim-1);
+            openfpga_rotatesprite_save_preview(101<<16,97<<16,65536,512,MAXTILES-3,-32,0,4+10+64,0,0,xdim-1,ydim-1);
 
             dispnames();
 
@@ -1959,7 +1984,7 @@ void menus(void)
             rotatesprite(160<<16,19<<16,65536L,0,MENUBAR,16,0,10,0,0,xdim-1,ydim-1);
             menutext(160,24,0,0,"SAVE GAME");
 
-            rotatesprite(101<<16,97<<16,65536L,512,MAXTILES-3,-32,0,4+10+64,0,0,xdim-1,ydim-1);
+            openfpga_rotatesprite_save_preview(101<<16,97<<16,65536L,512,MAXTILES-3,-32,0,4+10+64,0,0,xdim-1,ydim-1);
             sprintf(text,"PLAYERS: %-2d                      ",ud.multimode);
             gametext(160,158,text,0,2+8+16);
 
@@ -3418,6 +3443,10 @@ else
             cmenu(351);
             screencapt = 1;
             displayrooms(myconnectindex,65536);
+#ifdef OPENFPGA
+            openfpga_sync_save_preview_from_gpu(tiles[MAXTILES-1].data,
+                                                160*100);
+#endif
             savetemp("duke3d.tmp",tiles[MAXTILES-1].data,160*100);
             screencapt = 0;
             break;
@@ -3493,7 +3522,7 @@ else
                     }
                 }
 
-                rotatesprite(101<<16,97<<16,65536,512,MAXTILES-1,-32,0,2+4+8+64,0,0,xdim-1,ydim-1);
+                openfpga_rotatesprite_save_preview(101<<16,97<<16,65536,512,MAXTILES-1,-32,0,2+4+8+64,0,0,xdim-1,ydim-1);
                 dispnames();
                 rotatesprite((c+67+strlen(&ud.savegame[current_menu-360][0])*4)<<16,(50+12*probey)<<16,32768L-10240,0,SPINNINGNUKEICON+(((totalclock)>>3)%7),0,0,10,0,0,xdim-1,ydim-1);
                 break;
@@ -3517,7 +3546,7 @@ else
                      lastprobey = probey;
                   }
 
-                  rotatesprite(101<<16,97<<16,65536L,512,MAXTILES-3,-32,0,4+10+64,0,0,xdim-1,ydim-1);
+                  openfpga_rotatesprite_save_preview(101<<16,97<<16,65536L,512,MAXTILES-3,-32,0,4+10+64,0,0,xdim-1,ydim-1);
                   sprintf(text,"PLAYERS: %-2d                      ",numplr);
                   gametext(160,158,text,0,2+8+16);
                   sprintf(text,"EPISODE: %-2d / LEVEL: %-2d / SKILL: %-2d",1+volnum,1+levnum,plrskl);
@@ -3532,7 +3561,7 @@ else
                   if(lastprobey != probey)
                       loadpheader(probey,&volnum,&levnum,&plrskl,&numplr);
                   lastprobey = probey;
-                  rotatesprite(101<<16,97<<16,65536L,512,MAXTILES-3,-32,0,4+10+64,0,0,xdim-1,ydim-1);
+                  openfpga_rotatesprite_save_preview(101<<16,97<<16,65536L,512,MAXTILES-3,-32,0,4+10+64,0,0,xdim-1,ydim-1);
               }
               else menutext(69,70,0,0,"EMPTY");
               sprintf(text,"PLAYERS: %-2d                      ",ud.multimode);
@@ -3774,9 +3803,6 @@ else
             if( KB_KeyPressed(sc_Space) || KB_KeyPressed(sc_Enter) || KB_KeyPressed(sc_kpad_Enter) || KB_KeyPressed(sc_Y) || KB_KeyPressed(0x1D) || LMB )
             {
                 KB_FlushKeyboardQueue();
-#ifdef OPENFPGA
-                d3d_gpu_perf_dump();
-#endif
                 ps[myconnectindex].gm = MODE_DEMO;
                 if(ud.recstat == 1)
                     closedemowrite();
@@ -4343,7 +4369,7 @@ void palto(uint8_t  r,uint8_t  g,uint8_t  b,int32_t e, int present)
     }
 
 #ifdef OPENFPGA
-    if (present)
+    if (present || (e & 128))
         VBE_syncNextPaletteUpdate();
 #endif
     setbrightness(ud.brightness>>2,temparray);

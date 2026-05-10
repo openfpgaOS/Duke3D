@@ -1,7 +1,7 @@
 # DukeNukem3D — Duke Nukem 3D for openfpgaOS
 #
-# Build:   make -C src/duke3d -f Makefile
-# or from SDK root: make (builds this + bundled apps)
+# Build from SDK root:
+#   make build CORE=duke3d
 #
 
 # ── Sources ──────────────────────────────────────────────────────
@@ -75,6 +75,7 @@ RUNTIME   = $(ROOT)/runtime
 # ── Extra flags for BUILD engine ─────────────────────────────────
 CFLAGS += -O3
 CFLAGS += -DOPENFPGA -DUNIX
+CFLAGS += -DSMP_MAX_VOICES=15
 CFLAGS += -IEngine/src -IGame/src -IGame/src/audiolib -I.
 CFLAGS += -fno-strict-aliasing -fcommon
 CFLAGS += -std=gnu11 -Wno-error -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-function-declaration
@@ -102,7 +103,7 @@ release: $(OBJ_DIR)/app.elf
 	@mkdir -p $$(ls -d $(OUT)/Assets/*/)/common
 	@cp $(RUNTIME)/os.bin $$(ls -d $(OUT)/Assets/*/)/common/
 	@# SoundFont bank — auto-loaded by the kernel and used by of_midi
-	@cp $(RUNTIME)/bank.ofsf $$(ls -d $(OUT)/Assets/*/)/common/ 2>/dev/null || true
+	@cp $(RUNTIME)/bank.ofsf $$(ls -d $(OUT)/Assets/*/)/common/
 	@cp $< $$(ls -d $(OUT)/Assets/*/)/common/$(APP).elf
 	@echo "Ready: build/$(APP)/"
 

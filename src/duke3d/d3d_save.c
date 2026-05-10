@@ -17,6 +17,7 @@
  */
 
 #include "d3d_save.h"
+#include "d3d_audio.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -271,23 +272,30 @@ void save_dfread(void *buffer, unsigned int dasizeof, unsigned int count,
     short    leng = 0;
     int32_t  k = 0, kgoal;
 
+    d3d_audio_pump_loading();
     if (save_fread(&leng, 2, 1, sf) != 1) goto fail;
     if (leng <= 0 || leng > LZWMAX) goto fail;
     if (save_fread(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
+    d3d_audio_pump_loading();
 
     kgoal = uncompress(save_lzw_out, (int32_t)leng, save_lzw_in);
+    d3d_audio_pump_loading();
     if (kgoal <= 0) goto fail;
 
     copybufbyte(save_lzw_in, ptr, (int32_t)dasizeof);
     k += (int32_t)dasizeof;
 
     for (unsigned int i = 1; i < count; i++) {
+        if ((i & 4095u) == 0)
+            d3d_audio_pump_loading();
         if (k >= kgoal) {
             if (save_fread(&leng, 2, 1, sf) != 1) goto fail;
             if (leng <= 0 || leng > LZWMAX) goto fail;
             if (save_fread(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
+            d3d_audio_pump_loading();
             k = 0;
             kgoal = uncompress(save_lzw_out, (int32_t)leng, save_lzw_in);
+            d3d_audio_pump_loading();
             if (kgoal <= 0) goto fail;
         }
         for (unsigned int j = 0; j < dasizeof; j++)
@@ -311,31 +319,42 @@ void save_dfwrite(void *buffer, unsigned int dasizeof, unsigned int count,
     copybufbyte(ptr, save_lzw_in, (int32_t)dasizeof);
 
     if (k > LZWSIZE - dasizeof) {
+        d3d_audio_pump_loading();
         short leng = (short)compress(save_lzw_in, k, save_lzw_out);
+        d3d_audio_pump_loading();
         if (leng <= 0 || leng > LZWMAX) goto fail;
         k = 0;
         if (save_fwrite(&leng, 2, 1, sf) != 1) goto fail;
         if (save_fwrite(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
+        d3d_audio_pump_loading();
     }
 
     for (unsigned int i = 1; i < count; i++) {
+        if ((i & 4095u) == 0)
+            d3d_audio_pump_loading();
         for (unsigned int j = 0; j < dasizeof; j++)
             save_lzw_in[j + k] = (uint8_t)((ptr[j + dasizeof] - ptr[j]) & 0xFF);
         k += dasizeof;
         if (k > LZWSIZE - dasizeof) {
+            d3d_audio_pump_loading();
             short leng = (short)compress(save_lzw_in, k, save_lzw_out);
+            d3d_audio_pump_loading();
             if (leng <= 0 || leng > LZWMAX) goto fail;
             k = 0;
             if (save_fwrite(&leng, 2, 1, sf) != 1) goto fail;
             if (save_fwrite(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
+            d3d_audio_pump_loading();
         }
         ptr += dasizeof;
     }
     if (k > 0) {
+        d3d_audio_pump_loading();
         short leng = (short)compress(save_lzw_in, k, save_lzw_out);
+        d3d_audio_pump_loading();
         if (leng <= 0 || leng > LZWMAX) goto fail;
         if (save_fwrite(&leng, 2, 1, sf) != 1) goto fail;
         if (save_fwrite(save_lzw_out, (uint32_t)leng, 1, sf) != 1) goto fail;
+        d3d_audio_pump_loading();
     }
     return;
 
