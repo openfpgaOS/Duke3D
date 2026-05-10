@@ -21,7 +21,9 @@ extern "C" {
  * the quietest couple of voices to the stealer; audible but acceptable
  * tradeoff.  Sits well under OF_MIXER_MAX_VOICES (32) so the allocator
  * never has to re-steal. */
+#ifndef SMP_MAX_VOICES
 #define SMP_MAX_VOICES 12
+#endif
 
 typedef enum {
     ENV_OFF = 0, ENV_DELAY, ENV_ATTACK, ENV_HOLD,

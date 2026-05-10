@@ -13,6 +13,10 @@
 #include "include/of_fastram.h"
 #include <string.h>
 
+#ifndef SMP_VOICE_ENABLE_TICK_STATS
+#define SMP_VOICE_ENABLE_TICK_STATS 0
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Static state                                                       */
 /* ------------------------------------------------------------------ */
@@ -126,12 +130,15 @@ static OF_FASTDATA int ch_volume[16];        /* CC7  (0-127) */
 static OF_FASTDATA int ch_expression[16];    /* CC11 (0-127) */
 static OF_FASTDATA int ch_pan[16];           /* CC10 (0-127, 64=center) */
 static OF_FASTDATA int ch_bend[16];          /* -8192..+8191 */
+static OF_FASTDATA int ch_bend_cents[16];    /* pitch-bend contribution in cents */
 static OF_FASTDATA int ch_mod_depth[16];     /* CC1  (0-127) */
 static OF_FASTDATA int ch_sustain[16];       /* CC64 on/off */
 static OF_FASTDATA int ch_brightness[16];    /* CC74 (0-127) */
 static OF_FASTDATA int ch_resonance[16];     /* CC71 (0-127) */
 static OF_FASTDATA int ch_reverb_send[16];   /* CC91 (0-127), default 40 = GM tasteful default */
 static OF_FASTDATA int ch_chorus_send[16];   /* CC93 (0-127), default 0 */
+static OF_FASTDATA int ch_vol_combined[16];  /* (CC7 * CC11) / 127, cached */
+static OF_FASTDATA int ch_pan_midi[16];      /* CC10 mapped to -500..+500 */
 static OF_FASTDATA int master_vol = 255;
 
 /* Cached mixer state to avoid redundant CDC writes */
@@ -465,9 +472,7 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
     if (env_vol > 255) env_vol = 255;
     if (env_vol < 0)   env_vol = 0;
 
-    /* channel volume: (CC7 * CC11) / 127 -> 0..127 */
     int ch = v->midi_ch;
-    int ch_vol_combined = (ch_volume[ch] * ch_expression[ch]) / 127;
 
     /* Design-doc compose: VOICE_BASE_VOL × RAMP0_LEVEL × CH_VOL × CH_EXPR × MASTER.
      * voice_base_vol (0..255) = (vel_scale × initial_attn_scale) >> 8, baked at
@@ -475,7 +480,7 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
      * AWE fabric's compose arithmetic verbatim (Phase 3 bit-identical). */
     int32_t vol = env_vol;
     vol = (vol * v->voice_base_vol) >> 8;
-    vol = (vol * ch_vol_combined) >> 7;
+    vol = (vol * ch_vol_combined[ch]) >> 7;
     vol = (vol * master_vol) >> 8;
     if (vol > 255) vol = 255;
     if (vol < 0)   vol = 0;
@@ -485,7 +490,7 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
      * Channel CC10: 0..127 (64=center)
      * Combined pan: -500..+500 range */
     int zone_pan = v->zone ? v->zone->pan : 0;
-    int midi_pan = ((ch_pan[ch] - 64) * 500) / 63;
+    int midi_pan = ch_pan_midi[ch];
     int pan = zone_pan + midi_pan;
     if (pan < -500) pan = -500;
     if (pan > 500)  pan = 500;
@@ -513,29 +518,41 @@ static void compute_vol_lr(smp_voice_t *v, int *out_l, int *out_r)
 static uint32_t compute_pitch(smp_voice_t *v)
 {
     int ch = v->midi_ch;
-    int32_t cents_offset = 0;
+    const ofsf_zone_t *z = v->zone;
+    int32_t cents_offset = ch_bend_cents[ch];
 
-    /* Pitch bend */
-    cents_offset += ((int32_t)ch_bend[ch] * BEND_RANGE_CENTS) / 8192;
+    if (!z)
+        return v->base_rate_fp16;
+
+    if (z->vib_lfo_to_pitch == 0 &&
+        z->mod_env_to_pitch == 0 &&
+        (z->mod_lfo_to_pitch == 0 || ch_mod_depth[ch] == 0)) {
+        if (cents_offset == 0)
+            return v->base_rate_fp16;
+        if (cents_offset > 12000) cents_offset = 12000;
+        if (cents_offset < -12000) cents_offset = -12000;
+        uint32_t mult = smp_cents_to_multiplier(cents_offset);
+        return (uint32_t)(((uint64_t)v->base_rate_fp16 * mult) >> 16);
+    }
 
     /* Vibrato LFO */
-    if (v->zone && v->zone->vib_lfo_to_pitch != 0) {
+    if (z->vib_lfo_to_pitch != 0) {
         int32_t lfo_out = triangle_wave(v->vib_lfo.phase);
-        cents_offset += (lfo_out * v->zone->vib_lfo_to_pitch) >> 16;
+        cents_offset += (lfo_out * z->vib_lfo_to_pitch) >> 16;
     }
 
     /* Mod LFO to pitch */
-    if (v->zone && v->zone->mod_lfo_to_pitch != 0) {
+    if (z->mod_lfo_to_pitch != 0) {
         int32_t lfo_out = triangle_wave(v->mod_lfo.phase);
-        int32_t depth = v->zone->mod_lfo_to_pitch;
+        int32_t depth = z->mod_lfo_to_pitch;
         /* Scale by CC1 mod wheel */
         depth = (depth * ch_mod_depth[ch]) / 127;
         cents_offset += (lfo_out * depth) >> 16;
     }
 
     /* Mod envelope to pitch */
-    if (v->zone && v->zone->mod_env_to_pitch != 0) {
-        cents_offset += ((int64_t)v->mod_env.level * v->zone->mod_env_to_pitch) >> 16;
+    if (z->mod_env_to_pitch != 0) {
+        cents_offset += ((int64_t)v->mod_env.level * z->mod_env_to_pitch) >> 16;
     }
 
     if (cents_offset == 0)
@@ -545,6 +562,12 @@ static uint32_t compute_pitch(smp_voice_t *v)
 
     uint32_t mult = smp_cents_to_multiplier(cents_offset);
     return (uint32_t)(((uint64_t)v->base_rate_fp16 * mult) >> 16);
+}
+
+static void channel_recompute_cached(int ch)
+{
+    ch_vol_combined[ch] = (ch_volume[ch] * ch_expression[ch]) / 127;
+    ch_pan_midi[ch] = ((ch_pan[ch] - 64) * 500) / 63;
 }
 
 /* ------------------------------------------------------------------ */
@@ -571,12 +594,14 @@ void smp_voice_init(void)
         ch_expression[i] = 127;
         ch_pan[i]        = 64;
         ch_bend[i]       = 0;
+        ch_bend_cents[i] = 0;
         ch_mod_depth[i]  = 0;
         ch_sustain[i]    = 0;
         ch_brightness[i] = 64;
         ch_resonance[i]  = 0;
         ch_reverb_send[i] = 40;   /* GM tasteful default ~31 % wet */
         ch_chorus_send[i] = 0;
+        channel_recompute_cached(i);
     }
 
     master_vol = 255;
@@ -750,6 +775,7 @@ void smp_voice_note_off(int midi_ch, int note)
 
 void smp_voice_tick(void)
 {
+#if SMP_VOICE_ENABLE_TICK_STATS
     uint32_t _probe_t0 = OF_SVC->timer_get_us();
     uint8_t  _probe_active = 0;
     uint8_t  _probe_sustain = 0;
@@ -757,6 +783,7 @@ void smp_voice_tick(void)
     uint8_t  _probe_decay = 0;
     uint8_t  _probe_held = 0;
     uint8_t  _probe_ch[16] = {0};
+#endif
 
     tick_counter++;
     voice_cleanup_stolen();
@@ -768,14 +795,14 @@ void smp_voice_tick(void)
         if (voice_drop_if_stale(v))
             continue;
 
+#if SMP_VOICE_ENABLE_TICK_STATS
         _probe_active++;
         if (v->vol_env.stage == ENV_SUSTAIN) _probe_sustain++;
         else if (v->vol_env.stage == ENV_RELEASE) _probe_release++;
         else if (v->vol_env.stage == ENV_DECAY) _probe_decay++;
         if (v->sustain_held) _probe_held++;
         if (v->midi_ch < 16) _probe_ch[v->midi_ch]++;
-
-        const ofsf_zone_t *z = v->zone;
+#endif
 
         /* Natural sample-end check for one-shots.  When the sample has
          * played to its end the mixer is already emitting silence, so we
@@ -798,6 +825,7 @@ void smp_voice_tick(void)
          * effective 1 kHz; with 1 kHz pump the second pass would
          * make envelopes 2× too fast (snappy attacks, premature
          * releases). */
+        const ofsf_zone_t *z = v->zone;
         env_advance(&v->vol_env, z, 1);
         env_advance(&v->mod_env, z, 0);
         lfo_advance(&v->mod_lfo);
@@ -826,6 +854,7 @@ void smp_voice_tick(void)
         }
     }
 
+#if SMP_VOICE_ENABLE_TICK_STATS
     uint32_t _probe_dt = OF_SVC->timer_get_us() - _probe_t0;
     tick_us_last = _probe_dt;
     if (_probe_dt > tick_us_max) tick_us_max = _probe_dt;
@@ -837,6 +866,7 @@ void smp_voice_tick(void)
     tick_sustain_held  = _probe_held;
     for (int i = 0; i < 16; i++)
         tick_ch_active[i] = _probe_ch[i];
+#endif
     tick_stat_count++;
 }
 
@@ -845,18 +875,21 @@ void smp_voice_update_volume(int midi_ch, int volume, int expression)
     if (midi_ch < 0 || midi_ch > 15) return;
     ch_volume[midi_ch]     = volume;
     ch_expression[midi_ch] = expression;
+    channel_recompute_cached(midi_ch);
 }
 
 void smp_voice_update_pan(int midi_ch, int pan)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
     ch_pan[midi_ch] = pan;
+    channel_recompute_cached(midi_ch);
 }
 
 void smp_voice_update_bend(int midi_ch, int bend)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
     ch_bend[midi_ch] = bend;
+    ch_bend_cents[midi_ch] = ((int32_t)bend * BEND_RANGE_CENTS) / 8192;
 }
 
 void smp_voice_update_mod(int midi_ch, int mod_depth)
