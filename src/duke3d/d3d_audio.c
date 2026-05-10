@@ -299,7 +299,7 @@ static int load_raw_sound_from_file(int num)
         return 0;
     }
 
-    Sound[num].lock = 200;
+    Sound[num].lock = 199;
     Sound[num].length = l;
     soundsiz[num] = l;
     Sound[num].ptr = (uint8_t *)malloc(l);
@@ -533,7 +533,7 @@ int d3d_sound_precache_all(void)
             continue;
         }
         if (Sound[num].ptr == NULL) {
-            Sound[num].lock = 200;
+            Sound[num].lock = 199;
             Sound[num].length = item->size;
             soundsiz[num] = item->size;
             Sound[num].ptr = (uint8_t *)malloc(item->size);

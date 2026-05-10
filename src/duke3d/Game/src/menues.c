@@ -3637,6 +3637,8 @@ else
 
         case 400: // help
         case 401:
+        case 402:
+        case 403:
 		if(!VOLUMEONE)
 		{
 			c = 320>>1;
@@ -3655,7 +3657,7 @@ else
 
                 sound(KICK_HIT);
                 current_menu--;
-                if(current_menu < 400) current_menu = 401;
+                if(current_menu < 400) current_menu = 402;
             }
             else if(
                 KB_KeyPressed( sc_PgDn ) ||
@@ -3679,7 +3681,7 @@ else
                 KB_ClearKeyDown(sc_Space);
                 sound(KICK_HIT);
                 current_menu++;
-                if(current_menu > 401) current_menu = 400;
+                if(current_menu > 402) current_menu = 400;
             }
 
             if( KB_KeyPressed(sc_Escape) )
@@ -3698,14 +3700,15 @@ else
                     rotatesprite(0,0,65536L,0,TEXTSTORY,0,0,10+16+64, 0,0,xdim-1,ydim-1);
                     break;
                 case 401:
+                    drawpockethelppage();
+                    break;
+                case 402:
                     rotatesprite(0,0,65536L,0,F1HELP,0,0,10+16+64, 0,0,xdim-1,ydim-1);
                     break;
             }
 		break;
 		}
 		
-		case 402:
-        case 403:
 		if(VOLUMEONE)
 		{
             c = 320>>1;

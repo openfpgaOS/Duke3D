@@ -272,6 +272,9 @@ uint8_t  loadsound(uint16_t num)
 #endif
     kread( fp, Sound[num].ptr , l);
     kclose( fp );
+#ifdef OPENFPGA
+    Sound[num].lock = 199;
+#endif
     return 1;
 }
 
@@ -371,14 +374,20 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
             voice = d3d_sound_play_3d_pitch(num, soundpr[num], sndang, dist, pitch);
 
         if (voice >= 0) {
+            if (Sound[num].lock < 200)
+                Sound[num].lock = 200;
+            else
+                Sound[num].lock++;
+
             if (soundm[num] & 1)
                 d3d_sound_set_loop(voice);
+
+            d3d_sound_set_owned(voice);
 
             if (i >= 0) {
                 SoundOwner[num][Sound[num].num].i = i;
                 SoundOwner[num][Sound[num].num].voice = voice;
                 Sound[num].num++;
-                d3d_sound_set_owned(voice);
             }
         }
         return voice;
@@ -535,8 +544,19 @@ void sound(short num)
 
         int pitch = openfpga_sound_pitch(num);
         int voice = d3d_sound_play_pitch(num, soundpr[num], 255, pitch);
-        if (voice >= 0 && (soundm[num] & 1))
-            d3d_sound_set_loop(voice);
+        if (voice >= 0) {
+            if (Sound[num].lock < 200)
+                Sound[num].lock = 200;
+            else
+                Sound[num].lock++;
+
+            d3d_sound_set_owned(voice);
+
+            if (soundm[num] & 1)
+                d3d_sound_set_loop(voice);
+        } else if (Sound[num].lock >= 200) {
+            Sound[num].lock--;
+        }
     }
     return;
 #endif

@@ -315,7 +315,7 @@ uint8_t  getsound(uint16_t num)
 #ifdef OPENFPGA
     /* Always pre-load all sounds into malloc'd buffers on openfpgaOS */
     {
-        Sound[num].lock = 200;
+        Sound[num].lock = 199;
         if (Sound[num].ptr == NULL)
             Sound[num].ptr = (uint8_t *)malloc(l);
         if (Sound[num].ptr != NULL)
@@ -1084,7 +1084,7 @@ void newgame(uint8_t  vn,uint8_t  ln,uint8_t  sk)
     short i;
 
     if(globalskillsound >= 0)
-        while(Sound[globalskillsound].lock>=200);
+        while(Sound[globalskillsound].lock>=200) getpackets();
     globalskillsound = -1;
 
     waitforeverybody();

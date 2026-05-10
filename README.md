@@ -108,29 +108,23 @@ build/duke3d/Assets/duke3d/common/bank.ofsf
 | Control | In Game |
 |---------|---------|
 | D-pad up/down | Move forward/backward |
-| D-pad left/right | Turn left/right |
+| D-pad left/right | Turn left/right; with L1, strafe left/right |
 | Left analog stick | Move forward/backward and turn left/right |
 | Right analog stick | Mouse look |
-| A | Fire |
-| B | Open/Use |
-| X | Jump |
-| Y | Crouch |
-| L1 | Previous weapon |
-| R1 | Next weapon |
+| A | Fire; with R1, quick kick |
+| B | Hold Run; tap and release within 500 ms for Open/Use; with R1, use inventory item |
+| X | Jump; with R1, next weapon |
+| Y | Crouch; with R1, previous weapon |
+| L1 | D-pad strafe modifier |
+| R1 | Face-button and inventory modifier |
 | L2 | Strafe left |
 | R2 | Strafe right |
-| Start | Menu |
-| Select | Automap |
+| Start | Menu; with R1, next inventory item |
+| Select | Automap; with R1, previous inventory item |
 
 When a Duke menu is open, B is treated as Back/Escape instead of Open/Use.
 
-The Pocket interact menu exposes Run Mode:
-
-| Run Mode | Behavior |
-|----------|----------|
-| Always Run | Duke auto-run is enabled |
-| Use + Run | B also holds Duke's Run key while held in-game |
-| Walk | Duke auto-run is disabled |
+B always holds Duke's Run key while pressed in-game. Open/Use is sent on release only when B was held for less than 500 ms, which makes tap-to-use and hold-to-run share the same button.
 
 ## Dock Keyboard and Mouse
 

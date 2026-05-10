@@ -333,6 +333,74 @@ int minitext(int x,int y,char  *str,uint8_t  p,uint8_t  sb)
     return (x);
 }
 
+void drawpockethelppage(void)
+{
+    const int row = 8;
+    int y = 42;
+
+    rotatesprite(0,0,65536L,0,MENUSCREEN,16,0,2+8+16+64,0,0,xdim-1,ydim-1);
+    rotatesprite(160<<16,19<<16,65536L,0,MENUBAR,16,0,10,0,0,xdim-1,ydim-1);
+    gametext(160,24,"POCKET CONTROLS",0,2+8+16);
+
+    minitext(20,y,"DPAD U/D",0,2+8+16);
+    minitext(78,y,"FORWARD/BACK",23,2+8+16);
+    minitext(174,y,"X",0,2+8+16);
+    minitext(232,y,"JUMP",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"DPAD L/R",0,2+8+16);
+    minitext(78,y,"TURN",23,2+8+16);
+    minitext(174,y,"Y",0,2+8+16);
+    minitext(232,y,"CROUCH",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"L1+DPAD L/R",0,2+8+16);
+    minitext(78,y,"STRAFE",23,2+8+16);
+    minitext(174,y,"L2/R2",0,2+8+16);
+    minitext(232,y,"STRAFE L/R",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"LSTICK",0,2+8+16);
+    minitext(78,y,"MOVE/TURN",23,2+8+16);
+    minitext(174,y,"START",0,2+8+16);
+    minitext(232,y,"MENU",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"RSTICK",0,2+8+16);
+    minitext(78,y,"LOOK",23,2+8+16);
+    minitext(174,y,"SELECT",0,2+8+16);
+    minitext(232,y,"MAP",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"A",0,2+8+16);
+    minitext(78,y,"FIRE",23,2+8+16);
+    minitext(174,y,"R1+A",0,2+8+16);
+    minitext(232,y,"QUICK KICK",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"B TAP",0,2+8+16);
+    minitext(78,y,"OPEN/USE",23,2+8+16);
+    minitext(174,y,"R1+B",0,2+8+16);
+    minitext(232,y,"USE INV",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"B HOLD",0,2+8+16);
+    minitext(78,y,"RUN",23,2+8+16);
+    minitext(174,y,"R1+X/Y",0,2+8+16);
+    minitext(232,y,"NEXT/PREV WPN",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"B IN MENU",0,2+8+16);
+    minitext(78,y,"BACK",23,2+8+16);
+    minitext(174,y,"R1+START",0,2+8+16);
+    minitext(232,y,"NEXT INV",23,2+8+16);
+    y += row;
+
+    minitext(174,y,"R1+SELECT",0,2+8+16);
+    minitext(232,y,"PREV INV",23,2+8+16);
+
+}
+
 int minitextshade(int x,int y,char  *str,uint8_t  s,uint8_t  p,uint8_t  sb)
 {
     short ac;
@@ -2727,6 +2795,9 @@ void displayrest(int32_t smoothratio)
                 rotatesprite(0,0,65536L,0,TEXTSTORY,0,0,10+16+64, 0,0,xdim-1,ydim-1);
                 break;
             case 2:
+                drawpockethelppage();
+                break;
+            case 3:
                 rotatesprite(0,0,65536L,0,F1HELP,0,0,10+16+64, 0,0,xdim-1,ydim-1);
                 break;
         }
@@ -6863,7 +6934,7 @@ void nonsharedkeys(void)
             KB_ClearKeyDown(sc_Enter);
             ud.show_help ++;
 
-            if( ud.show_help > 2 )
+            if( ud.show_help > 3 )
             {
                 ud.show_help = 0;
                 if(ud.multimode < 2 && ud.recstat != 2) ready2send = 1;
@@ -7081,20 +7152,12 @@ void nonsharedkeys(void)
         vscrn();
     }
 
-#ifdef OPENFPGA
-    /* Sync auto_run from Pocket interact menu Run Mode setting */
-    {
-        extern int current_run_mode;
-        ud.auto_run = (current_run_mode == 0) ? 1 : 0;  /* 0=Always Run */
-    }
-#else
     if( ACTION(gamefunc_AutoRun) )
     {
         CONTROL_ClearAction(gamefunc_AutoRun);
         ud.auto_run = 1-ud.auto_run;
         FTA(85+ud.auto_run,&ps[myconnectindex],1);
     }
-#endif
 
     if( ACTION(gamefunc_Map) )
     {

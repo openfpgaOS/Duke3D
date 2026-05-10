@@ -185,21 +185,6 @@
                     "adjust_small": 1,
                     "adjust_large": 4
                 }
-            },
-            {
-                "name": "Run Mode",
-                "id": 100,
-                "type": "list",
-                "enabled": true,
-                "persist": true,
-                "address": "0x03FE0000",
-                "defaultval": 0,
-                "mask": "0xFFFFFFFF",
-                "options": [
-                    { "value": "0x00", "name": "Always Run" },
-                    { "value": "0x01", "name": "Use = Use + Run" },
-                    { "value": "0x02", "name": "Walk (no run)" }
-                ]
             }
         ],
         "messages": []

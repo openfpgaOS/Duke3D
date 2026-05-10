@@ -175,6 +175,7 @@ extern void uninittimer(void );
 extern int gametext(int x,int y,char  *t,uint8_t  s,short dabits);
 extern int gametextpart(int x,int y,char  *t,uint8_t  s,short p);
 extern int minitext(int x,int y,char  *t,uint8_t  p,uint8_t  sb);
+extern void drawpockethelppage(void);
 extern void gamenumber(int32_t x,int32_t y,int32_t n,uint8_t  s);
 extern void ShutDown(void );
 extern void allowtimetocorrecterrorswhenquitting(void );

@@ -61,8 +61,6 @@ static unsigned int lastkey = 0;
 
 /* Saved previous button state for edge detection */
 static uint32_t prev_buttons = 0;
-static uint8_t open_button_held_scancode = 0;
-static uint8_t open_button_held_extended = 0;
 
 /* Drawing helper */
 static uint8_t drawpixel_color = 0;
@@ -78,19 +76,8 @@ static int sync_next_palette_update = 0;
 #define DOCK_MOUSE_FIRE_SCANCODE  0x1D  /* LCtrl */
 #define DOCK_MOUSE_USE_SCANCODE   0x39  /* Space */
 #define OPEN_BUTTON_MENU_SCANCODE  0x01  /* Escape = menu back */
-
-/* ======================================================================
- * Interact menu variables (Pocket menu -> SDRAM)
- *
- * Index 0 = Run Mode:  0 = Always Run, 1 = Hold Y = Run, 2 = Walk
- * ====================================================================== */
-#define INTERACT_RUN_MODE  0
-
-#define RUN_MODE_ALWAYS    0
-#define RUN_MODE_USE_RUN   1
-#define RUN_MODE_WALK      2
-
-int current_run_mode = RUN_MODE_ALWAYS;  /* read by game.c to sync ud.auto_run */
+#define B_TAP_USE_MS  500
+#define TAP_USE_HOLD_MS  80
 
 /* ======================================================================
  * Button-to-scancode mapping
@@ -105,6 +92,12 @@ typedef struct {
 } btn_map_t;
 
 typedef struct {
+    uint8_t active;
+    uint8_t scancode;
+    uint8_t extended;
+} held_key_t;
+
+typedef struct {
     uint8_t usage;
     uint8_t scancode;
     uint8_t extended;
@@ -117,27 +110,13 @@ typedef struct {
 } keymod_map_t;
 
 static const btn_map_t button_map[] = {
-    /* Action buttons */
-    { OF_BTN_A,      0x1D, 0x00 },  /* A      -> LCtrl  = Fire         */
-    { OF_BTN_B,      0x39, 0x00 },  /* B      -> Space  = Open/Use     */
-    { OF_BTN_X,      0x1E, 0x00 },  /* X      -> 'A'    = Jump         */
-    { OF_BTN_Y,      0x2C, 0x00 },  /* Y      -> 'Z'    = Crouch       */
-
-    /* Shoulders = weapon cycling */
-    { OF_BTN_L1,     0x27, 0x00 },  /* L      -> ';'    = Prev Weapon  */
-    { OF_BTN_R1,     0x28, 0x00 },  /* R      -> '''    = Next Weapon  */
+    /* Buttons with shoulder-modified alternatives are reconciled below. */
     { OF_BTN_L2,     0x33, 0x00 },  /* L2     -> ','    = Strafe Left  */
     { OF_BTN_R2,     0x34, 0x00 },  /* R2     -> '.'    = Strafe Right */
-
-    /* Menu */
-    { OF_BTN_START,  0x01, 0x00 },  /* Start  -> Escape = Menu         */
-    { OF_BTN_SELECT, 0x0F, 0x00 },  /* Select -> Tab    = Map          */
 
     /* D-pad = movement/turning */
     { OF_BTN_UP,     0x48, 0xE0 },  /* D-Up   -> Up     = Forward      */
     { OF_BTN_DOWN,   0x50, 0xE0 },  /* D-Down -> Down   = Backward     */
-    { OF_BTN_LEFT,   0x4B, 0xE0 },  /* D-Left -> Left   = Turn Left    */
-    { OF_BTN_RIGHT,  0x4D, 0xE0 },  /* D-Right-> Right  = Turn Right   */
 };
 
 #define NUM_BTN_MAPS  (sizeof(button_map) / sizeof(button_map[0]))
@@ -212,11 +191,38 @@ static const keymod_map_t keymod_map[] = {
 #define SC_LEFT   0x4B
 #define SC_RIGHT  0x4D
 #define SC_EXT    0xE0
+#define SC_FIRE   0x1D  /* LCtrl */
+#define SC_ESCAPE 0x01
+#define SC_OPEN   0x39  /* Space */
+#define SC_TAB    0x0F
+#define SC_JUMP   0x1E  /* A */
+#define SC_CROUCH 0x2C  /* Z */
+#define SC_QUICK_KICK      0x2E  /* C */
+#define SC_INVENTORY_USE   0x1C  /* Enter */
+#define SC_INVENTORY_LEFT  0x1A  /* [ */
+#define SC_INVENTORY_RIGHT 0x1B  /* ] */
+#define SC_NEXT_WEAPON     0x28  /* ' */
+#define SC_PREV_WEAPON     0x27  /* ; */
+#define SC_STRAFE_LEFT     0x33  /* , */
+#define SC_STRAFE_RIGHT    0x34  /* . */
+#define SC_RUN             0x2A  /* LShift */
 
 static uint8_t lstick_up_held    = 0;
 static uint8_t lstick_down_held  = 0;
 static uint8_t lstick_left_held  = 0;
 static uint8_t lstick_right_held = 0;
+static held_key_t pocket_btn_a_key;
+static held_key_t pocket_btn_x_key;
+static held_key_t pocket_btn_y_key;
+static held_key_t pocket_btn_select_key;
+static held_key_t pocket_btn_start_key;
+static held_key_t pocket_dpad_left_key;
+static held_key_t pocket_dpad_right_key;
+static uint8_t pocket_b_mode = 0;
+static uint8_t pocket_b_tap_use_allowed = 0;
+static unsigned int pocket_b_press_ms = 0;
+static uint8_t tap_use_held = 0;
+static unsigned int tap_use_release_ms = 0;
 static int32_t dock_mouse_accum_x = 0;
 static int32_t dock_mouse_accum_y = 0;
 
@@ -233,6 +239,123 @@ static void send_key(uint8_t scancode, uint8_t extended, int pressed)
 
     lastkey = pressed ? scancode : (scancode + 128);
     keyhandler();
+}
+
+static void update_pocket_button_key(uint32_t buttons, uint32_t btn,
+                                     uint8_t scancode, uint8_t extended,
+                                     held_key_t *held)
+{
+    if (buttons & btn) {
+        if (!held->active) {
+            held->active = 1;
+            held->scancode = scancode;
+            held->extended = extended;
+            send_key(scancode, extended, 1);
+        } else if (held->scancode != scancode || held->extended != extended) {
+            send_key(held->scancode, held->extended, 0);
+            held->scancode = scancode;
+            held->extended = extended;
+            send_key(scancode, extended, 1);
+        }
+    } else if (held->active) {
+        send_key(held->scancode, held->extended, 0);
+        held->active = 0;
+        held->scancode = 0;
+        held->extended = 0;
+    }
+}
+
+static void update_tap_use_release(void)
+{
+    if (tap_use_held && (int)(of_time_ms() - tap_use_release_ms) >= 0) {
+        send_key(SC_OPEN, 0x00, 0);
+        tap_use_held = 0;
+    }
+}
+
+static void start_tap_use(void)
+{
+    if (!tap_use_held) {
+        send_key(SC_OPEN, 0x00, 1);
+        tap_use_held = 1;
+    }
+    tap_use_release_ms = of_time_ms() + TAP_USE_HOLD_MS;
+}
+
+static void cancel_tap_use(void)
+{
+    if (tap_use_held) {
+        send_key(SC_OPEN, 0x00, 0);
+        tap_use_held = 0;
+    }
+}
+
+static void stop_pocket_b_mode(uint8_t mode, int allow_tap_use)
+{
+    unsigned int held_ms;
+
+    switch (mode) {
+    case 1: /* hold-run/tap-use */
+        send_key(SC_RUN, 0x00, 0);
+        held_ms = of_time_ms() - pocket_b_press_ms;
+        if (allow_tap_use && pocket_b_tap_use_allowed && held_ms < B_TAP_USE_MS)
+            start_tap_use();
+        break;
+    case 2: /* menu back */
+        send_key(OPEN_BUTTON_MENU_SCANCODE, 0x00, 0);
+        break;
+    case 3: /* R1+B inventory use */
+        send_key(SC_INVENTORY_USE, 0x00, 0);
+        break;
+    default:
+        break;
+    }
+}
+
+static void start_pocket_b_mode(uint8_t mode)
+{
+    switch (mode) {
+    case 1:
+        cancel_tap_use();
+        pocket_b_press_ms = of_time_ms();
+        send_key(SC_RUN, 0x00, 1);
+        break;
+    case 2:
+        cancel_tap_use();
+        send_key(OPEN_BUTTON_MENU_SCANCODE, 0x00, 1);
+        break;
+    case 3:
+        cancel_tap_use();
+        send_key(SC_INVENTORY_USE, 0x00, 1);
+        break;
+    default:
+        break;
+    }
+}
+
+static void update_pocket_b_button(uint32_t buttons, int menu_active,
+                                   int right_modifier)
+{
+    uint8_t desired_mode = 0;
+    uint8_t old_mode;
+
+    if (buttons & OF_BTN_B) {
+        if (menu_active)
+            desired_mode = 2;
+        else if (right_modifier)
+            desired_mode = 3;
+        else
+            desired_mode = 1;
+    }
+
+    if (desired_mode == pocket_b_mode)
+        return;
+
+    old_mode = pocket_b_mode;
+    stop_pocket_b_mode(pocket_b_mode, desired_mode == 0);
+    pocket_b_mode = desired_mode;
+    pocket_b_tap_use_allowed = desired_mode == 1 && old_mode == 0;
+    start_pocket_b_mode(pocket_b_mode);
 }
 
 static int hid_usage_to_scancode(uint8_t usage, uint8_t *scancode,
@@ -775,6 +898,8 @@ static void handle_events(void)
     uint32_t buttons;
     uint32_t pressed, released;
     int menu_active;
+    int left_modifier;
+    int right_modifier;
     int i;
 
     memset(&kb, 0, sizeof(kb));
@@ -790,9 +915,10 @@ static void handle_events(void)
     released = ~buttons & prev_buttons;   /* just went up   */
     prev_buttons = buttons;
     menu_active = duke_menu_active();
+    left_modifier = !menu_active && (buttons & OF_BTN_L1);
+    right_modifier = !menu_active && (buttons & OF_BTN_R1);
 
-    /* --- Poll interact menu for Run Mode changes --- */
-    current_run_mode = (int)of_interact_get(INTERACT_RUN_MODE);
+    update_tap_use_release();
 
     /* --- Physical dock keyboard -> DOS scancodes --- */
     if (kb.present) {
@@ -802,31 +928,11 @@ static void handle_events(void)
         send_modifier_edges(kb.modifiers_released, 0);
     }
 
-    /* --- Digital buttons -> scancodes --- */
+    /* --- Digital buttons with no shoulder-modified alternate -> scancodes --- */
     for (i = 0; i < (int)NUM_BTN_MAPS; i++) {
         const btn_map_t *m = &button_map[i];
         uint8_t scancode = m->scancode;
         uint8_t extended = m->extended;
-
-        if (m->btn == OF_BTN_B) {
-            if (pressed & m->btn) {
-                scancode = menu_active ? OPEN_BUTTON_MENU_SCANCODE : m->scancode;
-                extended = menu_active ? 0x00 : m->extended;
-                open_button_held_scancode = scancode;
-                open_button_held_extended = extended;
-                send_key(scancode, extended, 1);
-            }
-            if (released & m->btn) {
-                scancode = open_button_held_scancode ? open_button_held_scancode :
-                    (menu_active ? OPEN_BUTTON_MENU_SCANCODE : m->scancode);
-                extended = open_button_held_scancode ? open_button_held_extended :
-                    (menu_active ? 0x00 : m->extended);
-                send_key(scancode, extended, 0);
-                open_button_held_scancode = 0;
-                open_button_held_extended = 0;
-            }
-            continue;
-        }
 
         if (pressed & m->btn) {
             send_key(scancode, extended, 1);
@@ -836,13 +942,31 @@ static void handle_events(void)
         }
     }
 
-    /* --- "Use = Use + Run" mode: B also sends LShift while held --- */
-    if (!menu_active && current_run_mode == RUN_MODE_USE_RUN) {
-        if (pressed & OF_BTN_B)
-            send_key(0x2A, 0x00, 1);   /* LShift down = Run */
-        if (released & OF_BTN_B)
-            send_key(0x2A, 0x00, 0);   /* LShift up */
-    }
+    /* --- Pocket shoulder modifiers --- */
+    update_pocket_button_key(buttons, OF_BTN_LEFT,
+                             left_modifier ? SC_STRAFE_LEFT : SC_LEFT,
+                             left_modifier ? 0x00 : SC_EXT,
+                             &pocket_dpad_left_key);
+    update_pocket_button_key(buttons, OF_BTN_RIGHT,
+                             left_modifier ? SC_STRAFE_RIGHT : SC_RIGHT,
+                             left_modifier ? 0x00 : SC_EXT,
+                             &pocket_dpad_right_key);
+    update_pocket_button_key(buttons, OF_BTN_A,
+                             right_modifier ? SC_QUICK_KICK : SC_FIRE,
+                             0x00, &pocket_btn_a_key);
+    update_pocket_b_button(buttons, menu_active, right_modifier);
+    update_pocket_button_key(buttons, OF_BTN_X,
+                             right_modifier ? SC_NEXT_WEAPON : SC_JUMP,
+                             0x00, &pocket_btn_x_key);
+    update_pocket_button_key(buttons, OF_BTN_Y,
+                             right_modifier ? SC_PREV_WEAPON : SC_CROUCH,
+                             0x00, &pocket_btn_y_key);
+    update_pocket_button_key(buttons, OF_BTN_SELECT,
+                             right_modifier ? SC_INVENTORY_LEFT : SC_TAB,
+                             0x00, &pocket_btn_select_key);
+    update_pocket_button_key(buttons, OF_BTN_START,
+                             right_modifier ? SC_INVENTORY_RIGHT : SC_ESCAPE,
+                             0x00, &pocket_btn_start_key);
 
     /* --- Left analog stick -> movement keys (Up/Down/Left/Right arrows) --- */
     {
