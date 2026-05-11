@@ -3,8 +3,9 @@
 // See the included license file "BUILDLIC.TXT" for license info.
 // This file has been modified from Ken Silverman's original release
 
-/* DDOI - This file is an attempt to reimplement a_nasm.asm in C */
-/* FCS: However did that work: This is far from perfect but you have my eternal respect !!! */
+/* C reimplementation of a_nasm.asm renderer inner loops.  Keep the data
+ * flow close to the original routines because callers depend on their
+ * fixed-point state conventions. */
 
 #include "platform.h"
 #include "build.h"
@@ -48,8 +49,7 @@ void sethlinesizes(int32_t i1, int32_t _bits, const uint8_t * textureAddress)
     textureSetup = textureAddress;
 } 
 
-//FCS:   Draw ceiling/floors
-//Draw a line from destination in the framebuffer to framebuffer-numPixels
+/* Draw a ceiling/floor span from dest back toward dest - numPixels. */
 OF_FASTTEXT void hlineasm4(int32_t numPixels, int32_t shade, uint32_t i4, uint32_t i5, uint8_t * restrict dest){
 
     const int32_t shifter = ((256-machxbits_al) & 0x1f);
@@ -119,7 +119,7 @@ OF_FASTTEXT void rhlineasm4(int32_t i1, const uint8_t* texture, int32_t i3, uint
     if (i1 <= 0) return;
 
 #ifdef OPENFPGA
-    /* Stage 5+: rotated affine sprite hline.  Caller (dorotatesprite)
+    /* Rotated affine sprite hline.  Caller (dorotatesprite)
      * has already populated the rs_* recorder via
      * d3d_gpu_record_rotsprite_setup; the hook also needs the per-call
      * shade row (rmach_edx = palookupoffs). */
@@ -171,8 +171,7 @@ void setuprmhlineasm4(int32_t i1, int32_t i2, int32_t i3, const uint8_t* i4, int
     setupTileHeight = tileHeight;
 } 
 
-
-//FCS: ????
+/* Masked rotated affine sprite hline. */
 OF_FASTTEXT void rmhlineasm4(int32_t i1, const uint8_t* shade, int32_t colorIndex, int32_t i4, int32_t i5, uint8_t* dest)
 {
     uint32_t ebp = 0;
@@ -183,7 +182,7 @@ OF_FASTTEXT void rmhlineasm4(int32_t i1, const uint8_t* shade, int32_t colorInde
         return;
 
 #ifdef OPENFPGA
-    /* Stage 5+: rotated affine sprite hline + color-key transparency. */
+    /* Rotated affine sprite hline with color-key transparency. */
     if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
         int shade_idx = d3d_gpu_shade_for(rmmach_edx);
         if (d3d_gpu_rmhline(dest, i1, shade_idx,
@@ -238,7 +237,7 @@ void setBytesPerLine(int32_t _bytesperline)
 
 static OF_FASTDATA uint8_t  mach3_al;
 
-//FCS:  RENDER TOP AND BOTTOM COLUMN
+/* Render a wall top/bottom column segment. */
 OF_FASTTEXT int32_t prevlineasm1(int32_t i1, const uint8_t* palette, int32_t i3, int32_t i4, const uint8_t  *source, uint8_t  *dest)
 {
     if (i3 == 0)
@@ -262,7 +261,7 @@ OF_FASTTEXT int32_t prevlineasm1(int32_t i1, const uint8_t* palette, int32_t i3,
 }
 
 
-//FCS: This is used to draw wall border vertical lines
+/* Draw a wall border vertical line. */
 OF_FASTTEXT int32_t vlineasm1(int32_t vince, const uint8_t * restrict palookupoffse, int32_t numPixels, int32_t vplce, const uint8_t * restrict texture, uint8_t * restrict dest)
 {
     const uint8_t local_shift = mach3_al;
@@ -312,9 +311,9 @@ OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t * restrict texture, int
     const int local_transrev = transrev;
 
 #ifdef OPENFPGA
-    /* Stage 5 GPU dispatch (gated by d3d_gpu_use_spans for A/B test).
-     * `texture` here is BUILD's palookup row (the colormap); `source`
-     * is the 1-D column data. */
+    /* GPU path for normal translucency.  `texture` is BUILD's palookup
+     * row; `source` is the 1-D column data.  Reverse translucency stays
+     * on the CPU path. */
     if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
         if (d3d_gpu_use_translucent_spans && !local_transrev) {
             int shade = d3d_gpu_shade_for(texture);
@@ -659,7 +658,7 @@ OF_FASTDATA uint32_t adder;
 OF_FASTDATA uint32_t tsmach_eax3;
 OF_FASTDATA uint32_t tsmach_ecx;
 #ifdef OPENFPGA
-/* Stage 5 sprite_vline GPU helper inputs.  BUILD's CPU loop cracks xv
+/* Sprite-vline GPU helper inputs.  BUILD's CPU loop cracks xv
  * into integer (folded into adder) + fractional (tsmach_ecx) parts
  * and recovery from those is ambiguous, so capture the raw 16.16
  * inputs and the column stride here once per sprite. */
@@ -686,19 +685,17 @@ void tsetupspritevline(const uint8_t * palette, int32_t i2, int32_t i3, int32_t 
 #endif
 }
 
-/*
- FCS: Draw a sprite vertical line of pixels.
- */
+/* Draw a sprite vertical line. */
 OF_FASTTEXT void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t i4, const uint8_t * restrict texture, uint8_t * restrict dest)
 {
     const int32_t local_bpl = bytesperline;
     const int local_transrev = transrev;
 
 #ifdef OPENFPGA
-    /* GPU dispatch (gated by d3d_gpu_use_spans for A/B test).
+    /* GPU path for normal translucent sprite columns.
      * SW loop semantics: `numPixels--; if (numPixels != 0) draw;` =>
      * N-1 actual pixels for N input.  Caller passes y2-y1+1 expecting
-     * y2-y1 draws. */
+     * y2-y1 draws.  Reverse translucency stays on the CPU path. */
     if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
         if (d3d_gpu_use_translucent_spans && !local_transrev) {
             const int shade = d3d_gpu_shade_for(tspal);
@@ -968,7 +965,7 @@ extern int32_t fpuasm;
 #define low32(a) (((a)&0xffffffff))
 #define high32(a) ((int)(((int64_t)(a)&(int64_t)0xffffffff00000000)>>32))
 
-//FCS: Render RENDER_SLOPPED_CEILING_AND_FLOOR
+/* Render a sloped ceiling/floor vertical line. */
 void slopevlin(intptr_t i1, uint32_t i2, intptr_t* i3, uint32_t index, int32_t i4, int32_t i5, int32_t i6)
 {
     bitwisef2i c;

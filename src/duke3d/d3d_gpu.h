@@ -1,8 +1,7 @@
 /*
  * d3d_gpu.h — Duke3D ↔ openfpgaOS GPU rasteriser glue.
  *
- * Phase 1: init / per-frame plumbing only.  Phase 2 adds opt-in span
- * replacements for the BUILD inner loops via d3d_gpu_use_spans.
+ * openfpgaOS GPU replacement paths for BUILD's hot renderer loops.
  *
  * Lifecycle:
  *   d3d_gpu_init()         — once after of_video_init()
@@ -25,26 +24,22 @@ extern "C" {
  * the same ELF runs on GPU-less targets without divergence. */
 extern int d3d_gpu_present;
 
-/* Phase 2 opt-in: when 1, the gated draw functions (currently
- * vlineasm1) build of_gpu_span_t and submit instead of running the
- * scalar SW loop.  Default 0 — flip from the console / cvar to A/B
- * test before promoting span replacements out of opt-in. */
+/* When 1, converted BUILD draw functions submit spans to the GPU instead
+ * of running their original scalar software loops. */
 extern int d3d_gpu_use_spans;
 
 /* Scoped CPU fallback gate for BUILD paths that must preserve exact
  * software framebuffer semantics, such as dorotatesprite menus/HUD. */
 extern int d3d_gpu_force_cpu_spans;
-/* A/B switch for dorotatesprite. 1 keeps byte-sensitive HUD/menu sprites on
- * Ken's original CPU loops; 0 lets the existing GPU span hooks run. */
+/* 1 keeps byte-sensitive HUD/menu sprites on Ken's original CPU loops;
+ * 0 lets the existing GPU span hooks run. */
 extern int d3d_gpu_force_rotatesprite_cpu;
-/* A/B switch for the compact hardware SPAN4 command. 0 emits the proven
- * four scalar column spans; 1 uses SPAN4. */
+/* Compact hardware SPAN4 command enable. */
 extern int d3d_gpu_use_span4;
-/* A/B switch for the raw mixed command-stream DMA path. 0 uses homogeneous
- * scalar DRAW_SPANS_BATCH; 1 batches complete DRAW_SPAN/SPAN4 commands. */
+/* Mixed command-stream DMA enable.  When 0, scalar DRAW_SPANS_BATCH is used. */
 extern int d3d_gpu_use_command_stream_batch;
-/* A/B switch for the hardware translucency unit.  The app uploads the LUT
- * transposed for Duke TRANS_NORMAL; TRANS_REVERSE falls back to CPU. */
+/* Hardware translucency unit enable.  The app uploads the LUT transposed
+ * for Duke TRANS_NORMAL; TRANS_REVERSE falls back to CPU. */
 extern int d3d_gpu_use_translucent_spans;
 
 /* Runtime perf capture.  Samples are kept in RAM; UART dump is explicit or
@@ -218,18 +213,12 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
  * a second TU. */
 void d3d_gpu_upload_transluc(const uint8_t *table, uint32_t size);
 
-/* Invalidate the GPU's texture cache (gpu_tex_cache.v).  DANGEROUS to
- * call mid-frame — issuing GPU_TEX_FLUSH while the GPU is processing
- * spans has been observed to wedge the FB-write fence path (3D output
- * stops entirely).  Use d3d_gpu_mark_tex_dirty() instead from any
- * BUILD code path that mutates tile bytes; the actual MMIO flush is
- * deferred to d3d_gpu_set_fb() at the next page-flip, when the prior
- * frame's of_gpu_finish() has guaranteed the GPU is idle. */
+/* Invalidate the GPU texture cache immediately.  Call only when the GPU is
+ * already idle; hot tile-loading paths drain before using this. */
 void d3d_gpu_tex_invalidate(void);
 
-/* Mark the GPU's texture cache as needing invalidation at the next
- * frame boundary.  Cheap (one store).  Must be paired with the
- * deferred drain in d3d_gpu_set_fb. */
+/* Legacy compatibility hook; current hot tile paths invalidate explicitly
+ * after draining and syncing the changed bytes. */
 void d3d_gpu_mark_tex_dirty(void);
 
 /* GPU-only drain (no CPU cache flush).  display_of.c uses it to time
@@ -305,8 +294,7 @@ void d3d_gpu_mvline(uint8_t *dest, int num_pixels, int shade,
                     uint32_t vplce, uint32_t vince, uint8_t v_shift,
                     const uint8_t *texture);
 
-/* Compact hardware 4-column batch (vlineasm4 replacement).  The try-helper
- * defaults to four scalar spans while SPAN4 remains an opt-in A/B path. */
+/* Compact hardware 4-column batch (vlineasm4 replacement). */
 void d3d_gpu_vline4(uint8_t *fb_at_y0, int num_pixels,
                     const int shade[4],
                     const uint32_t vplce[4],
@@ -324,7 +312,7 @@ void d3d_gpu_mvline4(uint8_t *fb_at_y0, int num_pixels,
                      const uint8_t *const texture[4]);
 
 /* ----------------------------------------------------------------------
- * Translucent paths (Stage 5 — fabric transluc[] BLEND unit).
+ * Translucent paths (fabric transluc[] BLEND unit).
  *
  * Architectural principle (project_gpu_owns_framebuffer.md): once the
  * GPU is doing the work, the CPU MUST NOT write the framebuffer on the

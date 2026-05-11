@@ -804,8 +804,17 @@ void clearsoundlocks(void)
 #endif
 
     for(i=0;i<NUM_SOUNDS;i++)
-
+    {
             Sound[i].lock = 199;
+#ifdef OPENFPGA
+            Sound[i].num = 0;
+            for (int j = 0; j < 4; j++)
+            {
+                SoundOwner[i][j].i = -1;
+                SoundOwner[i][j].voice = -1;
+            }
+#endif
+    }
 
     for(i=0;i<11;i++)
 

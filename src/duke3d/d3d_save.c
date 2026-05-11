@@ -11,13 +11,15 @@
  * cheaply validate a slot without decoding the LZW stream):
  *
  *   [0..3]    data_size  (uint32, total bytes written including header)
- *   [4..15]   reserved (zero-padded by truncation on "wb")
+ *   [4..7]    layout_version (OpenFPGA Duke save payload layout)
+ *   [8..15]   reserved (zero-padded by truncation on "wb")
  *   [16..19]  magic = SAVE_MAGIC ("DKSV")
  *   [20..]    BUILD dfread/dfwrite payload
  */
 
 #include "d3d_save.h"
 #include "d3d_audio.h"
+#include "of_file.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +31,11 @@ extern int32_t uncompress(uint8_t *lzwinbuf, int32_t compleng, uint8_t *lzwoutbu
 #define LZWSIZE     16384
 #define LZWMAX      (LZWSIZE + (LZWSIZE >> 4))
 #define SAVE_MAGIC  0x444B5356u    /* "DKSV" */
+#define SAVE_SLOT_BASE 10u
+#define SAVE_LAYOUT_LEGACY 0u      /* Layout field was previously reserved. */
+#define SAVE_LAYOUT 2u             /* Save payload layout, not a build ID */
+#define SAVE_LAYOUT_TRANSITIONAL 0x4F465002u
+#define LAYOUT_OFF  4
 #define MAGIC_OFF   16
 
 static OfSaveFile save_pool[D3D_MAXSAVES];
@@ -36,28 +43,69 @@ static int        save_pool_used[D3D_MAXSAVES];
 static uint8_t    save_lzw_in[LZWSIZE];
 static uint8_t    save_lzw_out[LZWMAX];
 
-static void slot_path(int slot, char *out, size_t out_len) {
-    snprintf(out, out_len, "duke3d_%d.sav", slot);
+static const char *save_slot_names[D3D_MAXSAVES] = {
+    "duke3d_0.sav",
+    "duke3d_1.sav",
+    "duke3d_2.sav",
+    "duke3d_3.sav",
+    "duke3d_4.sav",
+    "duke3d_5.sav",
+    "duke3d_6.sav",
+    "duke3d_7.sav",
+    "duke3d_8.sav",
+    "duke3d_9.sav",
+};
+
+static void save_register_slots(void) {
+    static int registered = 0;
+    if (registered)
+        return;
+
+    for (int i = 0; i < D3D_MAXSAVES; i++)
+        of_file_slot_register(SAVE_SLOT_BASE + (uint32_t)i, save_slot_names[i]);
+
+    registered = 1;
 }
 
-static int read_save_header(FILE *fp, uint32_t *data_size, uint32_t *magic) {
-    uint32_t size = 0;
-    uint32_t mag = 0;
+static void slot_path(int slot, char *out, size_t out_len) {
+    snprintf(out, out_len, "%s", save_slot_names[slot]);
+}
+
+static uint32_t load_le32(const uint8_t *p) {
+    return (uint32_t)p[0] |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static void store_le32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static int read_save_header(FILE *fp, uint32_t *data_size, uint32_t *layout,
+                            uint32_t *magic) {
+    uint8_t header[D3D_SAVE_HEADER];
 
     if (fseek(fp, 0, SEEK_SET) != 0 ||
-        fread(&size, 4, 1, fp) != 1 ||
-        fseek(fp, MAGIC_OFF, SEEK_SET) != 0 ||
-        fread(&mag, 4, 1, fp) != 1)
+        fread(header, 1, sizeof(header), fp) != sizeof(header))
         return 0;
 
-    if (data_size) *data_size = size;
-    if (magic) *magic = mag;
+    if (data_size) *data_size = load_le32(&header[0]);
+    if (layout) *layout = load_le32(&header[LAYOUT_OFF]);
+    if (magic) *magic = load_le32(&header[MAGIC_OFF]);
     return 1;
 }
 
-static int save_header_valid(uint32_t data_size, uint32_t magic) {
+static int save_header_valid(uint32_t data_size, uint32_t layout,
+                             uint32_t magic) {
     return data_size > D3D_SAVE_HEADER &&
            data_size <= D3D_SAVE_SIZE &&
+           (layout == SAVE_LAYOUT_LEGACY ||
+            layout == SAVE_LAYOUT ||
+            layout == SAVE_LAYOUT_TRANSITIONAL) &&
            magic == SAVE_MAGIC;
 }
 
@@ -69,6 +117,8 @@ static void save_mark_error(OfSaveFile *sf) {
 OfSaveFile *save_fopen(int slot, const char *mode) {
     if (slot < 0 || slot >= D3D_MAXSAVES) return NULL;
     if (!mode || (mode[0] != 'r' && mode[0] != 'w')) return NULL;
+
+    save_register_slots();
 
     int idx = -1;
     for (int i = 0; i < D3D_MAXSAVES; i++) {
@@ -110,9 +160,10 @@ OfSaveFile *save_fopen(int slot, const char *mode) {
          * slot ceiling so a corrupt header can't trick callers into
          * reading past the buffer. */
         uint32_t data_size = 0;
+        uint32_t layout = 0;
         uint32_t magic = 0;
-        if (!read_save_header(sf->fp, &data_size, &magic) ||
-            !save_header_valid(data_size, magic)) {
+        if (!read_save_header(sf->fp, &data_size, &layout, &magic) ||
+            !save_header_valid(data_size, layout, magic)) {
             fclose(sf->fp);
             sf->fp = NULL;
             return NULL;
@@ -216,11 +267,12 @@ int save_fclose(OfSaveFile *sf) {
         slot_path(slot, path, sizeof(path));
         FILE *fp = fopen(path, "r+b");
         if (fp) {
-            uint32_t magic = SAVE_MAGIC;
+            uint8_t header[D3D_SAVE_HEADER] = {0};
+            store_le32(&header[0], data_size);
+            store_le32(&header[LAYOUT_OFF], SAVE_LAYOUT);
+            store_le32(&header[MAGIC_OFF], SAVE_MAGIC);
             if (fseek(fp, 0, SEEK_SET) != 0 ||
-                fwrite(&data_size, 4, 1, fp) != 1 ||
-                fseek(fp, MAGIC_OFF, SEEK_SET) != 0 ||
-                fwrite(&magic, 4, 1, fp) != 1)
+                fwrite(header, 1, sizeof(header), fp) != sizeof(header))
                 status = -1;
             if (fclose(fp) != 0)
                 status = -1;
@@ -242,6 +294,8 @@ int save_fclose(OfSaveFile *sf) {
 int save_slot_valid(int slot) {
     if (slot < 0 || slot >= D3D_MAXSAVES) return 0;
 
+    save_register_slots();
+
     char path[32];
     slot_path(slot, path, sizeof(path));
 
@@ -249,9 +303,10 @@ int save_slot_valid(int slot) {
     if (!f) return 0;
 
     uint32_t data_size = 0;
+    uint32_t layout = 0;
     uint32_t magic = 0;
-    int ok = read_save_header(f, &data_size, &magic) &&
-             save_header_valid(data_size, magic);
+    int ok = read_save_header(f, &data_size, &layout, &magic) &&
+             save_header_valid(data_size, layout, magic);
     fclose(f);
     return ok;
 }

@@ -125,26 +125,28 @@ void smp_voice_tick_record_pump(uint32_t elapsed_us, int ticks_fired,
     if (budget_exceeded) stat_pump_budget_exceeded++;
 }
 
-/* Per-channel state (16 MIDI channels) */
-static OF_FASTDATA int ch_volume[16];        /* CC7  (0-127) */
-static OF_FASTDATA int ch_expression[16];    /* CC11 (0-127) */
-static OF_FASTDATA int ch_pan[16];           /* CC10 (0-127, 64=center) */
-static OF_FASTDATA int ch_bend[16];          /* -8192..+8191 */
-static OF_FASTDATA int ch_bend_cents[16];    /* pitch-bend contribution in cents */
-static OF_FASTDATA int ch_mod_depth[16];     /* CC1  (0-127) */
-static OF_FASTDATA int ch_sustain[16];       /* CC64 on/off */
-static OF_FASTDATA int ch_brightness[16];    /* CC74 (0-127) */
-static OF_FASTDATA int ch_resonance[16];     /* CC71 (0-127) */
-static OF_FASTDATA int ch_reverb_send[16];   /* CC91 (0-127), default 40 = GM tasteful default */
-static OF_FASTDATA int ch_chorus_send[16];   /* CC93 (0-127), default 0 */
-static OF_FASTDATA int ch_vol_combined[16];  /* (CC7 * CC11) / 127, cached */
-static OF_FASTDATA int ch_pan_midi[16];      /* CC10 mapped to -500..+500 */
+/* Per-channel state (16 MIDI channels).  These stay in BRAM because the
+ * 1 kHz MIDI ISR reads them for every active voice, but most are native
+ * MIDI 7-bit values and do not need 32-bit storage. */
+static OF_FASTDATA uint8_t ch_volume[16];        /* CC7  (0-127) */
+static OF_FASTDATA uint8_t ch_expression[16];    /* CC11 (0-127) */
+static OF_FASTDATA uint8_t ch_pan[16];           /* CC10 (0-127, 64=center) */
+static OF_FASTDATA int16_t ch_bend[16];          /* -8192..+8191 */
+static OF_FASTDATA int16_t ch_bend_cents[16];    /* pitch-bend contribution in cents */
+static OF_FASTDATA uint8_t ch_mod_depth[16];     /* CC1  (0-127) */
+static OF_FASTDATA uint8_t ch_sustain[16];       /* CC64 on/off */
+static OF_FASTDATA uint8_t ch_brightness[16];    /* CC74 (0-127) */
+static OF_FASTDATA uint8_t ch_resonance[16];     /* CC71 (0-127) */
+static OF_FASTDATA uint8_t ch_reverb_send[16];   /* CC91 (0-127), default 40 = GM tasteful default */
+static OF_FASTDATA uint8_t ch_chorus_send[16];   /* CC93 (0-127), default 0 */
+static OF_FASTDATA uint8_t ch_vol_combined[16];  /* (CC7 * CC11) / 127, cached */
+static OF_FASTDATA int16_t ch_pan_midi[16];      /* CC10 mapped to roughly -507..+500 */
 static OF_FASTDATA int master_vol = 255;
 
 /* Cached mixer state to avoid redundant CDC writes */
 static OF_FASTDATA uint32_t prev_rate[SMP_MAX_VOICES];
-static OF_FASTDATA int      prev_vol_l[SMP_MAX_VOICES];
-static OF_FASTDATA int      prev_vol_r[SMP_MAX_VOICES];
+static OF_FASTDATA uint8_t  prev_vol_l[SMP_MAX_VOICES];
+static OF_FASTDATA uint8_t  prev_vol_r[SMP_MAX_VOICES];
 
 /* Voices pending steal (waiting for hardware fade-out) */
 #define STEAL_PENDING -2
@@ -170,6 +172,13 @@ static int32_t triangle_wave(int32_t phase)
         return 0x20000 - (phase << 2);          /* 0x10000..-0x10000 */
     else
         return (phase << 2) - 0x40000;          /* -0x10000..0 */
+}
+
+static int clamp_midi7(int v)
+{
+    if (v < 0) return 0;
+    if (v > 127) return 127;
+    return v;
 }
 
 /* ------------------------------------------------------------------ */
@@ -733,13 +742,6 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     lfo_init(&v->mod_lfo, zone->mod_lfo_delay_ticks, zone->mod_lfo_rate);
     lfo_init(&v->vib_lfo, zone->vib_lfo_delay_ticks, zone->vib_lfo_rate);
 
-    /* Filter state retired in v3 — mixer RTL has no SVF.  Fields kept
-     * in smp_voice_t so the existing struct layout / pinned BRAM size
-     * doesn't shift; just zero them. */
-    v->cur_filter_fc = 0;
-    v->cur_filter_q  = 0;
-    v->cur_cutoff_hw = 0;
-
     /* Advance the envelope one tick so the level is non-zero before
      * the ISR runs — otherwise the ISR writes volume 0 immediately. */
     env_advance(&v->vol_env, zone, 1);
@@ -873,6 +875,8 @@ void smp_voice_tick(void)
 void smp_voice_update_volume(int midi_ch, int volume, int expression)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
+    volume = clamp_midi7(volume);
+    expression = clamp_midi7(expression);
     ch_volume[midi_ch]     = volume;
     ch_expression[midi_ch] = expression;
     channel_recompute_cached(midi_ch);
@@ -881,6 +885,7 @@ void smp_voice_update_volume(int midi_ch, int volume, int expression)
 void smp_voice_update_pan(int midi_ch, int pan)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
+    pan = clamp_midi7(pan);
     ch_pan[midi_ch] = pan;
     channel_recompute_cached(midi_ch);
 }
@@ -888,6 +893,8 @@ void smp_voice_update_pan(int midi_ch, int pan)
 void smp_voice_update_bend(int midi_ch, int bend)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
+    if (bend < -8192) bend = -8192;
+    if (bend > 8191) bend = 8191;
     ch_bend[midi_ch] = bend;
     ch_bend_cents[midi_ch] = ((int32_t)bend * BEND_RANGE_CENTS) / 8192;
 }
@@ -895,6 +902,7 @@ void smp_voice_update_bend(int midi_ch, int bend)
 void smp_voice_update_mod(int midi_ch, int mod_depth)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
+    mod_depth = clamp_midi7(mod_depth);
     ch_mod_depth[midi_ch] = mod_depth;
 }
 
@@ -919,6 +927,8 @@ void smp_voice_update_sustain(int midi_ch, int sustain_on)
 void smp_voice_update_filter(int midi_ch, int brightness, int resonance)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
+    brightness = clamp_midi7(brightness);
+    resonance = clamp_midi7(resonance);
     ch_brightness[midi_ch] = brightness;
     ch_resonance[midi_ch]  = resonance;
 }
@@ -926,16 +936,14 @@ void smp_voice_update_filter(int midi_ch, int brightness, int resonance)
 void smp_voice_update_reverb_send(int midi_ch, int send_0_127)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
-    if (send_0_127 < 0)   send_0_127 = 0;
-    if (send_0_127 > 127) send_0_127 = 127;
+    send_0_127 = clamp_midi7(send_0_127);
     ch_reverb_send[midi_ch] = send_0_127;
 }
 
 void smp_voice_update_chorus_send(int midi_ch, int send_0_127)
 {
     if (midi_ch < 0 || midi_ch > 15) return;
-    if (send_0_127 < 0)   send_0_127 = 0;
-    if (send_0_127 > 127) send_0_127 = 127;
+    send_0_127 = clamp_midi7(send_0_127);
     ch_chorus_send[midi_ch] = send_0_127;
 }
 

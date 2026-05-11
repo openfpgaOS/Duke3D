@@ -3,7 +3,7 @@
  *
  * Routes all game audio through the OS hardware mixer (of_mixer.h).
  * Handles VOC/WAV parsing, CRAM1 upload, voice tracking, completion
- * callbacks, and 3D positional audio (distance → volume, angle → L/R pan).
+ * callbacks, and 3D positional audio.
  *
  * MIDI playback is owned by the kernel's machine-timer ISR (installed
  * by of_midi_play); voice completion polling runs from d3d_audio_pump,
@@ -24,11 +24,6 @@
 #include "duke3d.h"
 #include "filesystem.h"
 #include "pitch.h"
-
-/* BUILD engine sine table: short[2048], range -16383 to +16383
- * sintable[ang & 2047]       = sin(ang * pi/1024) * 16383
- * sintable[(ang+512) & 2047] = cos(ang * pi/1024) * 16383 */
-extern short sintable[];
 
 static int audio_initialized = 0;
 
@@ -71,31 +66,46 @@ typedef struct {
 
 static active_voice_t active_voices[MAX_ACTIVE_VOICES];
 
-/* Pan-debounce cache for d3d_sound_set_pan — invalidated when the slot
- * is freed in untrack_voice() so a new sound's initial pan still writes. */
-static uint8_t last_pan[MAX_ACTIVE_VOICES];
-static uint8_t last_pan_valid[MAX_ACTIVE_VOICES];
+/* L/R target debounce cache for d3d_sound_set_pan.  Invalidated when a
+ * slot is freed so a new sound's initial stereo volume always writes. */
+static uint8_t last_vol_l[MAX_ACTIVE_VOICES];
+static uint8_t last_vol_r[MAX_ACTIVE_VOICES];
+static uint8_t last_vol_valid[MAX_ACTIVE_VOICES];
 
 static void init_voice_tracking(void) {
     for (int i = 0; i < MAX_ACTIVE_VOICES; i++)
         active_voices[i].voice = -1;
 }
 
+static void untrack_voice(int voice) {
+    if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
+    active_voices[voice].voice = -1;
+    last_vol_valid[voice] = 0;
+}
+
+static void retire_voice_owner_for_reuse(int voice)
+{
+    if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
+    if (active_voices[voice].voice < 0) return;
+
+    int snd = active_voices[voice].sound_num;
+    int owned = active_voices[voice].has_owner;
+    untrack_voice(voice);
+
+    if (owned) {
+        extern void testcallback(int32_t num);
+        testcallback(snd);
+    }
+}
+
 static void track_voice_timed(int voice, int sound_num, int has_owner,
                               uint32_t duration_ms) {
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
+    retire_voice_owner_for_reuse(voice);
     active_voices[voice].voice = voice;
     active_voices[voice].sound_num = sound_num;
     active_voices[voice].has_owner = has_owner;
     active_voices[voice].expire_ms = duration_ms ? (of_time_ms() + duration_ms) : 0;
-}
-
-static void untrack_voice(int voice) {
-    if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
-    active_voices[voice].voice = -1;
-    /* Invalidate the pan-debounce cache so the next sound that lands on
-     * this slot writes its initial pan unconditionally. */
-    last_pan_valid[voice] = 0;
 }
 
 static int d3d_voice_is_sfx_or_unknown(int voice)
@@ -392,25 +402,67 @@ static int d3d_sound_preload_cmp(const void *a, const void *b)
 }
 
 /* ================================================================
- * 3D audio: angle + distance → stereo L/R volumes
+ * 3D audio: match Duke's MultiVoc pan table
  * ================================================================ */
 
-/* Convert Duke angle (0-2047 BAMS) + distance (0-255) to L/R volumes.
- * angle 0 = ahead, 512 = right, 1024 = behind, 1536 = left.
- * Uses BUILD engine sintable for smooth panning. */
-/* Compute volume (0-255) and pan (0=left, 128=center, 255=right)
- * from BUILD angle + distance. */
-static void angle_dist_to_vol_pan(int angle, int distance,
-                                  int *out_vol, int *out_pan)
+#define D3D_MV_MAX_VOLUME        63
+#define D3D_MV_NUM_PAN_POSITIONS 32
+#define D3D_AUDIO_SFX_RAMP_RATE  255
+#define D3D_AUDIO_STEREO_3D_PAN      1
+
+static int d3d_mv_mix_volume(int volume)
 {
-    int volume = 255 - distance;
     if (volume < 0) volume = 0;
+    if (volume > 255) volume = 255;
+    return (volume * (D3D_MV_MAX_VOLUME + 1)) >> 8;
+}
 
-    int s = sintable[angle & 2047];  /* -16383 to +16383 */
-    int pan = 128 + ((s * 127) >> 14);
+static void angle_dist_to_vol_lr(int angle, int distance,
+                                 int *out_l, int *out_r)
+{
+    if (distance < 0) {
+        distance = -distance;
+        angle += 1024;
+    }
 
-    *out_vol = volume;
-    *out_pan = pan;
+    int volume = d3d_mv_mix_volume(distance);
+    int level = (255 * (D3D_MV_MAX_VOLUME - volume)) / D3D_MV_MAX_VOLUME;
+
+#if !D3D_AUDIO_STEREO_3D_PAN
+    (void)angle;
+    *out_l = level;
+    *out_r = level;
+    return;
+#else
+    int pos = (angle >> 6) & (D3D_MV_NUM_PAN_POSITIONS - 1);
+    int left = level;
+    int right = level;
+
+    if (pos > 0 && pos < 16) {
+        int a = pos;
+        if (a > 16 - pos)
+            a = 16 - pos;
+        left = level - ((level * a) / (D3D_MV_NUM_PAN_POSITIONS / 4));
+    } else if (pos > 16) {
+        int a = pos - 16;
+        if (a > 32 - pos)
+            a = 32 - pos;
+        right = level - ((level * a) / (D3D_MV_NUM_PAN_POSITIONS / 4));
+    }
+
+    *out_l = left;
+    *out_r = right;
+#endif
+}
+
+static int d3d_max2(int a, int b)
+{
+    return a > b ? a : b;
+}
+
+static void d3d_prepare_sfx_voice(int voice)
+{
+    of_mixer_set_volume_ramp(voice, D3D_AUDIO_SFX_RAMP_RATE);
 }
 
 /* ================================================================
@@ -420,8 +472,9 @@ static void angle_dist_to_vol_pan(int angle, int distance,
 void d3d_audio_init(void)
 {
     /* Hardware mixer has 32 voices total (MIXER_MAX_VOICES in the
-     * kernel hal). SF2 polyphony uses up to 28 of these, leaving 4
-     * for game SFX — tight but matches the mididemo's allocation. */
+     * kernel HAL).  Duke's MIDI soft polyphony is set by SMP_MAX_VOICES;
+     * the group-aware allocator keeps MUSIC and SFX at opposite ends of
+     * the hardware slot range under normal load. */
     of_mixer_init(MAX_ACTIVE_VOICES, OF_MIXER_OUTPUT_RATE);
     /* Mirror the mididemo's mixer-volume setup — the of_mixer_init
      * defaults leave master + group volumes at 0 on this kernel, so
@@ -623,6 +676,7 @@ int d3d_sound_play_pitch(int num, int priority, int volume, int pitch)
                                          priority, vol);
 
     if (voice >= 0) {
+        d3d_prepare_sfx_voice(voice);
         uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
                      / rate + 50;
         track_voice_timed(voice, num, 0, dur);
@@ -632,8 +686,8 @@ int d3d_sound_play_pitch(int num, int priority, int volume, int pitch)
 }
 
 /*
- * Play with 3D positioning. Angle (0-2047 BAMS) + distance (0-255)
- * mapped to stereo L/R volumes via sine-based panning.
+ * Play with 3D positioning.  Angle is Duke BAMS 0..2047 and distance
+ * is the same 0..255 value passed to MultiVoc's 3D API.
  */
 int d3d_sound_play_3d(int num, int priority, int angle, int distance)
 {
@@ -650,24 +704,25 @@ int d3d_sound_play_3d_pitch(int num, int priority, int angle, int distance, int 
     if (!ensure_decoded(num))
         return -1;
 
-    int vol, pan;
-    angle_dist_to_vol_pan(angle, distance, &vol, &pan);
-
-    int scaled_vol = vol * 2;
-    if (scaled_vol > 255) scaled_vol = 255;
+    int vol_l, vol_r;
+    angle_dist_to_vol_lr(angle, distance, &vol_l, &vol_r);
 
     uint32_t rate = pitched_rate(decoded[num].sample_rate, pitch);
     int voice = of_mixer_alloc_for_group(OF_MIXER_GROUP_SFX,
                                          decoded[num].pcm,
                                          decoded[num].sample_count,
                                          rate,
-                                         priority, scaled_vol);
+                                         priority, d3d_max2(vol_l, vol_r));
 
     if (voice >= 0) {
-        of_mixer_set_pan(voice, pan);
+        d3d_prepare_sfx_voice(voice);
         uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
                      / rate + 50;
         track_voice_timed(voice, num, 0, dur);
+        of_mixer_set_vol_lr(voice, vol_l, vol_r);
+        last_vol_l[voice] = (uint8_t)vol_l;
+        last_vol_r[voice] = (uint8_t)vol_r;
+        last_vol_valid[voice] = 1;
     }
 
     return voice;
@@ -676,18 +731,14 @@ int d3d_sound_play_3d_pitch(int num, int priority, int angle, int distance, int 
 /*
  * Update panning for an active 3D sound (called per-frame from pan3dsound).
  *
- * Per-frame pan updates were observed to cause crackle in busy passages
+ * Per-frame volume updates were observed to cause crackle in busy passages
  * (the diagnostic stub of this function eliminated it).  Mechanism is
  * still under investigation — likely a HW response to high-rate
  * MIX_VOICE_VOL_TARGET writes (write-vs-FSM-pipeline race or AXI write
  * backpressure starving the mixer's per-sample SDRAM budget).
  *
- * Workaround: cache the last pan we sent per voice slot and only call
- * the syscall when the quantized pan actually changes.  The 0..255 pan
- * is computed from a sintable + 14-bit shift so adjacent angles
- * frequently round to the same byte — most per-frame calls today are
- * issuing the same value and the syscall does nothing useful anyway.
- * Real pan changes still propagate immediately.
+ * Workaround: cache the last L/R targets per voice slot and only call
+ * the syscall when the quantized MultiVoc table result changes.
  */
 void d3d_sound_set_pan(int voice, int angle, int distance)
 {
@@ -695,16 +746,19 @@ void d3d_sound_set_pan(int voice, int angle, int distance)
     if (voice >= MAX_ACTIVE_VOICES) return;
     if (!d3d_voice_is_sfx_or_unknown(voice)) return;
 
-    int vol, pan;
-    angle_dist_to_vol_pan(angle, distance, &vol, &pan);
+    int vol_l, vol_r;
+    angle_dist_to_vol_lr(angle, distance, &vol_l, &vol_r);
 
-    if (last_pan_valid[voice] && (uint8_t)pan == last_pan[voice])
+    if (last_vol_valid[voice] &&
+        (uint8_t)vol_l == last_vol_l[voice] &&
+        (uint8_t)vol_r == last_vol_r[voice])
         return;
 
-    last_pan[voice]       = (uint8_t)pan;
-    last_pan_valid[voice] = 1;
+    last_vol_l[voice] = (uint8_t)vol_l;
+    last_vol_r[voice] = (uint8_t)vol_r;
+    last_vol_valid[voice] = 1;
 
-    of_mixer_set_pan(voice, pan);
+    of_mixer_set_vol_lr(voice, vol_l, vol_r);
 }
 
 /*
@@ -735,8 +789,7 @@ void d3d_sound_stop_all(void)
 
     for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
         if (active_voices[i].voice < 0) continue;
-        d3d_stop_sfx_voice_if_owned(i);
-        untrack_voice(i);
+        complete_voice(i);
     }
 }
 

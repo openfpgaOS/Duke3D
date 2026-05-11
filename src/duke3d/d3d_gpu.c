@@ -30,19 +30,12 @@ int d3d_gpu_present  = 0;
  * bound on what batching could save. */
 int d3d_gpu_skip_submit = 0;
 
-int d3d_gpu_use_spans = 1;   /* Master switch.  Set to 0 BEFORE the
-                              * first frame to disable the GPU
-                              * entirely: d3d_gpu_init() bails so
-                              * d3d_gpu_present stays 0, every helper
-                              * (set_fb, drain, flush, pre_cpu_fb_access,
-                              * clear_rect_fb, all the span hooks)
-                              * short-circuits, and BUILD's CPU loops
-                              * run unmodified.  Used for the GPU-on
-                              * vs GPU-off A/B perf test. */
+int d3d_gpu_use_spans = 1;   /* Master switch.  Set to 0 before init to
+                              * keep BUILD on its original CPU renderer. */
 int d3d_gpu_force_cpu_spans = 0;  /* Scoped gate: when non-zero, draw.c
                                    * try paths fall through to BUILD's
                                    * original CPU loops. */
-int d3d_gpu_force_rotatesprite_cpu = 0;
+int d3d_gpu_force_rotatesprite_cpu = 1;
 int d3d_gpu_use_span4 = 1;
 int d3d_gpu_use_command_stream_batch = 1;
 int d3d_gpu_use_translucent_spans = 1;
@@ -775,12 +768,10 @@ void d3d_gpu_perf_report_frame(uint32_t frame_period_us,
     gpu_perf_last_report_ms = now_ms;
 }
 
-/* GPU texture-cache invalidate is unconditional at every frame
- * boundary in d3d_gpu_set_fb — covers every BUILD path that mutates
- * tile bytes without having to hook each one.  Cache walk is ~10 µs
- * at 100 MHz; the tex cache only helps within a frame so an
- * across-frame invalidate costs nothing in steady state.
- * d3d_gpu_mark_tex_dirty is kept as an ABI no-op for tiles.c. */
+/* GPU texture-cache invalidate is unconditional at every frame boundary in
+ * d3d_gpu_set_fb().  That covers BUILD paths that mutate tile bytes without
+ * issuing a mid-frame cache walk while the renderer is actively submitting
+ * spans. */
 
 void d3d_gpu_init(void)
 {
@@ -788,8 +779,8 @@ void d3d_gpu_init(void)
     gpu_perf_hw_valid = 0;
     gpu_perf_last_report_ms = of_time_ms();
 
-    /* A/B test escape hatch — leave d3d_gpu_present at 0 so every
-     * downstream helper short-circuits and BUILD's CPU loops run. */
+    /* Leave d3d_gpu_present at 0 so every downstream helper
+     * short-circuits and BUILD's CPU loops run. */
     if (!d3d_gpu_use_spans) {
         printf("[d3d_gpu] DISABLED via d3d_gpu_use_spans=0 — SW renderer\n");
         return;
@@ -811,11 +802,9 @@ void d3d_gpu_init(void)
 
 /* Batched span submission.
  *
- * The default path uses the GPU's homogeneous DRAW_SPANS_BATCH command for
- * scalar spans.  It is enough while SPAN4 is disabled, uses one fewer word
- * per span, and avoids the raw mixed-command DMA path while we are chasing
- * visual correctness.  The mixed stream buffer remains available as an A/B
- * path for future scalar+SPAN4 interleaving experiments. */
+ * The default path uses a mixed command stream so scalar spans and SPAN4
+ * commands can be submitted together.  The homogeneous scalar batch path
+ * remains available for comparison and bring-up. */
 #define D3D_GPU_CMD_STREAM_WORDS      OF_GPU_COMMAND_STREAM_BATCH_WORDS
 #define D3D_GPU_CMD_DRAW_SPAN_WORDS   (1u + OF_GPU_BATCH_WORDS_PER_SPAN)
 #define D3D_GPU_CMD_DRAW_SPAN4_WORDS  (1u + OF_GPU_SPAN4_WORDS)
@@ -880,6 +869,15 @@ static inline void d3d_gpu_barrier_before_fb_read(void)
     of_gpu_fence();
     of_gpu_kick();
     gpu_fb_read_barrier_needed = 0;
+}
+
+static inline void d3d_gpu_flush_tex_cache_now(void)
+{
+    if (!d3d_gpu_present)
+        return;
+    if (d3d_gpu_perf_enable)
+        gpu_perf.tex_flushes++;
+    GPU_TEX_FLUSH = 1;
 }
 
 static inline void d3d_gpu_reserve_cmd_words(uint32_t words) {
@@ -1259,23 +1257,13 @@ void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels)
     gpu_fb_read_barrier_needed = 0;
     if (!d3d_gpu_present) return;
 
-    if (d3d_gpu_perf_enable) {
+    if (d3d_gpu_perf_enable)
         gpu_perf.setfb_calls++;
-        gpu_perf.tex_flushes++;
-    }
     uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
 
-    /* Unconditional GPU-tex-cache invalidate at every frame boundary.
-     * We're between frames here: the previous frame's d3d_gpu_flush()
-     * ran of_gpu_finish() so the GPU is idle, and we haven't submitted
-     * any new draws for the upcoming frame yet — perfect window for
-     * GPU_TEX_FLUSH to walk-clear valid_mem without colliding with
-     * an in-flight FB write.  Doing this every frame (instead of only
-     * when the dirty flag is set) catches every BUILD code path that
-     * mutates tile bytes — loadtile, copytilepiece, allocache shuffles,
-     * animated-tile data updates, runtime HUD/weapon sprite builds —
-     * without us having to find and hook each one. */
-    GPU_TEX_FLUSH = 1;
+    /* Between frames the GPU is idle, so this catches tile data changed
+     * before frame setup without racing active texture fetches. */
+    d3d_gpu_flush_tex_cache_now();
 
     of_gpu_set_framebuffer((uint32_t)(uintptr_t)fb_pixels,
                            (uint16_t)stride_pixels);
@@ -1338,8 +1326,7 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
     if (w == 0 || h == 0) return;
     SPIN_TAG(8);
     if (!d3d_gpu_present || !d3d_gpu_use_spans) {
-        /* GPU off — CPU memset path so A/B tests against the GPU
-         * implementation work, and the no-GPU bitstream still draws.
+        /* CPU memset fallback for GPU-disabled or no-GPU builds.
          * Live bytesperline tracks setviewtotile's stride flip. */
         for (int y = 0; y < (int)h; y++)
             memset(dest + y * bytesperline, color, w);
@@ -1480,17 +1467,13 @@ void d3d_gpu_flush(void)
 
 void d3d_gpu_tex_invalidate(void)
 {
-    if (!d3d_gpu_present) return;
-    if (d3d_gpu_perf_enable)
-        gpu_perf.tex_flushes++;
-    GPU_TEX_FLUSH = 1;
+    d3d_gpu_flush_tex_cache_now();
 }
 
 void d3d_gpu_mark_tex_dirty(void)
 {
-    /* Stub — d3d_gpu_set_fb invalidates the tex cache unconditionally
-     * at every frame boundary.  Kept for ABI compatibility with
-     * tiles.c; no per-call work needed. */
+    /* Legacy no-op.  Hot tile paths now drain before mutating BUILD's tile
+     * cache and call d3d_gpu_tex_invalidate() once the new bytes are in DRAM. */
 }
 
 void d3d_gpu_drain(void)
@@ -2061,7 +2044,7 @@ int d3d_gpu_try_hline(uint8_t *dest_right, int num_pixels, int shade_x256,
 }
 
 /* ----------------------------------------------------------------------
- * Stage 5: translucent paths (transluc[] BLEND unit).
+ * Translucent paths (transluc[] BLEND unit).
  *
  * No try/return fallback per project_gpu_owns_framebuffer.md — once a
  * call site is converted, the CPU loop is dead code.  If no palookup

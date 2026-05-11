@@ -193,10 +193,10 @@ static int32_t spritesy[MAXSPRITESONSCREEN+1];
 static int32_t spritesz[MAXSPRITESONSCREEN];
 static spritetype *tspriteptr[MAXSPRITESONSCREEN];
 
-//FCS: (up-most pixel on column x that can still be drawn to)
+/* Topmost drawable pixel per screen column. */
 short umost[MAXXDIM+1];
 
-//FCS: (down-most pixel +1 on column x that can still be drawn to)
+/* One past the bottommost drawable pixel per screen column. */
 short dmost[MAXXDIM+1];
 
 int16_t bakumost[MAXXDIM+1], bakdmost[MAXXDIM+1];
@@ -242,14 +242,6 @@ uint8_t* globalbufplc;
 int32_t globalx1, globaly1, globalx2, globaly2, globalx3, globaly3, globalzx;
 int32_t globalx, globaly, globalz;
 
-//FCS:
-// Those two variables are using during portal flooding:
-// sectorBorder is the stack and sectorbordercnt is the stack counter.
-// There is no really point to have this on the heap. That would have been better on the stack.
-
-//static short sectorborder[256], sectorbordercnt;
-//FCS: Moved this on the stack
-
 static uint8_t  tablesloaded = 0;
 int32_t pageoffset, ydim16, qsetmode = 0;
 int32_t startposx, startposy, startposz;
@@ -287,12 +279,12 @@ typedef struct
 static permfifotype permfifo[MAXPERMS];
 static int32_t permhead = 0, permtail = 0;
 
-//FCS: Num walls to potentially render.
+/* Number of walls that survived sector visibility scanning. */
 short numscans ;
 
 short numbunches;
 
-//FCS: Number of colums to draw. ALWAYS set to the screen dimension width.
+/* Number of columns to draw; always set to the current screen width. */
 short numhits;
 
 short editstatus = 0;
@@ -331,7 +323,6 @@ static inline int32_t nsqrtasm(uint32_t  param)
 
 static inline int32_t krecipasm(int32_t i)
 {
-    // tanguyf: fix strict aliasing rules.
     union
     {
         float f;
@@ -371,11 +362,7 @@ unsigned int _swap32(unsigned int D)
     return((D<<24)|((D<<8)&0x00FF0000)|((D>>8)&0x0000FF00)|(D>>24));
 }
 
-/*
- FCS:
- Scan through sectors using portals (a portal is wall with a nextsector attribute >= 0).
- Flood is prevented if a portal does not face the POV.
- */
+/* Scan visible sectors through forward-facing portals. */
 static void scansector (short sectnum)
 {
     walltype *wal, *wal2;
@@ -384,7 +371,7 @@ static void scansector (short sectnum)
     short z, zz, startwall, endwall, numscansbefore, scanfirst, bunchfrst;
     short nextsectnum;
     
-    //The stack storing sectors to visit.
+    /* Stack of sectors still to visit. */
     short sectorsToVisit[256], numSectorsToVisit;
     
     
@@ -400,7 +387,7 @@ static void scansector (short sectnum)
     {
         sectnum = sectorsToVisit[--numSectorsToVisit];
 
-        //Add every script in the current sector as potentially visible.
+        /* Add every sprite in the current sector as potentially visible. */
         for(z=headspritesect[sectnum]; z>=0; z=nextspritesect[z])
         {
             spr = &sprite[z];
@@ -418,7 +405,7 @@ static void scansector (short sectnum)
             }
         }
 
-        //Mark the current sector bit as "visited" in the bitvector
+        /* Mark the current sector bit as visited. */
         visitedSectors[sectnum>>3] |= pow2char[sectnum&7];
 
         bunchfrst = numbunches;
@@ -433,69 +420,52 @@ static void scansector (short sectnum)
 
             wal2 = &wall[wal->point2];
 
-            // In camera space the center is the player.
-            // Tranform the 2 Wall endpoints (x,y) from worldspace to camera space.
-            // After that we have two vectors starting from the camera and going to the endpoints (x1,y1) and (x2,y2).
+            /* Move wall endpoints into player-relative camera space. */
             x1 = wal->x-globalposx;
             y1 = wal->y-globalposy;
 
             x2 = wal2->x-globalposx;
             y2 = wal2->y-globalposy;
 
-            // If this is a portal...
+            /* Follow unvisited one-way portals that face the camera. */
             if ((nextsectnum >= 0) && ((wal->cstat&32) == 0))
-                //If this portal has not been visited yet.
                 if ((visitedSectors[nextsectnum>>3]&pow2char[nextsectnum&7]) == 0)
                 {
-                    //Cross product -> Z component
                     tempint = x1*y2-x2*y1;
 
-                    // Using cross product, determine if the portal is facing us or not.
-                    // If it is: Add it to the stack and bump the stack counter.
-                    // This line is equivalent to tempint < 0x40000
-                    if (((uint32_t)tempint+262144) < 524288) // ??? What is this test ?? How acute the angle is ?
+                    if (((uint32_t)tempint+262144) < 524288)
                     {
-                        //(x2-x1)*(x2-x1)+(y2-y1)*(y2-y1) is the squared length of the wall
-                        // ??? What is this test ?? How acute the angle is ?
                         if (mulscale5(tempint,tempint) <= (x2-x1)*(x2-x1)+(y2-y1)*(y2-y1))
                             sectorsToVisit[numSectorsToVisit++] = nextsectnum;
                     }
                 }
 
-            // Rotate the wall endpoints vectors according to the player orientation.
-            // This is a regular rotation matrix using [29.3] fixed point.
+            /* Rotate wall endpoints by the player orientation. */
             if ((z == startwall) || (wall[z-1].point2 != z))
             {
-                //If this is the first endpoint of the bunch, rotate: This is a standard cos sin 2D rotation matrix projection
                 xp1 = dmulscale6(y1,cosglobalang,-x1,singlobalang);
                 yp1 = dmulscale6(x1,cosviewingrangeglobalang,y1,sinviewingrangeglobalang);
             }
             else
             {
-                //If this is NOT the first endpoint, Save the coordinate for next loop.
                 xp1 = xp2;
                 yp1 = yp2;
             }
 
-            // Rotate: This is a standard cos sin 2D rotation matrix projection
             xp2 = dmulscale6(y2,cosglobalang,-x2,singlobalang);
             yp2 = dmulscale6(x2,cosviewingrangeglobalang,y2,sinviewingrangeglobalang);
 
-
-
-            // Equivalent of a near plane clipping ?
             if ((yp1 < 256) && (yp2 < 256)) goto skipitaddwall;
 
             /* If wall's NOT facing you */
             if (dmulscale32(xp1,yp2,-xp2,yp1) >= 0) goto skipitaddwall;
 
-            // The wall is still not eligible for rendition: Let's do some more Frustrum culling !!
+            /* Frustum clip and project the first endpoint. */
             if (xp1 >= -yp1){
                 
                 if ((xp1 > yp1) || (yp1 == 0))
                     goto skipitaddwall;
 
-                //Project the point onto screen and see in which column it belongs.
                 pvWalls[numscans].screenSpaceCoo[0][VEC_COL] = halfxdimen + scale(xp1,halfxdimen,yp1);
                 if (xp1 >= 0)
                     pvWalls[numscans].screenSpaceCoo[0][VEC_COL]++;   /* Fix for SIGNED divide */
@@ -540,12 +510,11 @@ static void scansector (short sectnum)
             }
             if ((pvWalls[numscans].screenSpaceCoo[1][VEC_DIST] < 256) || (pvWalls[numscans].screenSpaceCoo[0][VEC_COL] > pvWalls[numscans].screenSpaceCoo[1][VEC_COL])) goto skipitaddwall;
 
-            // Made it all the way!
-            // Time to add this wall information to the stack of wall potentially visible.
+            /* Add this wall to the potentially visible list. */
             pvWalls[numscans].sectorId = sectnum;
             pvWalls[numscans].worldWallId = z;
 
-            //Save the camera space wall endpoints coordinate (camera origin at player location + rotated according to player orientation).
+            /* Keep camera-space endpoints for later wall preparation. */
             pvWalls[numscans].cameraSpaceCoo[0][VEC_X] = xp1;
             pvWalls[numscans].cameraSpaceCoo[0][VEC_Y] = yp1;
             pvWalls[numscans].cameraSpaceCoo[1][VEC_X] = xp2;
@@ -564,25 +533,19 @@ skipitaddwall:
             }
         }
 
-        //FCS: TODO rename this p2[] to bunchList[] or something like that. This name is an abomination
-        //     DONE, p2 is now called "bunchWallsList".
-        
-        //Break down the list of walls for this sector into bunchs. Since a bunch is a
-        // continuously visible list of wall: A sector can generate many bunches.
+        /* Break the sector's visible walls into continuous bunches. */
         for(z=numscansbefore; z<numscans; z++)
         {
             if ((wall[pvWalls[z].worldWallId].point2 !=
                  pvWalls[bunchWallsList[z]].worldWallId) || (pvWalls[z].screenSpaceCoo[1][VEC_COL] >= pvWalls[bunchWallsList[z]].screenSpaceCoo[0][VEC_COL]))
             {
-                // Create an entry in the bunch list
                 bunchfirst[numbunches++] = bunchWallsList[z];
                 
-                //Mark the end of the bunch wall list.
                 bunchWallsList[z] = -1;
             }
         }
 
-        //For each bunch, find the last wall and cache it in bunchlast.
+        /* Cache the last wall in each new bunch. */
         for(z=bunchfrst; z<numbunches; z++)
         {
             for(zz=bunchfirst[z]; bunchWallsList[zz]>=0; zz=bunchWallsList[zz]);
@@ -590,17 +553,9 @@ skipitaddwall:
         }
 
     } while (numSectorsToVisit > 0);
-    // do this until the stack of sectors to visit if empty.
 }
 
-/*
- FCS:
-    
- Goal : ????
- param 1: Z is the wallID in the list of potentially visible walls.
- param 2: Only used to lookup the xrepeat attribute of the wall.
- 
-*/
+/* Prepare texture stepping for one potentially visible wall. */
 OF_FASTTEXT_PIN static void prepwall(int32_t z, walltype *wal)
 {
     int32_t i, l=0, ol=0, splc, sinc, x, topinc, top, botinc, bot, walxrepeat;
@@ -2684,26 +2639,16 @@ static void dosetaspect(void)
 }
 
 
-/*
-  FCS: Geez one more horrible algorithm to decipher :| :/ :( cry smiley..... 
-  Algorithm:
-
-  1.
-  Take wall 1 vector [point1,point2] and using two cross products determine if the two endpoints of wall 2 are on the same side of Wall 1 plan.
-  If they are then we can determine according to globalposx and globalposy if  wall2 is before or after wall1's plan.
-  
-  2. Do the same thing again but this time with wall2's plan. Try to find if wall1 is in front of behind wall2's plan.
-
-  Key concept: If a cross-product is equal to 0 this mean they are parallel.
-
-  Return: pvWallID1 in the potentially visible wall list is in front of pvWallID2 (in the same potentially visible list)
-*/
+/* Return whether pvWallID1 is in front of pvWallID2.
+ *
+ * Each wall is tested against the other's plane with cross products.  If
+ * both endpoints of one wall lie on the same side of the other wall, the
+ * player position decides which wall should be drawn first. */
 int wallfront(int32_t pvWallID1, int32_t pvWallID2)
 {
     walltype *wal;
     int32_t x11, y11, x21, y21, x12, y12, x22, y22, dx, dy, t1, t2;
 
-	//It seems we are going to work in Worldspace coordinates.
     wal = &wall[pvWalls[pvWallID1].worldWallId];
     x11 = wal->x;
     y11 = wal->y;
@@ -2718,51 +2663,30 @@ int wallfront(int32_t pvWallID1, int32_t pvWallID2)
     y22 = wal->y;
 
 
-	//This is part 1
-
-	//Wall 1's vector
+    /* Wall 1 plane. */
     dx = x21-x11;
     dy = y21-y11;
 
-	//This is a cross-product between Wall 1 vector and the [Wall 1 Point 1-> Wall 2 Point 1] vector 
     t1 = dmulscale2(x12-x11,dy,-dx,y12-y11); /* p1(l2) vs. l1 */
-	//This is a cross-product between Wall 1 vector and the [Wall 1 Point 1-> Wall 2 Point 2] vector 
     t2 = dmulscale2(x22-x11,dy,-dx,y22-y11); /* p2(l2) vs. l1 */
 
-	//If the vectors a parallel, then the cross-product is zero.
     if (t1 == 0) {
-		//wall2's point1 is on wall1's plan.
         t1 = t2;
-        if (t1 == 0) // Those two walls are on the same plan.
-		{
-			//Wall 2's point 2 is on wall1's plan.
+        if (t1 == 0)
 			return(-1);
-		}
     }
     if (t2 == 0) 
 		t2 = t1;
 
 	
-	//This XOR just determine if the cross-product have the same sign and hence if both points are on the same side of wall 1 plan.
-	//Test if both points of wall2 are on the same side of wall 1 (in front or behind).
     if ((t1^t2) >= 0)
     {
-		//cross-product have the same sign: Both points of wall2 are on the same side of wall1 : An answer is possible !!
-
-		//Now is time to take into account the camera position and determine which of wall1 or wall2 is seen first.
         t2 = dmulscale2(globalposx-x11,dy,-dx,globalposy-y11); /* pos vs. l1 */
 
-		//Test the cross product sign difference.
-		//If (t2^t1) >= 0 then  both cross product had different sign so wall1 is in front of wall2
-		//otherwise wall2 is in front of wall1
         return((t2^t1) >= 0);
     }
 
-
-	//This is part 2
-	//Do it again but this time will wall2's plan.
-
-	//Wall 2's vector
+    /* Wall 2 plane. */
     dx = x22-x12;
     dy = y22-y12;
 
@@ -2781,12 +2705,11 @@ int wallfront(int32_t pvWallID1, int32_t pvWallID2)
         return((t2^t1) < 0);
     }
 
-	//FCS: No wall is in front of the other's plan: This means they are crossing.
     return(-2);
 }
 
 
-//Return 1 if bunch firstBunchID is in from of bunch secondBunchID.
+/* Return 1 if firstBunchID is in front of secondBunchID. */
 static int bunchfront(int32_t firstBunchID, int32_t secondBunchID)
 {
     int32_t x1b1, x2b1, x1b2, x2b2;
@@ -2796,7 +2719,6 @@ static int bunchfront(int32_t firstBunchID, int32_t secondBunchID)
     x2b2 = pvWalls[bunchlast[secondBunchID]].screenSpaceCoo[1][VEC_COL]+1; 
     if (x1b1 >= x2b2)
 	{
-		//Bunch 1 left side is completely on the right of bunch2's right in screenspace: They do not overlap.
         return(-1);
 	}
 
@@ -2805,14 +2727,12 @@ static int bunchfront(int32_t firstBunchID, int32_t secondBunchID)
     x2b1 = pvWalls[bunchlast[firstBunchID]].screenSpaceCoo[1][VEC_COL]+1;
     if (x1b2 >= x2b1) 
 	{
-		//Bunch 2 left side is completely on the right of bunch 1 right side: They do not overlap.
 		return(-1);
 	}
 
 
     if (x1b1 >= x1b2)
     {
-		//Get the last wall in the bunch2.
 		int lastWallID;
         for(lastWallID=bunchfirst[secondBunchID]; 
 			pvWalls[lastWallID].screenSpaceCoo[1][VEC_COL]<x1b1; 
@@ -2822,7 +2742,6 @@ static int bunchfront(int32_t firstBunchID, int32_t secondBunchID)
     }
 	else
 	{
-		//Get the last wall in the bunch.
 		int lastWallID;
 		for(lastWallID=bunchfirst[firstBunchID]; 
 			pvWalls[lastWallID].screenSpaceCoo[1][VEC_COL]<x1b2; 
@@ -2832,52 +2751,31 @@ static int bunchfront(int32_t firstBunchID, int32_t secondBunchID)
 	}
 }
 
-//#include "keyboard.h"
-//void WriteLastPaletteToFile(void);
-//void WriteTranslucToFile(void);
-/*  
-      FCS: Draw every walls in Front to Back Order.
-*/
+/* Draw walls in front-to-back order. */
 void drawrooms(int32_t daposx, int32_t daposy, int32_t daposz,short daang, int32_t dahoriz, short dacursectnum)
 {
     int32_t i, j, z, closest;
-	//Ceiling and Floor height at the player position.
+    /* Ceiling and floor height at the player position. */
 	int32_t cz, fz;
     short *shortptr1, *shortptr2;
 #ifdef OPENFPGA
     uint32_t perf_t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
 #endif
 
-	// When visualizing the rendering process, part of the screen
-	// are not updated: In order to avoid the "ghost effect", we
-	// clear the framebuffer to black.
+    /* Renderer visualization can leave parts of the screen untouched. */
 	if (CLEAR_FRAMEBUFFER)
 		clear2dscreen();
-    
-    
-    //CODE EXPLORATION
-    /*
-    if( KB_KeyDown[0x39]){ // 0x39 = SPACE
-        //CODE EXPLORATION
-        WriteLastPaletteToFile();
-        WriteTranslucToFile();
-    }        
-    */
 
-	//pixelsAllowed = pixelRenderable;
 #if RENDER_LIMIT_PIXELS
 	pixelsAllowed = 100000000;
 #endif
-	//printf("%d\n",pixelsAllowed);
 
     beforedrawrooms = 0;
 
-    // FCS: What was the point of having those values as parameters of this function....if it is to overwrite the
-    // values with the gloval variables ?!?!?
     globalposx = daposx;
     globalposy = daposy;
     globalposz = daposz;
-    globalang = (daang&2047); //FCS: Mask and keep only 11 bits of angle value.
+    globalang = (daang&2047);
 
     globalhoriz = mulscale16(dahoriz-100,xdimenscale)+(ydimen>>1);
     globaluclip = (0-globalhoriz)*xdimscale;
@@ -3658,20 +3556,15 @@ static void loadpalette(void)
 
     kread(fil,palette,768);
     
-    //CODE EXPLORATION
-    //WritePaletteToFile(palette,"palette.tga",16, 16);
     memcpy(lastPalette, palette, 768);
     
     
     kread16(fil,&numpalookups);
     
-    //CODE EXPLORATION
-    //printf("Num palettes lookup: %d.\n",numpalookups);
-    
     if ((palookup[0] = (uint8_t  *)malloc(numpalookups<<8)) == NULL)
         allocache(&palookup[0],numpalookups<<8,&permanentlock);
     
-    //Transluctent pallete is 65KB.
+    /* BUILD's translucent lookup table is 64 KB. */
     if ((transluc = (uint8_t  *)malloc(65536)) == NULL)
         allocache(&transluc,65536,&permanentlock);
 
@@ -3688,11 +3581,9 @@ static void loadpalette(void)
     kread(fil, transluc, 65536);
 
 #ifdef OPENFPGA
-    /* Stage 5: hand BUILD's transluc[] LUT to the fabric BLEND unit
-     * once at level start.  The SDK helper decimates the 64 KB table
-     * to the 32 KB / 128×256 quantised LUT (low source bit dropped);
-     * Duke3D measurement: 79.4% byte-exact, avg RGB error 1.3 in
-     * BUILD's 6-bpc palette space (sub-JND, see transluc.md). */
+    /* Hand BUILD's transluc[] LUT to the fabric BLEND unit once at
+     * level start.  The SDK helper decimates the 64 KB table to the
+     * 32 KB / 128x256 quantised LUT by dropping the low source bit. */
     d3d_gpu_upload_transluc(transluc, 65536);
 #endif
 
@@ -4630,17 +4521,10 @@ void drawline256 (int32_t x1, int32_t y1, int32_t x2, int32_t y2, uint8_t  col)
     }
 }
 
-/*
- FCS: Return true if the point (x,Y) is inside the sector sectnum.
- Note that a sector is closed (but can be concave) so the answer is always 0 or 1.
-
- Algorithm: This is an optimized raycasting inside polygon test:
- http://en.wikipedia.org/wiki/Point_in_polygon#Ray_casting_algorithm
- The goal is to follow an ***horizontal*** ray passing by (x,y) and count how many
- wall are being crossed.
- If it is an odd number of time: (x,y) is inside the sector.
- If it is an even nymber of time:(x,y) is outside the sector.
- */
+/* Return true when point (x,y) is inside sectnum.
+ *
+ * Uses a horizontal ray-crossing test against the sector's closed polygon.
+ * Odd crossing count means inside; even count means outside. */
 
 int inside(int32_t x, int32_t y, short sectnum)
 {
@@ -5794,9 +5678,7 @@ static void drawsprite (int32_t snum)
     if (automapping == 1) show2dsprite[spritenum>>3] |= pow2char[spritenum&7];
 }
 
-/*
-     FCS: Draw every transparent sprites in Back To Front Order. Also draw decals on the walls...
- */
+/* Draw transparent sprites and wall decals in back-to-front order. */
 void drawmasks(void)
 {
     int32_t i, j, k, l, gap, xs, ys, xp, yp, yoff, yspan;
@@ -5805,15 +5687,15 @@ void drawmasks(void)
     uint32_t perf_t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
 #endif
 
-    //Copy sprite address in a sprite proxy structure (pointers are easier to re-arrange than structs).
+    /* Sort sprite pointers instead of moving full sprite structs. */
     for(i=spritesortcnt-1; i>=0; i--)
         tspriteptr[i] = &tsprite[i];
     
     
-    //Generate screenspace coordinate (X column and Y distance).
+    /* Generate screenspace X column and Y distance. */
     for(i=spritesortcnt-1; i>=0; i--)
     {
-        //Translate and rotate the sprite in Camera space coordinate.
+        /* Translate and rotate the sprite into camera space. */
         xs = tspriteptr[i]->x-globalposx;
         ys = tspriteptr[i]->y-globalposy;
         yp = dmulscale6(xs,cosviewingrangeglobalang,ys,sinviewingrangeglobalang);
@@ -5826,7 +5708,7 @@ void drawmasks(void)
         else if ((tspriteptr[i]->cstat&48) == 0)
         {
             spritesortcnt--;  /* Delete face sprite if on wrong side! */
-            //Move the sprite at the end of the array and decrease array length.
+            /* Move the sprite to the end and shorten the active list. */
             if (i != spritesortcnt)
             {
                 tspriteptr[i] = tspriteptr[spritesortcnt];
@@ -5838,7 +5720,7 @@ void drawmasks(void)
         spritesy[i] = yp;
     }
 
-    //FCS: Bubble sort ?! REally ?!?!?
+    /* Shell sort by distance, farthest first. */
     gap = 1;
     while (gap < spritesortcnt) gap = (gap<<1)+1;
     for(gap>>=1; gap>0; gap>>=1)    /* Sort sprite list */
@@ -7455,18 +7337,10 @@ int pushmove(int32_t *x, int32_t *y, int32_t *z, short *sectnum,
     return(bad);
 }
 
-/*
- FCS:  x and y are the new position of the entity that has just moved:
- lastKnownSector is an hint (the last known sectorID of the entity).
-
- Thanks to the "hint", the algorithm check:
- 1. Is (x,y) inside sectors[sectnum].
- 2. Flood in sectnum portal and check again if (x,y) is inside.
- 3. Do a linear search on sectors[sectnum] from 0 to numSectors.
-
- Note: Inside uses cross_product and return as soon as the point switch
- from one side to the other.
- */
+/* Update the sector hint for a moved entity at (x,y).
+ *
+ * First test the current sector, then neighboring portal sectors, and fall
+ * back to a linear sector search. */
 void updatesector(int32_t x, int32_t y, short *lastKnownSector)
 {
     walltype *wal;
@@ -9393,16 +9267,7 @@ int getflorzofslope(short sectnum, int32_t dax, int32_t day)
     return(sector[sectnum].floorz+scale(sector[sectnum].floorheinum,j,i));
 }
 
-/*
- FCS:
- 
- Output the ceiling and floor Z coordinate in the two last parameters for given:
- sectorNumber and worldspace (coordinate X,Y).
- 
- If the sector is flat, this is jsut a lookup. But if either the floor/ceiling have
- a slope it requires more calculation
- 
- */
+/* Resolve ceiling and floor Z at a world-space point in a sector. */
 void getzsofslope(short sectnum, int32_t dax, int32_t day, int32_t *ceilz, int32_t *florz)
 {
     int32_t dx, dy, i, j;
@@ -9413,7 +9278,7 @@ void getzsofslope(short sectnum, int32_t dax, int32_t day, int32_t *ceilz, int32
     *ceilz = sec->ceilingz;
     *florz = sec->floorz;
     
-    //If the sector has a slopped ceiling or a slopped floor then it needs more calculation.
+    /* Sloped ceilings/floors need a plane evaluation. */
     if ((sec->ceilingstat|sec->floorstat)&2)
     {
         wal = &wall[sec->wallptr];
@@ -9469,10 +9334,7 @@ void alignflorslope(short dasect, int32_t x, int32_t y, int32_t z)
     else sector[dasect].floorstat |= 2;
 }
 
-/*
- FCS:
- Search for ???
-*/
+/* Return the loop index inside a sector for a wall. */
 int loopnumofsector(short sectnum, short wallnum)
 {
     int32_t i, numloops, startwall, endwall;

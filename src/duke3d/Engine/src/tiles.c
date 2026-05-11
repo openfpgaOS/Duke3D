@@ -36,16 +36,26 @@ uint8_t  gotpic[(MAXTILES+7)>>3];
 static int tile_bulk_preload_depth = 0;
 static int tile_bulk_preload_dirty = 0;
 
+static void tile_prepare_for_gpu_write(void)
+{
+    if (tile_bulk_preload_depth > 0)
+        return;
+
+    /* A hot tile load can reuse BUILD cache memory that queued GPU spans
+     * still reference.  Drain before allocache()/writes can recycle or
+     * overwrite those bytes; the post-write sync below then makes the new
+     * tile visible to the texture cache. */
+    d3d_gpu_drain();
+}
+
 static void tile_sync_for_gpu(uint8_t *ptr, uint32_t size)
 {
     if (!ptr || size == 0)
         return;
 
-    /* The GPU can consume a just-loaded tile in the same render pass.
-     * of_cache_flush_range() starts writeback, but that writeback is not
-     * ordered against the GPU master on this fabric.  Mirror the bytes through
-     * the uncached SDRAM alias so the texture cache fills from committed DRAM.
-     */
+    /* Hot loads may be rendered in the same frame.  Mirror through the
+     * uncached alias so DRAM is current, then invalidate the GPU texture
+     * cache before the next textured span can sample stale lines. */
     volatile uint8_t *dst = (volatile uint8_t *)of_uncached(ptr);
     for (uint32_t i = 0; i < size; i++) {
         dst[i] = ptr[i];
@@ -57,7 +67,7 @@ static void tile_sync_for_gpu(uint8_t *ptr, uint32_t size)
     d3d_audio_pump_loading();
     of_cache_flush_range(ptr, size);
     d3d_audio_pump_loading();
-    d3d_gpu_mark_tex_dirty();
+    d3d_gpu_tex_invalidate();
 }
 
 static void tile_note_loaded_for_gpu(uint8_t *ptr, uint32_t size)
@@ -126,7 +136,7 @@ void setviewtotile(short tilenume, int32_t tileWidth, int32_t tileHeight)
 {
     int32_t i, j;
     
-    /* DRAWROOMS TO TILE BACKUP&SET CODE */
+    /* Redirect rendering into a BUILD tile. */
     tiles[tilenume].dim.width = tileWidth;
     tiles[tilenume].dim.height = tileHeight;
     bakxsiz[setviewcnt] = tileWidth;
@@ -210,8 +220,7 @@ void squarerotatetile(short tilenume)
 
 
 
-//1. Lock a picture in the cache system.
-//2. Mark it as used in the bitvector tracker.
+/* Lock a tile in the cache and mark it as used in the bitvector tracker. */
 void setgotpic(int32_t tilenume)
 {
     if (tiles[tilenume].lock < 200)
@@ -264,6 +273,10 @@ void loadtile(short tilenume)
         faketimerhandler();
     }
     
+#ifdef OPENFPGA
+    tile_prepare_for_gpu_write();
+#endif
+
     if (tiles[tilenume].data == NULL){
         tiles[tilenume].lock = 199;
         allocache(&tiles[tilenume].data,tileFilesize,(uint8_t  *) &tiles[tilenume].lock);
@@ -500,15 +513,13 @@ int loadpics(char  *filename, char * gamedir)
             kread32(fil,&localtilestart);
             kread32(fil,&localtileend);
 
-            /*kread(fil,&tilesizx[localtilestart],(localtileend-localtilestart+1)<<1);*/
+            /* ART headers store little-endian scalar tables. */
             for (i = localtilestart; i <= localtileend; i++)
                 kread16(fil,&tiles[i].dim.width);
 
-            /*kread(fil,&tilesizy[localtilestart],(localtileend-localtilestart+1)<<1);*/
             for (i = localtilestart; i <= localtileend; i++)
                 kread16(fil,&tiles[i].dim.height);
 
-            /*kread(fil,&picanm[localtilestart],(localtileend-localtilestart+1)<<2);*/
             for (i = localtilestart; i <= localtileend; i++)
                 kread32(fil,&tiles[i].animFlags);
 
@@ -543,10 +554,10 @@ int loadpics(char  *filename, char * gamedir)
     
     clearbuf(gotpic,(MAXTILES+31)>>5,0L);
     
-    /* try dpmi_DETERMINEMAXREALALLOC! */
+    /* Allocate the BUILD art cache. */
 
 #ifdef OPENFPGA
-    /* openfpgaOS has 64MB SDRAM — use generous cache to avoid eviction */
+    /* openfpgaOS has 64MB SDRAM; use a generous cache to avoid eviction. */
     cachesize = max(artsize, 1048576);
     if (cachesize > 32 * 1024 * 1024)
         cachesize = 32 * 1024 * 1024;
@@ -606,6 +617,10 @@ void copytilepiece(int32_t tilenume1, int32_t sx1, int32_t sy1, int32_t xsiz, in
     {
         TILE_MakeAvailable(tilenume1);
         TILE_MakeAvailable(tilenume2);
+
+#ifdef OPENFPGA
+        tile_prepare_for_gpu_write();
+#endif
         
         x1 = sx1;
         for(i=0; i<xsiz; i++)
@@ -641,10 +656,7 @@ void copytilepiece(int32_t tilenume1, int32_t sx1, int32_t sy1, int32_t xsiz, in
 
 
 
-/*
- FCS:   If a texture is animated, this will return the offset to add to tilenum
- in order to retrieve the texture to display.
- */
+/* Return the animation offset to add to a tile number. */
 int animateoffs(int16_t tilenum)
 {
     int32_t i, k, offs;

@@ -5,9 +5,11 @@
  * 16 KB ring buffer in GPU-internal M10K BRAM; the GPU processes them
  * in parallel, writing pixels to the framebuffer via AXI4.
  *
- * Ring buffer: 16 KB in M10K (no cache coherence issues).
- * CPU writes ring data via MMIO (GPU_RING_DATA, auto-increment).
- * CPU kicks GPU by writing GPU_RING_WRPTR.
+ * Ring buffer: 16 KB in GPU-internal M10K BRAM.  CPU builds command
+ * streams in a cached SDRAM scratch buffer, flushes and drains those
+ * cache lines, then the GPU doorbell-DMA pulls the words into the ring
+ * and publishes the write pointer atomically.  There is no CPU MMIO
+ * command-data path.
  *
  * IMPORTANT: This header contains static mutable state (_gpu_wrptr, etc).
  * Include it from exactly ONE translation unit per program.
@@ -22,11 +24,10 @@ extern "C" {
 
 #include <stdint.h>
 #include <string.h>
-#include <stdlib.h>     /* malloc — used by of_gpu_init for the batch scratch buffer */
 
 #ifndef OF_PC
 #include "of_caps.h"
-#include "of_cache.h"   /* of_cache_clean_range() — used by palookup upload + batch */
+#include "of_cache.h"
 #endif
 
 /* ================================================================
@@ -142,8 +143,7 @@ static uint32_t _gpu_base;
 #define OF_GPU_REG(off)         (*(volatile uint32_t *)(_gpu_base + (off)))
 
 #define GPU_CTRL                OF_GPU_REG(0x00)  /* W: bit0=enable, bit1=soft_reset, bit2=ring_reset */
-#define GPU_RING_WRPTR          OF_GPU_REG(0x04)  /* W: CPU write pointer (byte offset) — kicks GPU */
-#define GPU_RING_DATA           OF_GPU_REG(0x08)  /* W: write next word to ring BRAM (auto-increment) */
+#define GPU_RING_WRPTR          OF_GPU_REG(0x04)  /* R: published write pointer */
 #define GPU_DMA_SRC             OF_GPU_REG(0x0C)  /* W: SDRAM byte address of command buffer to pull */
 #define GPU_RING_RDPTR          OF_GPU_REG(0x10)  /* R: GPU read pointer */
 #define GPU_STATUS              OF_GPU_REG(0x14)  /* R: bit2=upload busy, bit1=ring empty, bit0=busy */
@@ -153,11 +153,12 @@ static uint32_t _gpu_base;
 #define GPU_TRANSLUC_DATA       OF_GPU_REG(0x24)  /* W: 32-bit word into transluc[] */
 #define GPU_TEX_FLUSH           OF_GPU_REG(0x28)  /* W: flush texture cache */
 #define GPU_DMA_KICK            OF_GPU_REG(0x2C)  /* W: write 1 to fire DMA pull from (SRC, LEN) */
-#define GPU_DMA_DBG             OF_GPU_REG(0x38)  /* R: compact DMA diagnostic status */
+#define GPU_DMA_DBG             OF_GPU_REG(0x38)  /* reserved/read-zero */
 #define GPU_DBG_SELECT          OF_GPU_REG(0x3C)  /* area mode: legacy stall counter reads zero */
 
-/* Texture-cache diagnostic counters may be compact in small bitstreams.  Consumers
- * should compute deltas modulo this mask. */
+/* Texture-cache diagnostic counters are optional in production bitstreams.
+ * Consumers should tolerate zero-only readback and compute nonzero deltas
+ * modulo this mask. */
 #define OF_GPU_TEX_DBG_COUNTER_BITS 20u
 #define OF_GPU_TEX_DBG_COUNTER_MASK ((1u << OF_GPU_TEX_DBG_COUNTER_BITS) - 1u)
 
@@ -197,11 +198,9 @@ enum {
 #define GPU_CMD_DRAW_SPAN       0x40
 /* CMD_DRAW_SPANS_BATCH: header carries `15*N` payload words (no count
  * word — N derives from header).  Decoder loops the existing CMD_DRAW_SPAN
- * fragment-pipe path once per 15-word span.  Saves the per-span MMIO
- * header + (when paired with the doorbell-DMA path) lets the CPU stream
- * the whole batch as cached scalar stores into SDRAM, then kick the GPU
- * to pull it via its own AXI master — eliminates the 120 ns/word MMIO
- * stall that dominates per-span dispatch cost. */
+ * fragment-pipe path once per 15-word span.  The CPU streams the whole
+ * batch through a cached SDRAM scratch window, then kicks the GPU to pull
+ * it via its own AXI master after cache writeback has drained. */
 #define GPU_CMD_DRAW_SPANS_BATCH 0x41
 /* GPU-triggered display flip (cr-gpu-triggered-flip.md).  2-word payload:
  *   word 0: bits[1:0] = back-buffer index (0/1/2 → FB_ADDR_{0,1,2})
@@ -217,7 +216,7 @@ enum {
  * that's 1920 words = 7680 bytes per batch — fits comfortably in the
  * 16 KB ring with room for state-change commands.  of_gpu_draw_spans_batch
  * splits longer arrays across multiple kicks.  Exposed so callers
- * (e.g. game-side accumulators) can size their own buffers to flush at
+ * (e.g. game-side accumulators) can size their own buffers to submit at
  * the same boundary the SDK helper uses internally. */
 #define OF_GPU_BATCH_MAX_SPANS  128
 #define OF_GPU_SPAN4_WORDS      17u
@@ -255,10 +254,12 @@ enum {
 /* Doorbell-DMA scratch region — must live in SDRAM because gpu_core's
  * m_rd_* AXI master only reaches the SDRAM arbiter (see core_top.v's
  * sdram_arb instantiation: GPU is m0, no other targets are wired).
- * Placed right above the palookup window (0x100000..0x140000); 16 KB
- * reserved leaves headroom over the 10 KB mixed command-stream payload. */
+ * CPU writes this window through the cached alias for speed.  Before each
+ * GPU DMA kick, of_gpu drains the flushed cache lines with same-master
+ * readbacks so the GPU cannot read stale command words. */
 #define OF_GPU_BATCH_BUF_AXI_OFFSET  0x00140000u
 #define OF_GPU_BATCH_BUF_BYTES       0x00004000u  /* 16 KB reserved */
+#define OF_GPU_CACHE_LINE_BYTES      64u
 
 /* ================================================================
  * Ring Buffer State (app-side)
@@ -268,17 +269,17 @@ enum {
 
 static uint32_t _gpu_wrptr;
 static uint32_t _gpu_fence_next;
+static uint32_t _gpu_cmd_words;
+static uint32_t _gpu_batch_dma_addr;
 
 static const uint32_t _gpu_ring_mask = OF_GPU_RING_SIZE - 1;
 
 /* Doorbell-DMA scratch buffer.  Pinned to a fixed SDRAM offset by
- * of_gpu_init — gpu_core's m_rd_* AXI master only reaches the SDRAM
- * arbiter, so the scratch must live in SDRAM.  Apps' malloc heap
- * starts in CRAM0 territory and would be unreachable to the GPU.
- * NULL on targets that don't expose SDRAM via caps; the helper then
- * falls back to per-span MMIO. */
+ * of_gpu_init and kept cached so command construction does not stall on
+ * every store.  NULL on targets that don't expose SDRAM; command
+ * submission traps on those targets because the legacy MMIO command path
+ * is retired. */
 static uint32_t *_gpu_batch_buf;
-static uint32_t  _gpu_batch_slot;
 static uint32_t  _gpu_dbg_dma_waits;
 static uint32_t  _gpu_dbg_dma_spin_iters;
 static uint32_t  _gpu_dbg_ring_waits;
@@ -286,25 +287,18 @@ static uint32_t  _gpu_dbg_ring_spin_iters;
 static uint32_t  _gpu_dbg_min_ring_free;
 
 #define OF_GPU_BATCH_WORDS_PER_SPAN   15u
-#define OF_GPU_COMMAND_STREAM_BATCH_WORDS 2560u  /* 10 KB raw mixed stream */
-#define OF_GPU_BATCH_SLOT_WORDS       OF_GPU_COMMAND_STREAM_BATCH_WORDS
-#define OF_GPU_BATCH_SLOT_BYTES       (OF_GPU_BATCH_SLOT_WORDS * 4u)
-#define OF_GPU_BATCH_SLOTS            (OF_GPU_BATCH_BUF_BYTES / OF_GPU_BATCH_SLOT_BYTES)
+#define OF_GPU_COMMAND_STREAM_BATCH_WORDS ((OF_GPU_RING_SIZE / 4u) - 1u)
 
-#if OF_GPU_BATCH_SLOTS < 1
-#error "OF_GPU_BATCH_BUF_BYTES must hold at least one GPU batch slot"
+#if ((1u + OF_GPU_BATCH_MAX_SPANS * OF_GPU_BATCH_WORDS_PER_SPAN) > OF_GPU_COMMAND_STREAM_BATCH_WORDS)
+#error "OF_GPU_COMMAND_STREAM_BATCH_WORDS too small for scalar span batch"
 #endif
 
-#if (OF_GPU_BATCH_MAX_SPANS * OF_GPU_BATCH_WORDS_PER_SPAN) > OF_GPU_BATCH_SLOT_WORDS
-#error "OF_GPU_BATCH_SLOT_WORDS too small for scalar span batch"
+#if ((1u + OF_GPU_SPAN4_BATCH_MAX * OF_GPU_SPAN4_WORDS) > OF_GPU_COMMAND_STREAM_BATCH_WORDS)
+#error "OF_GPU_COMMAND_STREAM_BATCH_WORDS too small for SPAN4 batch"
 #endif
 
-#if (OF_GPU_SPAN4_BATCH_MAX * OF_GPU_SPAN4_WORDS) > OF_GPU_BATCH_SLOT_WORDS
-#error "OF_GPU_BATCH_SLOT_WORDS too small for SPAN4 batch"
-#endif
-
-#if OF_GPU_BATCH_SLOT_BYTES > (OF_GPU_RING_SIZE - 4u)
-#error "GPU batch slot must fit in the ring with guard space"
+#if (OF_GPU_COMMAND_STREAM_BATCH_WORDS * 4u) > OF_GPU_BATCH_BUF_BYTES
+#error "GPU command stream buffer must fit in the reserved SDRAM scratch"
 #endif
 
 /* ---- Internal helpers ---- */
@@ -319,33 +313,72 @@ static inline void _gpu_wait_dma_idle_debug(void) {
     }
 }
 
-static inline void _gpu_ring_ensure(uint32_t bytes) {
-    /* Wait for any in-flight doorbell-DMA before letting the caller
-     * write into the ring.  CPU MMIO writes and DMA writes share
-     * ring_wr_addr in gpu_core.v — overlapping them shifts DMA's
-     * payload by however many CPU writes interleave.  By gating
-     * here, every command-emitting call site (header + payload + DMA
-     * kick) is implicitly serialized against the previous batch's
-     * DMA fill, while of_gpu_draw_spans_batch can return immediately
-     * after kicking — overlapping the DMA's ~23 µs fill with the
-     * caller's between-batch CPU work. */
+static inline uint32_t _gpu_ring_free_now(void) {
+    return (GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask;
+}
+
+static inline void _gpu_drain_cmd_writeback(uint32_t bytes) {
+    if (bytes == 0)
+        return;
+
+    volatile const uint32_t *p = (volatile const uint32_t *)_gpu_batch_buf;
+    uint32_t words = (bytes + 3u) >> 2;
+    uint32_t sink = 0;
+
+    /* of_cache_flush_range() invalidates each line after scheduling its
+     * writeback.  These cached reads use the same d_axi master as those
+     * writebacks, unlike a p_axi uncached read, so they force the CPU-side
+     * memory stream to observe the flushed command data before GPU DMA
+     * gets priority on the SDRAM arbiter. */
+    for (uint32_t off = 0; off < bytes; off += OF_GPU_CACHE_LINE_BYTES)
+        sink ^= p[off >> 2];
+    sink ^= p[words - 1u];
+
+    __asm__ volatile("" :: "r"(sink) : "memory");
+    __asm__ volatile("fence" ::: "memory");
+}
+
+static inline void _gpu_flush_cmd_stream(void) {
+    if (_gpu_cmd_words == 0)
+        return;
+    if (_gpu_batch_buf == NULL)
+        __builtin_trap();
+
     _gpu_wait_dma_idle_debug();
 
-    /* Fast path: enough free space already, return immediately. */
-    uint32_t ring_free = (GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask;
+    of_cache_flush_range(_gpu_batch_buf, _gpu_cmd_words * 4u);
+    _gpu_drain_cmd_writeback(_gpu_cmd_words * 4u);
+
+    __asm__ volatile("fence" ::: "memory");
+    GPU_DMA_SRC  = _gpu_batch_dma_addr;
+    GPU_DMA_LEN  = _gpu_cmd_words;
+    __asm__ volatile("fence" ::: "memory");
+    GPU_DMA_KICK = 1;
+    __asm__ volatile("fence" ::: "memory");
+    _gpu_cmd_words = 0;
+}
+
+static inline void _gpu_ring_ensure(uint32_t bytes) {
+    if (bytes > (OF_GPU_RING_SIZE - 4u))
+        __builtin_trap();
+
+    _gpu_wait_dma_idle_debug();
+
+    uint32_t ring_free = _gpu_ring_free_now();
     if (ring_free < _gpu_dbg_min_ring_free)
         _gpu_dbg_min_ring_free = ring_free;
     if (ring_free >= bytes)
         return;
 
-    /* Slow path: ring is full.  Publish our current write pointer to
-     * the GPU first — otherwise the GPU is sitting at its old wrptr
-     * with nothing to drain, and we'd spin forever. */
-    GPU_RING_WRPTR = _gpu_wrptr;
+    /* Slow path: if commands are only staged in SDRAM, first publish them
+     * through the doorbell DMA so the GPU has something to drain. */
+    _gpu_flush_cmd_stream();
+    _gpu_wait_dma_idle_debug();
+
     {
         uint32_t ring_spins = 0;
         do {
-            ring_free = (GPU_RING_RDPTR - _gpu_wrptr - 4) & _gpu_ring_mask;
+            ring_free = _gpu_ring_free_now();
             if (ring_free < _gpu_dbg_min_ring_free)
                 _gpu_dbg_min_ring_free = ring_free;
             if (ring_free >= bytes)
@@ -357,14 +390,28 @@ static inline void _gpu_ring_ensure(uint32_t bytes) {
     }
 }
 
-/* Write a word to the ring BRAM via MMIO (no cache issues). */
+static inline void _gpu_stream_reserve_words(uint32_t words) {
+    if (words == 0)
+        return;
+    if (_gpu_batch_buf == NULL || words > OF_GPU_COMMAND_STREAM_BATCH_WORDS)
+        __builtin_trap();
+    if (_gpu_cmd_words + words > OF_GPU_COMMAND_STREAM_BATCH_WORDS)
+        _gpu_flush_cmd_stream();
+    _gpu_ring_ensure(words * 4u);
+}
+
+/* Append one word to the staged SDRAM command stream.  Callers reserve
+ * a whole command first so this helper never flushes in the middle of a
+ * command payload. */
 static inline void _gpu_ring_write(uint32_t w) {
-    GPU_RING_DATA = w;
+    if (_gpu_batch_buf == NULL || _gpu_cmd_words >= OF_GPU_COMMAND_STREAM_BATCH_WORDS)
+        __builtin_trap();
+    _gpu_batch_buf[_gpu_cmd_words++] = w;
     _gpu_wrptr = (_gpu_wrptr + 4) & _gpu_ring_mask;
 }
 
 static inline void _gpu_cmd_header(uint8_t cmd, uint32_t payload_words) {
-    _gpu_ring_ensure((1 + payload_words) * 4);
+    _gpu_stream_reserve_words(1u + payload_words);
     _gpu_ring_write(((uint32_t)cmd << 24) | (payload_words & 0x00FFFFFF));
 }
 
@@ -382,38 +429,37 @@ static inline void of_gpu_init(void) {
 
     _gpu_wrptr = 0;
     _gpu_fence_next = 1;
-    _gpu_batch_slot = 0;
+    _gpu_cmd_words = 0;
+    _gpu_batch_dma_addr = 0;
     _gpu_dbg_dma_waits = 0;
     _gpu_dbg_dma_spin_iters = 0;
     _gpu_dbg_ring_waits = 0;
     _gpu_dbg_ring_spin_iters = 0;
     _gpu_dbg_min_ring_free = OF_GPU_RING_SIZE;
     GPU_CTRL = 4;               /* ring_reset: clear wr_addr + wrptr + rdptr */
-    GPU_RING_WRPTR = 0;
     GPU_CTRL = 1;               /* enable */
 
     /* Pin the doorbell-DMA scratch buffer at a known SDRAM offset.
-     * gpu_core's m_rd_* AXI master goes only to the SDRAM arbiter
-     * (core_top.v: sdram_arb m0) so the scratch MUST live in SDRAM —
-     * a malloc()'d pointer that early-init resolved to CRAM0 (where
-     * apps' .text/.data live) is unreachable and the DMA would pull
-     * garbage.  Same scheme palookup uses (caps->sdram_base +
-     * OF_GPU_PALOOKUP_AXI_OFFSET); we sit one window above. */
+     * Command words are written through the cached alias for normal CPU
+     * store speed.  _gpu_flush_cmd_stream() handles the external-master
+     * handoff by flushing and then reading back the invalidated lines on
+     * the same d_axi path before GPU_DMA_KICK. */
     {
         const struct of_capabilities *caps = of_get_caps();
-        if (caps && caps->sdram_base != 0)
+        if (caps && caps->sdram_base != 0) {
+            _gpu_batch_dma_addr = caps->sdram_base + OF_GPU_BATCH_BUF_AXI_OFFSET;
             _gpu_batch_buf = (uint32_t *)(uintptr_t)
                 (caps->sdram_base + OF_GPU_BATCH_BUF_AXI_OFFSET);
-        else
-            _gpu_batch_buf = NULL;   /* helper falls back to per-MMIO */
+        } else {
+            _gpu_batch_buf = NULL;   /* command submission will trap */
+        }
     }
 }
 
 /* Upload a palookup table to slot N in SDRAM.  The GPU reads palookup
  * bytes through gpu_tex_cache port B; this helper writes the table
- * directly to the SDRAM region the cache pulls from, then flushes the
- * CPU L1 lines so the GPU sees committed data.  16 KB per slot, up to
- * 16 slots (cf. OF_GPU_PALOOKUP_*).
+ * directly through the uncached SDRAM alias so the GPU sees committed
+ * data.  16 KB per slot, up to 16 slots (cf. OF_GPU_PALOOKUP_*).
  *
  * Slot selection at draw time is sticky: call of_gpu_set_colormap_id()
  * to switch.  Reset default is slot 0, so single-palookup apps just
@@ -487,7 +533,7 @@ static inline void of_gpu_translucency_upload(const uint8_t *table, uint32_t siz
 }
 
 static inline void of_gpu_kick(void) {
-    GPU_RING_WRPTR = _gpu_wrptr;
+    _gpu_flush_cmd_stream();
 }
 
 static inline uint32_t of_gpu_fence(void) {
@@ -600,7 +646,7 @@ static inline void of_gpu_debug_snapshot(of_gpu_debug_snapshot_t *snap,
     memset(snap, 0, sizeof(*snap));
     snap->status = GPU_STATUS;
     snap->rdptr = GPU_RING_RDPTR;
-    snap->wrptr = GPU_RING_WRPTR;
+    snap->wrptr = _gpu_wrptr;
     snap->fence_reached = GPU_FENCE_REACHED;
     snap->tex_req_count = GPU_TRANSLUC_ADDR;
     snap->tex_miss_count = GPU_TRANSLUC_DATA;
@@ -787,41 +833,21 @@ static inline void of_gpu_draw_span4_batch(const of_gpu_span4_t *spans,
                                             int count) {
     if (count <= 0 || spans == NULL) return;
 
-    if (_gpu_batch_buf == NULL) {
-        for (int i = 0; i < count; i++)
-            of_gpu_draw_span4(&spans[i]);
-        return;
-    }
-
     while (count > 0) {
         int n = (count > OF_GPU_SPAN4_BATCH_MAX) ? OF_GPU_SPAN4_BATCH_MAX
                                                  : count;
         uint32_t payload_words = (uint32_t)(OF_GPU_SPAN4_WORDS * n);
-        uint32_t *batch_buf = _gpu_batch_buf;
-
-#if OF_GPU_BATCH_SLOTS > 1
-        batch_buf += _gpu_batch_slot * OF_GPU_BATCH_SLOT_WORDS;
-        _gpu_batch_slot++;
-        if (_gpu_batch_slot >= OF_GPU_BATCH_SLOTS)
-            _gpu_batch_slot = 0;
-#else
-        _gpu_wait_dma_idle_debug();
-#endif
-        for (int i = 0; i < n; i++)
-            _gpu_encode_span4(&batch_buf[i * OF_GPU_SPAN4_WORDS],
-                              &spans[i]);
-
-        of_cache_flush_range(batch_buf, payload_words * 4);
-
-        _gpu_ring_ensure((1 + payload_words) * 4);
+        _gpu_stream_reserve_words(1u + payload_words);
         _gpu_ring_write(((uint32_t)GPU_CMD_DRAW_SPAN4_BATCH << 24) |
                         payload_words);
 
-        GPU_DMA_SRC  = (uint32_t)(uintptr_t)batch_buf;
-        GPU_DMA_LEN  = payload_words;
-        GPU_DMA_KICK = 1;
+        uint32_t *dst = &_gpu_batch_buf[_gpu_cmd_words];
+        for (int i = 0; i < n; i++)
+            _gpu_encode_span4(&dst[i * OF_GPU_SPAN4_WORDS], &spans[i]);
 
+        _gpu_cmd_words += payload_words;
         _gpu_wrptr = (_gpu_wrptr + payload_words * 4) & _gpu_ring_mask;
+        _gpu_flush_cmd_stream();
 
         spans += n;
         count -= n;
@@ -831,13 +857,8 @@ static inline void of_gpu_draw_span4_batch(const of_gpu_span4_t *spans,
 /* Submit an already-encoded command stream through the doorbell-DMA path.
  *
  * `words` must contain complete GPU commands, including each command
- * header.  Unlike DRAW_SPANS_BATCH/DRAW_SPAN4_BATCH, this is not a
- * homogeneous command with one payload; the hardware pulls raw command
- * words from SDRAM into the canonical ring, then publishes ring_wrptr when
- * the stream has landed.  That lets callers batch
- * order-sensitive mixtures such as DRAW_SPAN and DRAW_SPAN4 without
- * flushing whenever descriptor type changes, while avoiding per-word MMIO
- * writes and any extra on-chip staging copy.
+ * header.  This can batch order-sensitive mixtures such as DRAW_SPAN and
+ * DRAW_SPAN4 without flushing whenever descriptor type changes.
  *
  * The helper does not split the stream because splitting inside a
  * command would publish an incomplete command to the decoder.  Callers
@@ -849,39 +870,15 @@ static inline void of_gpu_submit_command_stream_batch(const uint32_t *words,
     if ((uint32_t)word_count > OF_GPU_COMMAND_STREAM_BATCH_WORDS)
         __builtin_trap();
 
-    uint32_t payload_words = (uint32_t)word_count;
-
-    if (_gpu_batch_buf == NULL) {
-        _gpu_ring_ensure(payload_words * 4u);
-        for (int i = 0; i < word_count; i++)
-            _gpu_ring_write(words[i]);
-        GPU_RING_WRPTR = _gpu_wrptr;
-        return;
-    }
-
-    uint32_t *batch_buf = _gpu_batch_buf;
-
-#if OF_GPU_BATCH_SLOTS > 1
-    batch_buf += _gpu_batch_slot * OF_GPU_BATCH_SLOT_WORDS;
-    _gpu_batch_slot++;
-    if (_gpu_batch_slot >= OF_GPU_BATCH_SLOTS)
-        _gpu_batch_slot = 0;
-#else
-    _gpu_wait_dma_idle_debug();
-#endif
+    uint32_t stream_words = (uint32_t)word_count;
+    _gpu_stream_reserve_words(stream_words);
 
     for (int i = 0; i < word_count; i++)
-        batch_buf[i] = words[i];
+        _gpu_batch_buf[_gpu_cmd_words + (uint32_t)i] = words[i];
 
-    of_cache_flush_range(batch_buf, payload_words * 4u);
-
-    _gpu_ring_ensure(payload_words * 4u);
-
-    GPU_DMA_SRC  = (uint32_t)(uintptr_t)batch_buf;
-    GPU_DMA_LEN  = payload_words;
-    GPU_DMA_KICK = 1;
-
-    _gpu_wrptr = (_gpu_wrptr + payload_words * 4u) & _gpu_ring_mask;
+    _gpu_cmd_words += stream_words;
+    _gpu_wrptr = (_gpu_wrptr + stream_words * 4u) & _gpu_ring_mask;
+    _gpu_flush_cmd_stream();
 }
 
 /* of_gpu_draw_spans_batch — submit N spans in one go.
@@ -891,16 +888,9 @@ static inline void of_gpu_submit_command_stream_batch(const uint32_t *words,
  * shared between spans — callers must emit any SET_FB / SET_TEXTURE /
  * SET_COLORMAP_ID etc. before the batch.
  *
- * Fast path (default): builds the entire batch in an SDRAM scratch
- * buffer using cached scalar stores (~5 ns/word), flushes the populated
- * range, then writes one CMD_DRAW_SPANS_BATCH header into the ring and
- * kicks the GPU's doorbell-DMA puller.  GPU streams the buffer via its
- * own AXI master while the CPU is free to do other work.  Per-span
- * cost: 15 cached stores ≈ 75 ns vs 16 MMIO writes × 120 ns = 1920 ns
- * — about 25× faster, plus the CPU is no longer stalled on the AXI bus.
- *
- * Fallback (scratch malloc failed at init): emits N standalone
- * CMD_DRAW_SPAN commands via per-word MMIO.  Slower but correct.
+ * Builds the entire command in the cached SDRAM scratch stream, then
+ * flushes/drains it and kicks the GPU's doorbell-DMA puller.  The GPU
+ * publishes header + payload atomically after the final DMA word lands.
  *
  * Caps the batch at OF_GPU_BATCH_MAX_SPANS spans per kick — longer
  * arrays split across multiple kicks.  No upper bound on the total
@@ -909,72 +899,22 @@ static inline void of_gpu_draw_spans_batch(const of_gpu_span_t *spans,
                                             int count) {
     if (count <= 0 || spans == NULL) return;
 
-    if (_gpu_batch_buf == NULL) {
-        /* Fallback: emit N standalone spans via MMIO. */
-        for (int i = 0; i < count; i++)
-            of_gpu_draw_span(&spans[i]);
-        return;
-    }
-
     while (count > 0) {
         int n = (count > OF_GPU_BATCH_MAX_SPANS) ? OF_GPU_BATCH_MAX_SPANS
                                                   : count;
         uint32_t payload_words = (uint32_t)(OF_GPU_BATCH_WORDS_PER_SPAN * n);
-        uint32_t *batch_buf = _gpu_batch_buf;
-
-#if OF_GPU_BATCH_SLOTS > 1
-        batch_buf += _gpu_batch_slot * OF_GPU_BATCH_SLOT_WORDS;
-        _gpu_batch_slot++;
-        if (_gpu_batch_slot >= OF_GPU_BATCH_SLOTS)
-            _gpu_batch_slot = 0;
-#else
-        _gpu_wait_dma_idle_debug();
-#endif
-
-        /* Build the batch in cached SDRAM at scalar-store speed. */
-        for (int i = 0; i < n; i++)
-            _gpu_encode_span(&batch_buf[i * OF_GPU_BATCH_WORDS_PER_SPAN],
-                             &spans[i]);
-
-        /* Force the populated range out of L1 so the GPU's m_rd_*
-         * AXI master sees committed bytes.  cbo.flush (writeback +
-         * invalidate) is required on this VexiiRiscv config — cbo.clean
-         * alone has been observed to leave dirty lines in L1, and the
-         * GPU reads DRAM directly (not through the CPU's cache).
-         * Same rationale as bank_preload's flush of the SF2 sample
-         * blob before handing it to the audio mixer. */
-        of_cache_flush_range(batch_buf, payload_words * 4);
-
-        /* Reserve enough ring space for header + DMA-streamed payload.
-         * Write the header word via MMIO; this advances ring_wr_addr in
-         * the BRAM but does NOT publish ring_wrptr — we let the DMA's
-         * end-of-kick pulse publish header + payload atomically.  This
-         * avoids a race where the decoder fetches the header and runs
-         * into ring BRAM cells the DMA hasn't filled yet. */
-        _gpu_ring_ensure((1 + payload_words) * 4);
+        _gpu_stream_reserve_words(1u + payload_words);
         _gpu_ring_write(((uint32_t)GPU_CMD_DRAW_SPANS_BATCH << 24) |
                         payload_words);
 
-        /* Arm and fire the DMA puller.  When DMA finishes the last
-         * sub-burst, the GPU FSM lifts ring_wrptr to the post-DMA
-         * ring_wr_addr — exposing the full command (header + payload)
-         * to the decoder in a single atomic step. */
-        GPU_DMA_SRC  = (uint32_t)(uintptr_t)batch_buf;
-        GPU_DMA_LEN  = payload_words;
-        GPU_DMA_KICK = 1;
+        uint32_t *dst = &_gpu_batch_buf[_gpu_cmd_words];
+        for (int i = 0; i < n; i++)
+            _gpu_encode_span(&dst[i * OF_GPU_BATCH_WORDS_PER_SPAN],
+                             &spans[i]);
 
-        /* Track the words the DMA will write — keep _gpu_wrptr in sync
-         * with the GPU's eventual ring_wrptr so subsequent
-         * _gpu_ring_ensure calls compute free space correctly. */
+        _gpu_cmd_words += payload_words;
         _gpu_wrptr = (_gpu_wrptr + payload_words * 4) & _gpu_ring_mask;
-
-        /* DO NOT wait for DMA here — return immediately and let the
-         * caller's between-batch CPU work overlap the ~23 µs DMA fill.
-         * Safety: any subsequent ring writer goes through
-         * _gpu_ring_ensure(), which now spins on GPU_STATUS_DMA_BUSY
-         * before allowing CPU MMIO writes to advance ring_wr_addr —
-         * see the wait at the top of _gpu_ring_ensure for the
-         * ring_wr_addr / DMA-payload interleave hazard. */
+        _gpu_flush_cmd_stream();
 
         spans += n;
         count -= n;

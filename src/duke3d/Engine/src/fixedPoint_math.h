@@ -63,13 +63,9 @@ static inline int scale (int32_t input1, int32_t input2, int32_t input3)
 }
 static inline int scaleup(int32_t input1, int32_t input2, int32_t input3)
 {
-	// tanguyf: 2020-05-03: when patchstatusbar() is called, it can sometimes not clear the entire area,
-	// leaving ghost pixels from the previous frame at certain resolutions (e.g. ammo counter leaving the bottom part of the previous
-	// digits).
-	//
-	// This does not append when the Y resolution is a multiple of 200 (from 320x200) and therefore the division has no remainder.
-	// Although not all non-multiple-of-200 resolutions seem to exhibit the problem.
-	// 
+	/* patchstatusbar() can leave ghost pixels at some scaled Y
+	 * resolutions.  Rounding up avoids that when the scale division has
+	 * a remainder. */
 	// I believe this is caused by division round-down vs round-up, and other inconsistencies in the engine
 	// (keep in mind that 4K resolution did not exist when this engine was created). But verifying it in a consistent manner
 	// would take quite a while.
@@ -180,5 +176,4 @@ void qinterpolatedown16 (int32_t* bufptr, int32_t num, int32_t val, int32_t add)
 void qinterpolatedown16short (int32_t* bufptr, int32_t num, int32_t val, int32_t add);
 
 #endif /* !defined _INCLUDE_PRAGMAS_H_ */
-
 

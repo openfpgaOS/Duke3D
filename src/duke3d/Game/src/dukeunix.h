@@ -85,8 +85,7 @@ void _dos_getdate(struct dosdate_t *date);
 #endif
 
 
-// FCS: Game.c features calls to mkdir without the proper flags.
-// Giving all access is ugly but it is just game OK !
+/* Legacy game code calls mkdir(path); default to permissive directories. */
 #define mkdir(X) mkdir(X,0777)
 
 #define getch getchar

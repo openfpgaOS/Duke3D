@@ -44,11 +44,15 @@ void test_mixer(void) {
     int v2 = of_mixer_play((const uint8_t *)sample_buf, MIX_TONE_LEN, 11025, 0, 200);
     ASSERT("MX.05 replay", v2 >= 0);
     if (v2 >= 0) {
+        of_mixer_set_loop(v2, 0, MIX_TONE_LEN);
+        of_mixer_set_vol_lr(v2, 255, 255);
+        usleep(120 * 1000);
         of_mixer_set_vol_lr(v2, 255, 0);
-        usleep(30 * 1000);
+        usleep(120 * 1000);
         of_mixer_set_vol_lr(v2, 0, 255);
-        usleep(30 * 1000);
-        of_mixer_set_vol_lr(v2, 128, 128);
+        usleep(120 * 1000);
+        of_mixer_stop(v2);
+        of_mixer_poll_ended();
         test_pass("MX.06 stereo");
     }
 

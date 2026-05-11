@@ -106,7 +106,7 @@ extern int BYTEVERSION;
 
 extern int BYTEVERSION_27;
 extern int BYTEVERSION_28;
-extern int BYTEVERSION_29; // really needed???
+extern int BYTEVERSION_29;
 extern int BYTEVERSION_116;
 extern int BYTEVERSION_117; 
 extern int BYTEVERSION_118; 
@@ -311,7 +311,7 @@ extern int32_t movefifosendplc;
 typedef struct
 {
     uint8_t  *ptr;
-    volatile uint8_t  lock; // tanguyf: if not volatile, the game can go into an infinite loop in optimised mode
+    volatile uint8_t  lock; /* Polled by cache eviction loops. */
     int  length, num;
 } SAMPLE;
 
@@ -450,7 +450,7 @@ struct player_struct
     uint8_t   holster_weapon,falling_counter;
     uint8_t   gotweapon[MAX_WEAPONS],refresh_inventory;
 
-	// tanguyf: fix the palette pointer size being 32/64-bit dependent. For some reason this is serialised into savegames.
+    /* Savegames serialize this field, so keep pointer width explicit. */
     union
     {
 	    uint8_t* palette;
@@ -654,4 +654,3 @@ extern int32_t myaimmode, myaimstat, omyaimstat;
 extern uint8_t  nHostForceDisableAutoaim;
 
 #endif  // include-once header.
-

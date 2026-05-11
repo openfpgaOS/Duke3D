@@ -65,8 +65,7 @@ short last_zero,last_fifty,last_threehundred = 0;
 static uint8_t  fileselect = 1, menunamecnt;
 static char menuname[256][17];
 
-// File tree info
-//
+/* File list state for user-map browsing. */
 uint8_t  szCurrentDirectory[1024] = {'\0'};
 
 #ifdef OPENFPGA
@@ -88,6 +87,13 @@ static void openfpga_sync_save_preview_from_gpu(uint8_t *ptr, uint32_t size)
 
     d3d_gpu_drain();
     of_cache_inval_range(ptr, size);
+}
+
+static void openfpga_save_load_gpu_barrier(void)
+{
+    d3d_gpu_drain();
+    __asm__ volatile("fence" ::: "memory");
+    d3d_gpu_tex_invalidate();
 }
 
 static void openfpga_rotatesprite_save_preview(int32_t sx, int32_t sy,
@@ -122,29 +128,11 @@ typedef struct filelist
 	FILEENTRY *files;
 }FILELIST;
 
-FILELIST m_Files;// = NULL;
-
-//
-//
+FILELIST m_Files;
 
 #define MENU_SELECT_EPISODE	100
 #define	MENU_USER_MAP		101
 
-
-// CTW - REMOVED
-/* Error codes */
-/*
-#define eTenBnNotInWindows 3801
-#define eTenBnBadGameIni 3802
-#define eTenBnBadTenIni 3803
-#define eTenBnBrowseCancel 3804
-#define eTenBnBadTenInst 3805
-
-int  tenBnStart(void);
-void tenBnSetBrowseRtn(uint8_t  *(*rtn)(uint8_t  *str, int len));
-void tenBnSetExitRtn(void (*rtn)(void));
-void tenBnSetEndRtn(void (*rtn)(void));*/
-// CTW END - REMOVED
 
 void dummyfunc(void)
 {
@@ -153,42 +141,6 @@ void dummyfunc(void)
 void dummymess(int i,uint8_t  *c)
 {
 }
-
-// CTW - REMOVED
-/*
-void TENtext(void)
-{
-    int32_t dacount,dalastcount;
-
-    puts("\nDuke Nukem 3D has been licensed exclusively to TEN (Total");
-    puts("Entertainment Network) for wide-area networked (WAN) multiplayer");
-    puts("games.\n");
-
-    puts("The multiplayer code within Duke Nukem 3D has been highly");
-    puts("customized to run best on TEN, where you'll experience fast and");
-    puts("stable performance, plus other special benefits.\n");
-
-    puts("We do not authorize or recommend the use of Duke Nukem 3D with");
-    puts("gaming services other than TEN.\n");
-
-    puts("Duke Nukem 3D is protected by United States copyright law and");
-    puts("international treaty.\n");
-
-    puts("For the best online multiplayer gaming experience, please call TEN");
-    puts("at 800-8040-TEN, or visit TEN's Web Site at www.ten.net.\n");
-
-    puts("Press any key to continue.\n");
-
-    _bios_timeofday(0,&dacount);
-
-    while( _bios_keybrd(1) == 0 )
-    {
-        _bios_timeofday(0,&dalastcount);
-        if( (dacount+240) < dalastcount ) break;
-    }
-}
-*/
-// CTW END - REMOVED
 
 void cmenu(short cm)
 {
@@ -311,7 +263,7 @@ int loadpheader(uint8_t  spot,int32 *vn,int32 *ln,int32 *psk,int32 *nump)
 
 int loadplayer(int8_t spot)
 {
-    short k, music_changed;
+    short k, music_changed, new_music_select;
     char  fn[] = "game0.sav";
     char  mpfn[] = "gameA_00.sav";
     char* fnptr;
@@ -323,7 +275,12 @@ int loadplayer(int8_t spot)
 #endif
     int32 nump;
 #ifdef OPENFPGA
-    static int32 ptrbuf[MAXTILES]; /* 36KB — too large for openfpgaOS stack */
+    static int32 ptrbuf[MAXTILES]; /* Too large for the openfpgaOS stack. */
+    /* Saved CON tables are consumed for format compatibility but not
+     * installed: a later new-game start must use freshly compiled script
+     * tables. */
+    static int32 saved_script_discard[MAXSCRIPTSIZE];
+    static uint8_t saved_actortype_discard[MAXTILES];
 #else
     int32 ptrbuf[MAXTILES];
 #endif
@@ -349,6 +306,8 @@ int loadplayer(int8_t spot)
 
     if (ud.recstat != 2)
         ready2send = 0;
+
+    openfpga_save_load_gpu_barrier();
 
     save_dfread(&bv, 4, 1, fil);
     if (bv != BYTEVERSION)
@@ -443,7 +402,9 @@ int loadplayer(int8_t spot)
 
     FX_StopAllSounds();
     clearsoundlocks();
+#ifndef OPENFPGA
     MUSIC_StopSong();
+#endif
 
     /* Macro to call dfread (openfpgaOS/OfSaveFile*) or kdfread (PC/kopen handle) */
 #ifdef OPENFPGA
@@ -457,17 +418,19 @@ int loadplayer(int8_t spot)
     else
         LOAD_READ(&ud.savegame[spot][0], 19, 1, fil);
 
-    music_changed = (music_select != (ud.volume_number * 11) + ud.level_number);
-
     LOAD_READ(&ud.volume_number, sizeof(ud.volume_number), 1, fil);
     LOAD_READ(&ud.level_number, sizeof(ud.level_number), 1, fil);
     LOAD_READ(&ud.player_skill, sizeof(ud.player_skill), 1, fil);
+
+    new_music_select = (ud.volume_number * 11) + ud.level_number;
+    music_changed = (music_select != new_music_select);
 
     ud.m_level_number = ud.level_number;
     ud.m_volume_number = ud.volume_number;
     ud.m_player_skill = ud.player_skill;
 
-    //Fake read because lseek won't work with compression
+    /* Consume the compressed screenshot block; seeking inside the stream is
+     * not available on the save backend. */
     tiles[MAXTILES - 3].lock = 1;
 
     if (tiles[MAXTILES - 3].data == NULL)
@@ -477,6 +440,9 @@ int loadplayer(int8_t spot)
     tiles[MAXTILES - 3].dim.height = 160;
 
     LOAD_READ(tiles[MAXTILES - 3].data, 160, 100, fil);
+#ifdef OPENFPGA
+    openfpga_sync_save_preview_for_gpu(tiles[MAXTILES - 3].data, 160 * 100);
+#endif
 
     LOAD_READ(&numwalls, 2, 1, fil);
     LOAD_READ(&wall[0], sizeof(walltype), MAXWALLS, fil);
@@ -504,7 +470,11 @@ int loadplayer(int8_t spot)
     LOAD_READ(&mirrorwall[0], sizeof(short), 64, fil);
     LOAD_READ(&mirrorsector[0], sizeof(short), 64, fil);
     LOAD_READ(&show2dsector[0], sizeof(uint8_t), MAXSECTORS >> 3, fil);
+#ifdef OPENFPGA
+    LOAD_READ(&saved_actortype_discard[0], sizeof(uint8_t), MAXTILES, fil);
+#else
     LOAD_READ(&actortype[0], sizeof(uint8_t), MAXTILES, fil);
+#endif
     LOAD_READ(&boardfilename[0], sizeof(boardfilename), 1, fil);
 
     LOAD_READ(&numclouds, sizeof(numclouds), 1, fil);
@@ -512,6 +482,14 @@ int loadplayer(int8_t spot)
     LOAD_READ(&cloudx[0], sizeof(short) << 7, 1, fil);
     LOAD_READ(&cloudy[0], sizeof(short) << 7, 1, fil);
 
+#ifdef OPENFPGA
+    /* Keep the CON bytecode parsed at startup.  Older save files can contain
+     * raw in-memory script pointers; installing that block lets a later New
+     * Game spawn actors with positive action pointers and trip decodescriptptr.
+     * The file format still contains these blocks, so consume them only. */
+    LOAD_READ(&saved_script_discard[0], 4, MAXSCRIPTSIZE, fil);
+    LOAD_READ(&ptrbuf[0], 4, MAXTILES, fil);
+#else
     LOAD_READ(&script[0], 4, MAXSCRIPTSIZE, fil);
     LOAD_READ(&ptrbuf[0], 4, MAXTILES, fil);
     for (i = 0; i < MAXTILES; i++)
@@ -519,6 +497,7 @@ int loadplayer(int8_t spot)
         {
             actorscrptr[i] = (int32_t*)((intptr_t)&script[0] + ptrbuf[i]);
         }
+#endif
 
     LOAD_READ(&hittype[0], sizeof(struct weaponhit), MAXSPRITES, fil);
     LOAD_READ(&lockclock, sizeof(lockclock), 1, fil);
@@ -589,12 +568,22 @@ int loadplayer(int8_t spot)
 
     clearbufbyte(gotpic, sizeof(gotpic), 0L);
     clearsoundlocks();
+#ifdef OPENFPGA
+    openfpga_save_load_gpu_barrier();
+#endif
     cacheit();
     docacheit();
+#ifdef OPENFPGA
+    openfpga_save_load_gpu_barrier();
+#endif
 
-    if (music_changed == 0)
-        music_select = (ud.volume_number * 11) + ud.level_number;
+    music_select = new_music_select;
+#ifdef OPENFPGA
+    if (music_changed || !MUSIC_SongPlaying())
+        playmusic(&music_fn[0][music_select][0]);
+#else
     playmusic(&music_fn[0][music_select][0]);
+#endif
 
 #ifdef OPENFPGA
 #endif
@@ -712,7 +701,7 @@ int saveplayer(int8_t spot)
     int32_t bv = BYTEVERSION;
     char  fullpathsavefilename[16];
 #ifdef OPENFPGA
-    static int ptrbuf[MAXTILES]; /* 36KB — too large for openfpgaOS stack */
+    static int ptrbuf[MAXTILES]; /* Too large for the openfpgaOS stack. */
 #else
     int ptrbuf[MAXTILES];
 #endif

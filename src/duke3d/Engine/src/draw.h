@@ -67,10 +67,10 @@ void settrans(int32_t type);
 
 
 
-//FCS: In order to see how the engine renders different part of the screen you can set the following macros
-//VISUALIZE RENDERER
+/* Renderer visibility toggles. */
 
-#define RENDER_LIMIT_PIXELS 0 // tanguyf: pixelsAllowed causes too many subtle rendering bugs to be left on by default
+/* Debug-only pixel limiter; keep off because it changes renderer control flow. */
+#define RENDER_LIMIT_PIXELS 0
 #if RENDER_LIMIT_PIXELS
 extern int64_t pixelsAllowed;
 #endif

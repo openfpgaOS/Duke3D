@@ -13,7 +13,7 @@
 
 #define D3D_MAXSAVES      10
 #define D3D_SAVE_SIZE     (256 * 1024)    /* 256KB per save slot */
-#define D3D_SAVE_HEADER   20              /* 4-byte magic at offset 16, data starts at 20 */
+#define D3D_SAVE_HEADER   20              /* size, layout version, reserved, magic; payload at 20 */
 
 typedef struct {
     void    *fp;            /* FILE* to the underlying save slot */

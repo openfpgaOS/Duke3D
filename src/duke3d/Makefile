@@ -75,7 +75,7 @@ RUNTIME   = $(ROOT)/runtime
 # ── Extra flags for BUILD engine ─────────────────────────────────
 CFLAGS += -O3
 CFLAGS += -DOPENFPGA -DUNIX
-CFLAGS += -DSMP_MAX_VOICES=12
+CFLAGS += -DSMP_MAX_VOICES=20
 CFLAGS += -IEngine/src -IGame/src -IGame/src/audiolib -I.
 CFLAGS += -fno-strict-aliasing -fcommon
 CFLAGS += -std=gnu11 -Wno-error -Wno-int-conversion -Wno-incompatible-pointer-types -Wno-implicit-function-declaration

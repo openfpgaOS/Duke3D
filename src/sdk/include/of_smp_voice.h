@@ -16,11 +16,9 @@ extern "C" {
 #include <stdint.h>
 #include "of_smp_bank.h"
 
-/* Cut from 28→12 so smp_voice_tick's ISR loop finishes fast enough
- * for Doom's renderer to get the CPU back.  Dense MIDI passages lose
- * the quietest couple of voices to the stealer; audible but acceptable
- * tradeoff.  Sits well under OF_MIXER_MAX_VOICES (32) so the allocator
- * never has to re-steal. */
+/* Conservative SDK default.  Apps with their own BRAM budget can raise this
+ * at compile time, as long as they stay below OF_MIXER_MAX_VOICES (32) and
+ * keep smp_voice_tick comfortably inside the 1 kHz timer budget. */
 #ifndef SMP_MAX_VOICES
 #define SMP_MAX_VOICES 12
 #endif
@@ -59,11 +57,6 @@ typedef struct {
     lfo_state_t mod_lfo;
     lfo_state_t vib_lfo;
     uint32_t base_rate_fp16; /* base 16.16 playback rate (no bend/LFO) */
-    int16_t cur_filter_fc;
-    int16_t cur_filter_q;
-    uint16_t cur_cutoff_hw;   /* last HW FC value written (skip redundant writes
-                                 from fine-grained cents changes that round to
-                                 the same Q0.16 HW cutoff) */
     uint32_t age;
     /* Countdown of smp_voice_tick calls until the underlying non-looping
      * sample has played to its natural end.  0 = not tracked (looping
