@@ -36,7 +36,7 @@ int d3d_gpu_force_cpu_spans = 0;  /* Scoped gate: when non-zero, draw.c
                                    * try paths fall through to BUILD's
                                    * original CPU loops. */
 int d3d_gpu_force_rotatesprite_cpu = 1;
-int d3d_gpu_use_span4 = 1;
+int d3d_gpu_use_span_group = 1;
 int d3d_gpu_use_command_stream_batch = 1;
 int d3d_gpu_use_translucent_spans = 1;
 int d3d_gpu_perf_enable = 0;
@@ -802,12 +802,12 @@ void d3d_gpu_init(void)
 
 /* Batched span submission.
  *
- * The default path uses a mixed command stream so scalar spans and SPAN4
+ * The default path uses a mixed command stream so scalar spans and span groups
  * commands can be submitted together.  The homogeneous scalar batch path
  * remains available for comparison and bring-up. */
 #define D3D_GPU_CMD_STREAM_WORDS      OF_GPU_COMMAND_STREAM_BATCH_WORDS
 #define D3D_GPU_CMD_DRAW_SPAN_WORDS   (1u + OF_GPU_BATCH_WORDS_PER_SPAN)
-#define D3D_GPU_CMD_DRAW_SPAN4_WORDS  (1u + OF_GPU_SPAN4_WORDS)
+#define D3D_GPU_CMD_DRAW_SPAN_GROUP_WORDS  (1u + OF_GPU_SPAN_GROUP_WORDS)
 
 static of_gpu_span_t  span_buf[OF_GPU_BATCH_MAX_SPANS];
 static int            span_buf_count;
@@ -1039,19 +1039,20 @@ static inline void perf_note_span_values(int path, uint16_t count,
     perf_note_path_span_values(path, count);
 }
 
-static inline void perf_note_span4_values(int path, uint16_t count,
-                                          uint8_t flags)
+static inline void perf_note_span_group_values(int path, uint16_t count,
+                                               uint8_t lane_count,
+                                               uint8_t flags)
 {
     if (!d3d_gpu_perf_enable) return;
     gpu_perf.spans++;
-    gpu_perf.span_pixels += (uint32_t)count * 4u;
+    gpu_perf.span_pixels += (uint32_t)count * (uint32_t)lane_count;
     if (flags & OF_GPU_SPAN_SKIP_ZERO)
         gpu_perf.masked_spans++;
     if (flags & OF_GPU_SPAN_TRANSLUC)
         gpu_perf.translucent_spans++;
     if (d3d_gpu_skip_submit)
         gpu_perf.skipped_spans++;
-    perf_note_path_span_values(path, (uint32_t)count * 4u);
+    perf_note_path_span_values(path, (uint32_t)count * (uint32_t)lane_count);
 }
 
 static inline void d3d_gpu_store_span(of_gpu_span_t *span,
@@ -1119,7 +1120,8 @@ static inline void d3d_gpu_emit_span_encoded(int path,
         d3d_gpu_reserve_cmd_words(D3D_GPU_CMD_DRAW_SPAN_WORDS);
         uint32_t w = (uint32_t)span_cmd_words;
         span_cmd_buf[w++] =
-            ((uint32_t)GPU_CMD_DRAW_SPAN << 24) | OF_GPU_BATCH_WORDS_PER_SPAN;
+            ((uint32_t)GPU_CMD_DRAW_SPAN_GROUP << 24) |
+            OF_GPU_BATCH_WORDS_PER_SPAN;
         uint32_t *p = &span_cmd_buf[w];
         p[0]  = fb_addr;
         p[1]  = tex_addr;
@@ -1155,91 +1157,116 @@ static inline void d3d_gpu_emit_span_encoded(int path,
     gpu_fb_read_barrier_needed = 1;
 }
 
-static inline void d3d_gpu_store_span4(of_gpu_span4_t *span,
-                                       uint32_t fb_addr, uint16_t count,
-                                       uint8_t flags, uint8_t colormap_id,
-                                       int16_t fb_stride,
-                                       uint16_t tex_width,
-                                       uint16_t tex_w_mask,
-                                       uint16_t tex_h_mask,
-                                       const uint32_t tex_addr[4],
-                                       const int32_t t[4],
-                                       const int32_t tstep[4],
-                                       const uint8_t light[4])
+static inline void d3d_gpu_store_span_group(of_gpu_span_group_t *span,
+                                            uint32_t fb_addr,
+                                            uint16_t count,
+                                            uint8_t lane_count,
+                                            int16_t lane_delta,
+                                            uint8_t flags,
+                                            uint8_t colormap_id,
+                                            int16_t fb_stride,
+                                            uint16_t tex_width,
+                                            uint16_t tex_w_mask,
+                                            uint16_t tex_h_mask,
+                                            const uint32_t *tex_addr,
+                                            const int32_t *t,
+                                            const int32_t *tstep,
+                                            const uint8_t *light)
 {
     span->fb_addr = fb_addr;
     span->count = count;
     span->flags = flags;
     span->colormap_id = colormap_id;
+    span->lane_count = lane_count;
     span->fb_stride = fb_stride;
+    span->lane_delta = lane_delta;
     span->tex_width = tex_width;
     span->tex_w_mask = tex_w_mask;
     span->tex_h_mask = tex_h_mask;
-    for (int c = 0; c < 4; c++) {
-        span->tex_addr[c] = tex_addr[c];
-        span->t[c] = t[c];
-        span->tstep[c] = tstep[c];
-        span->light[c] = light[c];
+    for (int c = 0; c < 8; c++) {
+        if (c < lane_count) {
+            span->tex_addr[c] = tex_addr[c];
+            span->t[c] = t[c];
+            span->tstep[c] = tstep[c];
+            span->light[c] = light[c];
+        } else {
+            span->tex_addr[c] = 0;
+            span->t[c] = 0;
+            span->tstep[c] = 0;
+            span->light[c] = 0;
+        }
     }
 }
 
-static inline void d3d_gpu_emit_span4_encoded(int path,
-                                              uint32_t fb_addr,
-                                              uint16_t count,
-                                              uint8_t flags,
-                                              uint8_t colormap_id,
-                                              int16_t fb_stride,
-                                              uint16_t tex_width,
-                                              uint16_t tex_w_mask,
-                                              uint16_t tex_h_mask,
-                                              const uint32_t tex_addr[4],
-                                              const int32_t t[4],
-                                              const int32_t tstep[4],
-                                              const uint8_t light[4])
+static inline void d3d_gpu_emit_span_group_encoded(int path,
+                                                   uint32_t fb_addr,
+                                                   uint16_t count,
+                                                   uint8_t lane_count,
+                                                   int16_t lane_delta,
+                                                   uint8_t flags,
+                                                   uint8_t colormap_id,
+                                                   int16_t fb_stride,
+                                                   uint16_t tex_width,
+                                                   uint16_t tex_w_mask,
+                                                   uint16_t tex_h_mask,
+                                                   const uint32_t *tex_addr,
+                                                   const int32_t *t,
+                                                   const int32_t *tstep,
+                                                   const uint8_t *light)
 {
-    perf_note_span4_values(path, count, flags);
+    perf_note_span_group_values(path, count, lane_count, flags);
     if (d3d_gpu_skip_submit) return;
 
     if (flags & OF_GPU_SPAN_TRANSLUC)
         d3d_gpu_barrier_before_fb_read();
 
     if (d3d_gpu_use_command_stream_batch) {
-        d3d_gpu_reserve_cmd_words(D3D_GPU_CMD_DRAW_SPAN4_WORDS);
-        uint32_t w = (uint32_t)span_cmd_words;
-        span_cmd_buf[w++] =
-            ((uint32_t)GPU_CMD_DRAW_SPAN4 << 24) | OF_GPU_SPAN4_WORDS;
-        uint32_t *p = &span_cmd_buf[w];
-        p[0]  = fb_addr;
-        p[1]  = ((uint32_t)count << 16) |
-                ((uint32_t)flags << 8) |
-                (uint32_t)(colormap_id & 0x0Fu);
-        p[2]  = ((uint32_t)(uint16_t)fb_stride << 16) | tex_width;
-        p[3]  = tex_addr[0];
-        p[4]  = tex_addr[1];
-        p[5]  = tex_addr[2];
-        p[6]  = tex_addr[3];
-        p[7]  = (uint32_t)t[0];
-        p[8]  = (uint32_t)t[1];
-        p[9]  = (uint32_t)t[2];
-        p[10] = (uint32_t)t[3];
-        p[11] = (uint32_t)tstep[0];
-        p[12] = (uint32_t)tstep[1];
-        p[13] = (uint32_t)tstep[2];
-        p[14] = (uint32_t)tstep[3];
-        p[15] = ((uint32_t)light[3] << 24) |
-                ((uint32_t)light[2] << 16) |
-                ((uint32_t)light[1] << 8) |
-                (uint32_t)light[0];
-        p[16] = ((uint32_t)tex_h_mask << 16) | tex_w_mask;
-        span_cmd_words = (int)(w + OF_GPU_SPAN4_WORDS);
-        span_cmd_count++;
+        uint32_t first = 0;
+        uint32_t lanes_left = lane_count;
+        if (lanes_left > 8u)
+            lanes_left = 8u;
+
+        while (lanes_left != 0) {
+            uint32_t n = (lanes_left >= 4u) ? 4u :
+                         (lanes_left >= 2u) ? 2u : 1u;
+            d3d_gpu_reserve_cmd_words(D3D_GPU_CMD_DRAW_SPAN_GROUP_WORDS);
+            uint32_t w = (uint32_t)span_cmd_words;
+            span_cmd_buf[w++] =
+                ((uint32_t)GPU_CMD_DRAW_SPAN_GROUP << 24) |
+                OF_GPU_SPAN_GROUP_WORDS;
+            uint32_t *p = &span_cmd_buf[w];
+            p[0]  = fb_addr + (uint32_t)((int32_t)lane_delta * (int32_t)first);
+            p[1]  = ((uint32_t)count << 16) |
+                    ((uint32_t)flags << 8) |
+                    ((n & 0x0Fu) << 4) |
+                    (uint32_t)(colormap_id & 0x0Fu);
+            p[2]  = ((uint32_t)(uint16_t)fb_stride << 16) |
+                    (uint32_t)(uint16_t)lane_delta;
+            p[3]  = tex_width;
+            p[4]  = ((uint32_t)tex_h_mask << 16) | tex_w_mask;
+            for (uint32_t c = 0; c < 4; c++) {
+                uint32_t src = first + c;
+                p[5 + c]  = (c < n) ? tex_addr[src] : 0;
+                p[9 + c]  = (c < n) ? (uint32_t)t[src] : 0;
+                p[13 + c] = (c < n) ? (uint32_t)tstep[src] : 0;
+            }
+            p[17] = ((uint32_t)((n > 3) ? light[first + 3] : 0) << 24) |
+                    ((uint32_t)((n > 2) ? light[first + 2] : 0) << 16) |
+                    ((uint32_t)((n > 1) ? light[first + 1] : 0) << 8) |
+                    (uint32_t)((n > 0) ? light[first] : 0);
+            span_cmd_words = (int)(w + OF_GPU_SPAN_GROUP_WORDS);
+            span_cmd_count++;
+            first += n;
+            lanes_left -= n;
+        }
     } else {
-        of_gpu_span4_t span;
+        of_gpu_span_group_t span;
         d3d_gpu_flush_batch();
-        d3d_gpu_store_span4(&span, fb_addr, count, flags, colormap_id,
-                            fb_stride, tex_width, tex_w_mask, tex_h_mask,
-                            tex_addr, t, tstep, light);
-        of_gpu_draw_span4(&span);
+        d3d_gpu_store_span_group(&span, fb_addr, count, lane_count,
+                                 lane_delta, flags, colormap_id,
+                                 fb_stride, tex_width, tex_w_mask, tex_h_mask,
+                                 tex_addr, t, tstep, light);
+        of_gpu_draw_span_group(&span);
     }
     mark_gpu_fb_dirty();
     gpu_fb_read_barrier_needed = 1;
@@ -1774,14 +1801,15 @@ static inline void emit_vline4_span(uint8_t *fb_at_y0, int num_pixels,
         tex_addr[c] = (uint32_t)(uintptr_t)texture[c];
         light[c] = (uint8_t)(shade[c] & 0x3F);
     }
-    d3d_gpu_emit_span4_encoded(path,
-                               (uint32_t)(uintptr_t)fb_at_y0,
-                               (uint16_t)num_pixels,
-                               flags,
-                               current_span_colormap_id(),
-                               (int16_t)bytesperline, 1, 0,
-                               column_tex_h_mask(v_shift),
-                               tex_addr, t, tstep, light);
+    d3d_gpu_emit_span_group_encoded(path,
+                                    (uint32_t)(uintptr_t)fb_at_y0,
+                                    (uint16_t)num_pixels,
+                                    4, 1,
+                                    flags,
+                                    current_span_colormap_id(),
+                                    (int16_t)bytesperline, 1, 0,
+                                    column_tex_h_mask(v_shift),
+                                    tex_addr, t, tstep, light);
 }
 
 void d3d_gpu_vline4(uint8_t *fb_at_y0, int num_pixels,
@@ -1958,7 +1986,7 @@ static int try_vline4_common(uint8_t *framebuffer, int num_pixels,
         }
         tex[c] = (const uint8_t *)bufplce[c];
     }
-    if (d3d_gpu_use_span4) {
+    if (d3d_gpu_use_span_group) {
         for (int c = 1; c < 4; c++) {
             if (slots[c] != slots[0]) {
                 d3d_gpu_perf_note_cpu_fallback();
@@ -2101,15 +2129,26 @@ void d3d_gpu_tvline2(uint8_t *dest_a, int num_pixels,
     to_16_16(vplce_b, vince_b, v_shift, &tb, &tstepb);
     uint16_t tex_h_mask = column_tex_h_mask(v_shift);
 
-    /* Two adjacent column spans.  BUILD's tvlineasm2 interleaves the
-     * left/right writes per row; the GPU sequences them through the
-     * same fragment pipe in submission order, so the FB-read for the
-     * RMW blend on the right column always sees the left column's
-     * just-written byte (and vice-versa across rows). */
-    emit_column_span(dest_a,     num_pixels, shade_a, ta, tstepa, tex_a,
-                     tex_h_mask, flags, PERF_PATH_TVLINE2);
-    emit_column_span(dest_a + 1, num_pixels, shade_b, tb, tstepb, tex_b,
-                     tex_h_mask, flags, PERF_PATH_TVLINE2);
+    uint32_t tex_addr[2] = {
+        (uint32_t)(uintptr_t)tex_a,
+        (uint32_t)(uintptr_t)tex_b
+    };
+    int32_t t[2] = { ta, tb };
+    int32_t tstep[2] = { tstepa, tstepb };
+    uint8_t light[2] = {
+        (uint8_t)(shade_a & 0x3F),
+        (uint8_t)(shade_b & 0x3F)
+    };
+
+    d3d_gpu_emit_span_group_encoded(PERF_PATH_TVLINE2,
+                                    (uint32_t)(uintptr_t)dest_a,
+                                    (uint16_t)num_pixels,
+                                    2, 1,
+                                    flags,
+                                    current_span_colormap_id(),
+                                    (int16_t)bytesperline, 1, 0,
+                                    tex_h_mask,
+                                    tex_addr, t, tstep, light);
     perf_note_path_time(PERF_PATH_TVLINE2, t0);
 }
 

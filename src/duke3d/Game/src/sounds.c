@@ -73,6 +73,7 @@ void SoundStartup(void)
 #ifdef OPENFPGA
     /* Hardware mixer handles everything — skip Multivoc software mixer init.
      * d3d_audio_init() is called separately from game.c startup. */
+    d3d_sound_set_fx_volume(FXVolume);
     return;
 #endif
     int32 status;
@@ -652,6 +653,7 @@ void stopenvsound(short num,short i)
         {
 #ifdef OPENFPGA
             d3d_sound_stop(SoundOwner[num][j].voice);
+            testcallback(num);
 #else
             FX_StopSound(SoundOwner[num][j].voice);
 #endif

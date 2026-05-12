@@ -3027,6 +3027,9 @@ void processinput(short snum)
             if(p->scream_voice > FX_Ok)
             {
                 FX_StopSound(p->scream_voice);
+#ifdef OPENFPGA
+                testcallback(DUKE_SCREAM);
+#endif
                 p->scream_voice = FX_Ok;
             }
 
@@ -4468,4 +4471,3 @@ void computergetinput(int32_t snum, input *syn)
         syn->avel = min(max((((daang+1024-damyang)&2047)-1024)>>3,-127),127);
     }
 }
-

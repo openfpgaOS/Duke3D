@@ -32,6 +32,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "fx_man.h"
 #include "sndcards.h"
 #include "multivoc.h"
+#ifdef OPENFPGA
+#include "d3d_audio.h"
+#endif
 
 #define TRUE  ( 1 == 1 )
 #define FALSE ( !TRUE )
@@ -221,6 +224,10 @@ int FX_SetCallBack(void ( *function )( int32_t ))
 void FX_SetVolume(int volume)
    {
 
+#ifdef OPENFPGA
+   d3d_sound_set_fx_volume(volume);
+   return;
+#endif
    MV_SetVolume( volume );
 
    }
@@ -473,7 +480,6 @@ int FX_StopSound
 
    {
 #ifdef OPENFPGA
-   extern void d3d_sound_stop(int voice);
    d3d_sound_stop(handle);
    return( FX_Ok );
 #endif

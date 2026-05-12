@@ -34,9 +34,9 @@ extern int d3d_gpu_force_cpu_spans;
 /* 1 keeps byte-sensitive HUD/menu sprites on Ken's original CPU loops;
  * 0 lets the existing GPU span hooks run. */
 extern int d3d_gpu_force_rotatesprite_cpu;
-/* Compact hardware SPAN4 command enable. */
-extern int d3d_gpu_use_span4;
-/* Mixed command-stream DMA enable.  When 0, scalar DRAW_SPANS_BATCH is used. */
+/* Compact hardware span-group command enable. */
+extern int d3d_gpu_use_span_group;
+/* Mixed command-stream DMA enable.  When 0, scalar spans use the SDK helper. */
 extern int d3d_gpu_use_command_stream_batch;
 /* Hardware translucency unit enable.  The app uploads the LUT transposed
  * for Duke TRANS_NORMAL; TRANS_REVERSE falls back to CPU. */
