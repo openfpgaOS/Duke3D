@@ -58,6 +58,8 @@ OBJ_DIR   ?= $(BUILD_DIR)
 # musl crt objects -- crt1.o brings in _start, crti/crtn bracket
 # .init/.fini for static constructors.
 CRT_OBJS = $(MUSL_DIR)/lib/crt1.o $(MUSL_DIR)/lib/crti.o $(MUSL_DIR)/lib/crtn.o
+MUSL_LIB_OBJS = $(MUSL_DIR)/lib/libc.a $(MUSL_DIR)/lib/libm.a
+MUSL_RUNTIME_FILES = $(CRT_OBJS) $(MUSL_LIB_OBJS)
 
 # ── Common flags ─────────────────────────────────────────────────────
 ARCH_FLAGS = -march=$(ARCH) -mabi=$(ABI)
@@ -149,7 +151,13 @@ APP_OBJS     = $(APP_C_OBJS) $(APP_CXX_OBJS)
 # OF_INIT_OBJ is linked alongside the app objects so its constructor
 # (in .init_array, KEEP'd by app.ld) is picked up by the linker even
 # under --gc-sections.
-$(BUILD_DIR)/app.elf: $(APP_OBJS) $(OF_INIT_OBJ) $(APP_LD) $(CRT_OBJS)
+$(MUSL_RUNTIME_FILES):
+	@echo "error: missing SDK musl runtime file: $@"
+	@echo "The SDK checkout is incomplete. Run 'git pull' and ensure src/sdk/musl/lib is present."
+	@echo "If you downloaded a source archive, use a release package or clone the repository instead."
+	@false
+
+$(BUILD_DIR)/app.elf: $(APP_OBJS) $(OF_INIT_OBJ) $(APP_LD) $(MUSL_RUNTIME_FILES)
 	@mkdir -p $(dir $@)
 	$(LD) $(ALL_LDFLAGS) -o $@ $(CRT_OBJS) $(APP_OBJS) $(OF_INIT_OBJ) $(LIBS)
 

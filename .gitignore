@@ -1,4 +1,7 @@
 *.o
+!src/sdk/musl/lib/crt1.o
+!src/sdk/musl/lib/crti.o
+!src/sdk/musl/lib/crtn.o
 *.elf
 ._*
 app_pc
