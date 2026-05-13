@@ -13,7 +13,7 @@ The port runs the released Duke3D/BUILD engine code on a 32-bit RISC-V soft CPU 
 
 ## Build
 
-The root Makefile knows how to build, copy, and package this core. From the repository root, build Duke3D with:
+Use the root Makefile for normal development. From the repository root, build Duke3D with:
 
 ```sh
 make build CORE=duke3d
@@ -25,14 +25,15 @@ The release tree is generated at:
 build/duke3d/
 ```
 
-Useful targets:
+Common targets:
 
 ```sh
-make build CORE=duke3d      # build Duke3D
-make copy CORE=duke3d       # build and copy to a Pocket SD card
-make package CORE=duke3d    # create a distributable package
-make debug CORE=duke3d      # build, push over UART, and stream console output
-make clean                  # remove build artifacts
+make build CORE=duke3d        # build Duke3D
+make copy CORE=duke3d         # build and copy to a Pocket SD card
+make package CORE=duke3d      # create a distributable package
+make debug CORE=duke3d        # build, push over UART, and stream console output
+make clean CORE=duke3d        # remove Duke3D build artifacts
+make clean                    # remove all build artifacts
 ```
 
 For normal SD-card testing, the usual flow is:
@@ -75,6 +76,8 @@ The build copies the included MIDI/SoundFont bank to:
 build/duke3d/Assets/duke3d/common/bank.ofsf
 ```
 
+The packaged bank is `runtime/bank.ofsf`. Users can replace it with another compatible `.ofsf` bank by keeping the filename `bank.ofsf` in the same data slot.
+
 ## Technical Capabilities
 
 - Target hardware: VexiiRiscv `rv32imafc` soft CPU at 100 MHz with openfpgaOS services.
@@ -82,9 +85,10 @@ build/duke3d/Assets/duke3d/common/bank.ofsf
 - Display output: Pocket scaler mode is configured as 640x240 with 10:9 aspect.
 - Frame pacing: triple-buffered framebuffer flow with GPU-triggered flips.
 - GPU acceleration:
-  - BUILD wall, mask, floor/ceiling, sprite, and rotated-sprite span paths are routed through the openfpgaOS GPU where supported.
-  - SPAN4 and command-stream batching are enabled by default.
+  - BUILD wall, mask, floor/ceiling, sprite, and translucent span paths are routed through the openfpgaOS GPU where supported.
+  - Span grouping and command-stream batching are enabled by default.
   - GPU-side framebuffer clears, mirror blits, texture cache invalidation, palookup slots, and translucency LUT upload are used by the port.
+  - Rotated-sprite paths that need exact software framebuffer behavior, including menus and save previews, are kept on the CPU.
 - Palette support:
   - 8-bit indexed VGA palette behavior.
   - BUILD palookup shading and palette fades.
@@ -92,6 +96,7 @@ build/duke3d/Assets/duke3d/common/bank.ofsf
 - Audio:
   - 48 kHz stereo output through the openfpgaOS audio path.
   - Duke SFX are decoded and played through isolated SFX mixer voices.
+  - Positional Duke SFX use stereo panning and distance attenuation through the mixer.
   - MIDI music uses the SDK MIDI/sample-bank path with `bank.ofsf`.
   - SFX operations are kept separate from MIDI mixer voices so menu/SFX stops do not globally stop or corrupt music playback.
 - Input:
@@ -101,7 +106,9 @@ build/duke3d/Assets/duke3d/common/bank.ofsf
 - Persistence:
   - Ten save slots.
   - Persistent settings file.
+  - Nonvolatile settings and save slots are flushed when files are closed.
   - Save preview thumbnails in the load/save menu.
+  - Save thumbnails are rendered through the software path to avoid GPU cache/readback artifacts in the tiny 100x160 capture.
 
 ## Pocket Controls
 
