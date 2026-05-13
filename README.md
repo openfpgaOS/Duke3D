@@ -1,8 +1,8 @@
 # Duke Nukem 3D for openfpgaOS
 
-This repository contains an Analogue Pocket openFPGA port of Duke Nukem 3D built on the openfpgaOS SDK.
+This repository contains an Analogue Pocket openFPGA port of Duke Nukem 3D built on the [openfgpaSDK](https://github.com/openfpgaOS/openfgpaSDK).
 
-The port runs the released Duke3D/BUILD engine code on a 32-bit RISC-V soft CPU and uses openfpgaOS services for video, input, audio, files, saves, and hardware GPU acceleration. Commercial Duke Nukem 3D game data is not included; you need your own legally obtained `duke3d.grp`.
+The port runs the released Duke3D/BUILD engine code on a 32-bit RISC-V soft CPU and uses [openfpgaCore](https://github.com/openfpgaOS/openfpgaCore) services for video, input, audio, files, saves, and hardware GPU acceleration. Commercial Duke Nukem 3D game data is not included; you need your own legally obtained `duke3d.grp`.
 
 ## Requirements
 
@@ -181,7 +181,7 @@ Dock mouse support:
 - Todd Replogle, Charlie Wiederhold, and the original Duke Nukem 3D contributors.
 - Ken Silverman for the BUILD engine.
 - Ryan C. Gordon, Andrew Henderson, Dan Olson, Fabien Sanglard, and the wider Chocolate DukeNukem3D/xDuke port lineage referenced by this codebase.
-- The openfpgaOS SDK and runtime work used by this port.
+- The [openfgpaSDK](https://github.com/openfpgaOS/openfgpaSDK) and [openfpgaCore](https://github.com/openfpgaOS/openfpgaCore) work used by this port.
 - dyreschlock for the Analogue Pocket platform image used by the Duke3D core.
 
 ## License and Game Data
