@@ -163,8 +163,11 @@ void setviewtotile(short tilenume, int32_t tileWidth, int32_t tileHeight)
     frameplace = tiles[tilenume].data;
 #endif
 #ifdef OPENFPGA
-    d3d_gpu_clear_rect_fb(frameplace, (uint16_t)tileHeight,
-                          (uint16_t)tileWidth, 0);
+    if (d3d_gpu_force_cpu_spans && frameplace != NULL)
+        memset(frameplace, 0, (size_t)tileWidth * (size_t)tileHeight);
+    else
+        d3d_gpu_clear_rect_fb(frameplace, (uint16_t)tileHeight,
+                              (uint16_t)tileWidth, 0);
 #endif
     bakwindowx1[setviewcnt] = windowx1;
     bakwindowy1[setviewcnt] = windowy1;

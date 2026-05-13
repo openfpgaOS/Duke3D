@@ -231,6 +231,8 @@ enum of_file_fid {
     OF_FILE_FID_READ_ASYNC = 0,
     OF_FILE_FID_ASYNC_POLL = 1,
     OF_FILE_FID_ASYNC_BUSY = 2,
+    OF_FILE_FID_MOUNT = 3,
+    OF_FILE_FID_UMOUNT = 4,
 };
 
 #ifdef __cplusplus

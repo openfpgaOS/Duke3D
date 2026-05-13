@@ -3328,6 +3328,8 @@ void displayrooms(short snum,int32_t smoothratio)
     short tang;
 #ifdef OPENFPGA
     uint32_t perf_t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+    int openfpga_saved_screencap_force_cpu_spans = 0;
+    int openfpga_screencap_forced_cpu_spans = 0;
 #define D3D_DISPLAYROOMS_DONE() \
     do { \
         if (perf_t0) \
@@ -3401,7 +3403,12 @@ void displayrooms(short snum,int32_t smoothratio)
             tiles[MAXTILES-1].lock = 254;
             if (tiles[MAXTILES-1].data == NULL)
                 allocache(&tiles[MAXTILES-1].data,100*160,&tiles[MAXTILES-1].lock);
-            
+
+#ifdef OPENFPGA
+            openfpga_saved_screencap_force_cpu_spans = d3d_gpu_force_cpu_spans;
+            d3d_gpu_force_cpu_spans = 1;
+            openfpga_screencap_forced_cpu_spans = 1;
+#endif
             setviewtotile(MAXTILES-1,100L,160L);
         }
         else if( ( ud.screen_tilting && p->rotscrnang ) || ud.detail==0 )
@@ -3532,6 +3539,10 @@ void displayrooms(short snum,int32_t smoothratio)
         if(screencapt == 1)
         {
             setviewback();
+#ifdef OPENFPGA
+            if (openfpga_screencap_forced_cpu_spans)
+                d3d_gpu_force_cpu_spans = openfpga_saved_screencap_force_cpu_spans;
+#endif
             tiles[MAXTILES-1].lock = 1;
             screencapt = 0;
         }

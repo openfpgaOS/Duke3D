@@ -85,6 +85,13 @@ static void store_le32(uint8_t *p, uint32_t v) {
     p[3] = (uint8_t)(v >> 24);
 }
 
+static void make_save_header(uint8_t *header, uint32_t data_size) {
+    memset(header, 0, D3D_SAVE_HEADER);
+    store_le32(&header[0], data_size);
+    store_le32(&header[LAYOUT_OFF], SAVE_LAYOUT);
+    store_le32(&header[MAGIC_OFF], SAVE_MAGIC);
+}
+
 static int read_save_header(FILE *fp, uint32_t *data_size, uint32_t *layout,
                             uint32_t *magic) {
     uint8_t header[D3D_SAVE_HEADER];
@@ -137,20 +144,19 @@ OfSaveFile *save_fopen(int slot, const char *mode) {
     slot_path(slot, path, sizeof(path));
 
     /* "wb" truncates so previous saves don't leave stale bytes past
-     * the new data_size; "rb" opens read-only.  Mirrors the savea/
-     * saveb demo's offset==0 path. */
+     * the new payload; "rb" opens read-only.  Mirrors the savea/saveb
+     * demo's offset==0 path. */
     sf->fp = fopen(path, sf->writing ? "wb" : "rb");
     if (!sf->fp) return NULL;
 
     if (sf->writing) {
-        /* Reserve the header region by writing 20 zero bytes up front.
-         * The kernel VFS does NOT honor fseek-past-EOF on a "wb" handle
-         * (savea/saveb avoids this by using "r+b" for nonzero offsets),
-         * so we must extend the file naturally before payload writes.
-         * save_fclose() patches data_size and magic over these zeros via
-         * an "r+b" reopen. */
-        static const uint8_t zero_header[D3D_SAVE_HEADER] = {0};
-        if (fwrite(zero_header, 1, D3D_SAVE_HEADER, sf->fp) != D3D_SAVE_HEADER) {
+        /* Write a valid header before the payload.  The exact APF file size
+         * is still published by the OS close path; the header's size field is
+         * only an app-level validity guard, so the slot capacity is a safe
+         * value and avoids depending on a later random-access header patch. */
+        uint8_t header[D3D_SAVE_HEADER];
+        make_save_header(header, D3D_SAVE_SIZE);
+        if (fwrite(header, 1, D3D_SAVE_HEADER, sf->fp) != D3D_SAVE_HEADER) {
             fclose(sf->fp);
             sf->fp = NULL;
             return NULL;
@@ -244,45 +250,16 @@ int save_fseek(OfSaveFile *sf, long offset, int whence) {
 int save_fclose(OfSaveFile *sf) {
     if (!sf || !sf->fp) return -1;
 
-    /* Snapshot the final payload size BEFORE closing the wb handle —
-     * sf->offset advances past D3D_SAVE_HEADER+payload during writes. */
-    uint32_t data_size = sf->offset;
-    int      writing   = sf->writing;
-    int      slot      = sf->game_slot;
-    int      status    = sf->error ? -1 : 0;
+    int writing = sf->writing;
+    int slot    = sf->game_slot;
+    int status  = sf->error ? -1 : 0;
 
     if (fclose(sf->fp) != 0)
         status = -1;
     sf->fp = NULL;
 
-    if (writing && status == 0) {
-        /* Header back-fill via a fresh "r+b" reopen — matches the
-         * savea/saveb demo's pattern (`fopen(path, offset==0 ? "wb" :
-         * "r+b")`).  Some kernel VFS impls don't preserve backward
-         * seeks across a single "wb" handle, so updating the header
-         * inline from the same handle silently drops on close.
-         * Reopening with "r+b" gives us a writable handle with random
-         * access on the now-persisted bytes. */
-        char path[32];
-        slot_path(slot, path, sizeof(path));
-        FILE *fp = fopen(path, "r+b");
-        if (fp) {
-            uint8_t header[D3D_SAVE_HEADER] = {0};
-            store_le32(&header[0], data_size);
-            store_le32(&header[LAYOUT_OFF], SAVE_LAYOUT);
-            store_le32(&header[MAGIC_OFF], SAVE_MAGIC);
-            if (fseek(fp, 0, SEEK_SET) != 0 ||
-                fwrite(header, 1, sizeof(header), fp) != sizeof(header))
-                status = -1;
-            if (fclose(fp) != 0)
-                status = -1;
-        } else {
-            status = -1;
-        }
-
-        if (status == 0 && !save_slot_valid(slot))
-            status = -1;
-    }
+    if (writing && status == 0 && !save_slot_valid(slot))
+        status = -1;
 
     int idx = (int)(sf - save_pool);
     if (idx >= 0 && idx < D3D_MAXSAVES)
