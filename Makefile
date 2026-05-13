@@ -247,7 +247,6 @@ push:
 	          --exclude='releases/' --exclude='._*' \
 	          src/ "$(DEST)/src/"
 	@rsync -a --exclude='._*' scripts/ "$(DEST)/scripts/"
-	@rsync -a --exclude='._*' docs/    "$(DEST)/docs/"
 	@cp -f Makefile  "$(DEST)/Makefile"
 	@cp -f README.md "$(DEST)/README.md"
 	@[ -f GETTING_STARTED.md ] && cp -f GETTING_STARTED.md "$(DEST)/GETTING_STARTED.md" || true

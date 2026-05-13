@@ -579,8 +579,7 @@ static inline uint32_t of_gpu_fence(void) {
  * controller, not that the next vsync has presented it.
  *
  * Pair with the kernel's of_video_acquire_next(idx) to get the next
- * free draw buffer.  See docs/cr-gpu-triggered-flip.md for the
- * standard call pattern. */
+ * free draw buffer. */
 /* CMD_FLIP re-enabled with diagnostic counters in place (2026-04-30).
  * The kernel side of_video_acquire_next() retains a bounded fence-wait
  * and only uses a CPU FB_SWAP_CTRL write as a timeout fallback, so a
@@ -773,8 +772,7 @@ static inline void of_gpu_clear_rect(uint32_t start_byte_addr,
 
 /* Strided clear_rect — word 2 of the payload carries the row stride at
  * bits [31:16].  When stride==0 the GPU falls back to the SET_FB-
- * resident global stride (matches plain of_gpu_clear_rect).  See
- * docs/cr-gpu-clear-rect-stride.md for the rationale. */
+ * resident global stride (matches plain of_gpu_clear_rect). */
 static inline void of_gpu_clear_rect_strided(uint32_t start_byte_addr,
                                               uint16_t w, uint16_t h,
                                               uint16_t stride,

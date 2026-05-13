@@ -43,8 +43,6 @@
  *
  * Adding a brand-new subsystem: append the EID at the end of the list,
  * never reuse a retired EID, never insert in the middle.
- *
- * See docs/syscall-abi.md for the complete specification.
  */
 
 #ifndef OF_SYSCALL_H

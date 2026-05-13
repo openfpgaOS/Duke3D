@@ -2,8 +2,7 @@
  * of_syscall_numbers.h -- openfpgaOS SBI Extension/Function IDs
  *
  * Single source of truth for the openfpgaOS vendor-extension namespace
- * of the RISC-V SBI calling convention. See of_syscall.h for the ABI
- * spec and docs/syscall-abi.md for the long-form rationale.
+ * of the RISC-V SBI calling convention. See of_syscall.h for the ABI spec.
  *
  * ============================================================================
  * EID layout

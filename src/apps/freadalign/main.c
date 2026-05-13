@@ -4,8 +4,7 @@
  * Background:
  *   fread() on an SDK-opened FILE* silently returns 0 bytes when the
  *   destination pointer is not 512-byte aligned. Aligned destinations
- *   read correctly. See docs/bug-fread-alignment.md for the full
- *   context and proposed fix.
+ *   read correctly.
  *
  * What this app does:
  *   1. Opens the first real file on the card (via opendir/readdir).
@@ -108,7 +107,7 @@ int main(void) {
         printf("PASS — reads match. Kernel handles unaligned fread correctly.\n");
     } else if (g1 == 16 && g2 == 0) {
         printf("FAIL — unaligned fread returned 0 bytes (classic alignment bug).\n");
-        printf("       See docs/bug-fread-alignment.md for the fix.\n");
+        printf("       Update the kernel fread DMA path before rerunning this test.\n");
     } else {
         printf("FAIL — unexpected mismatch between aligned and unaligned reads.\n");
     }
