@@ -261,7 +261,11 @@ void CONFIG_SetDefaults( void )
    ud.extended_screen_size = 0;
    ud.screen_tilting = 1;
    ud.brightness = 16;
+#ifdef OPENFPGA
+   ud.auto_run = 0;
+#else
    ud.auto_run = 1;
+#endif
    ud.showweapons = 0;
    ud.tickrate = 0;
    ud.scrollmode = 0;
@@ -711,6 +715,9 @@ void CONFIG_ReadSetup( void )
    SCRIPT_GetNumber( scripthandle, "Misc", "Executions",&ud.executions);
    ud.executions++;
    SCRIPT_GetNumber( scripthandle, "Misc", "RunMode",&ud.auto_run);
+#ifdef OPENFPGA
+   ud.auto_run = 0;
+#endif
    SCRIPT_GetNumber( scripthandle, "Misc", "Crosshairs",&ud.crosshair);
    SCRIPT_GetNumber( scripthandle, "Misc", "ShowCinematics",&ud.showcinematics);
    SCRIPT_GetNumber( scripthandle, "Misc", "WeaponAutoSwitch",&ud.weaponautoswitch);
@@ -864,6 +871,9 @@ void CONFIG_WriteSetup( void )
    SCRIPT_PutNumber( scripthandle, "Screen Setup", "ExtScreenSize",ud.extended_screen_size,false,false);
    SCRIPT_PutNumber( scripthandle, "Screen Setup", "ScreenGamma",ud.brightness,false,false);
    SCRIPT_PutNumber( scripthandle, "Misc", "Executions",ud.executions,false,false);
+#ifdef OPENFPGA
+   ud.auto_run = 0;
+#endif
    SCRIPT_PutNumber( scripthandle, "Misc", "RunMode",ud.auto_run,false,false);
    SCRIPT_PutNumber( scripthandle, "Misc", "Crosshairs",ud.crosshair,false,false);
    SCRIPT_PutNumber( scripthandle, "Misc", "ShowCinematics",ud.showcinematics,false,false);
