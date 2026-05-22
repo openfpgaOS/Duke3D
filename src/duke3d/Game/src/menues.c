@@ -104,11 +104,11 @@ static void openfpga_rotatesprite_save_preview(int32_t sx, int32_t sy,
                                                int32_t cy1, int32_t cx2,
                                                int32_t cy2)
 {
-    int saved_force_cpu = d3d_gpu_force_rotatesprite_cpu;
-    d3d_gpu_force_rotatesprite_cpu = 1;
+    int saved_force_cpu = d3d_gpu_force_cpu_spans;
+    d3d_gpu_force_cpu_spans = 1;
     rotatesprite(sx, sy, z, a, picnum, dashade, dapalnum, dastat,
                  cx1, cy1, cx2, cy2);
-    d3d_gpu_force_rotatesprite_cpu = saved_force_cpu;
+    d3d_gpu_force_cpu_spans = saved_force_cpu;
 }
 #else
 #define openfpga_rotatesprite_save_preview rotatesprite
@@ -4814,12 +4814,8 @@ static void openfpga_sync_anim_frame_for_gpu(uint8_t *ptr, uint32_t size)
     if (!ptr || size == 0)
         return;
 
-    volatile uint8_t *dst = (volatile uint8_t *)of_uncached(ptr);
-    for (uint32_t i = 0; i < size; i++)
-        dst[i] = ptr[i];
-    __asm__ volatile("fence" ::: "memory");
-
     of_cache_flush_range(ptr, size);
+    __asm__ volatile("fence" ::: "memory");
     d3d_gpu_tex_invalidate();
 }
 #endif

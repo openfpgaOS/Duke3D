@@ -86,7 +86,7 @@ The packaged bank is `runtime/bank.ofsf`. Users can replace it with another comp
 - Frame pacing: triple-buffered framebuffer flow with GPU-triggered flips.
 - GPU acceleration:
   - BUILD wall, mask, floor/ceiling, sprite, and translucent span paths are routed through the openfpgaOS GPU where supported.
-  - Span grouping and command-stream batching are enabled by default.
+  - Duke submits native affine/perspective grouped span commands with explicit colormap slots.
   - GPU-side framebuffer clears, mirror blits, texture cache invalidation, palookup slots, and translucency LUT upload are used by the port.
   - Rotated-sprite paths that need exact software framebuffer behavior, including menus and save previews, are kept on the CPU.
 - Palette support:

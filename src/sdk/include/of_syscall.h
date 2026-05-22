@@ -43,6 +43,8 @@
  *
  * Adding a brand-new subsystem: append the EID at the end of the list,
  * never reuse a retired EID, never insert in the middle.
+ *
+ * See docs/syscall-abi.md for the complete specification.
  */
 
 #ifndef OF_SYSCALL_H
@@ -51,6 +53,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#include <stdint.h>
 
 #ifndef OF_PC
 
@@ -111,6 +115,14 @@ static inline struct of_sbiret of_ecall5(long eid, long fid,
                                           long a0, long a1, long a2,
                                           long a3, long a4) {
     return of_ecall6(eid, fid, a0, a1, a2, a3, a4, 0);
+}
+
+static inline int of_sbi_ret_int(struct of_sbiret r) {
+    return r.error ? (int)r.error : (int)r.value;
+}
+
+static inline int32_t of_sbi_ret_i32(struct of_sbiret r) {
+    return r.error ? (int32_t)r.error : (int32_t)r.value;
 }
 
 /* ----------------------------------------------------------------------------

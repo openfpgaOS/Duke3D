@@ -153,6 +153,18 @@ _Static_assert(sizeof(ofsf_preset_t) ==   4, "ofsf_preset_t must be 4 bytes");
 const ofsf_header_t *of_smp_bank_get(void);
 const void          *of_smp_bank_sample_base(void);
 
+/* Bind this module to the kernel-preloaded .ofsf bank.
+ *
+ * Apps normally do not need to call this directly: an SDK constructor runs it
+ * before main(), and of_midi_init() retries it.  The explicit entry exists so
+ * apps/tests can force a retry and distinguish "no bank" from "metadata bind
+ * failed" without starting MIDI playback.
+ *
+ * Returns 1 when a bank is bound, 0 when no preloaded bank is available, and
+ * a negative value for malformed preload data or metadata allocation failure.
+ */
+int of_smp_bank_bind_preloaded(void);
+
 int of_smp_zone_lookup(int bank, int program, int key, int velocity,
                        const ofsf_zone_t **zones_out, int max_zones);
 

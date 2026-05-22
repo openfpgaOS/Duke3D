@@ -315,7 +315,7 @@ OF_FASTTEXT int32_t tvlineasm1(int32_t i1, const uint8_t * restrict texture, int
      * row; `source` is the 1-D column data.  Reverse translucency stays
      * on the CPU path. */
     if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
-        if (d3d_gpu_use_translucent_spans && !local_transrev) {
+        if (d3d_gpu_translucent_spans_ready() && !local_transrev) {
             int shade = d3d_gpu_shade_for(texture);
             if (shade >= 0) {
                 d3d_gpu_tvline(dest, numPixels + 1, shade,
@@ -379,7 +379,7 @@ OF_FASTTEXT void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4
          * expects asm1/asm2 to carry the post-loop vplce for the two
          * columns on return (used as the vplce arg of a follow-up
          * tvlineasm1). */
-        if (d3d_gpu_use_translucent_spans && !transrev) {
+        if (d3d_gpu_translucent_spans_ready() && !transrev) {
             const intptr_t saved_asm2 = asm2;       /* dest end+1 (= ylookup[y2]+i+1) */
             const int32_t  saved_asm1 = asm1;       /* tran2incb = vince B */
             const int32_t  local_bpl  = bytesperline;
@@ -388,9 +388,10 @@ OF_FASTTEXT void tvlineasm2(uint32_t i1, uint32_t i2, uintptr_t i3, uintptr_t i4
             const int      shade_a = d3d_gpu_shade_slot_for(tran2pal_ebx, &slot_a);
             const int      shade_b = d3d_gpu_shade_slot_for(tran2pal_ecx, &slot_b);
 
-            if (shade_a >= 0 && shade_b >= 0 && slot_a == slot_b) {
+            if (shade_a >= 0 && shade_b >= 0) {
                 d3d_gpu_tvline2((uint8_t *)i6, count,
                                 shade_a, shade_b,
+                                slot_a, slot_b,
                                 i5, i2,                         /* col A: vplce, vince */
                                 i1, (uint32_t)saved_asm1,       /* col B: vplce, vince */
                                 (uint8_t)(tran2shr & 0x1f),
@@ -697,7 +698,7 @@ OF_FASTTEXT void DrawSpriteVerticalLine(int32_t i2, int32_t numPixels, uint32_t 
      * N-1 actual pixels for N input.  Caller passes y2-y1+1 expecting
      * y2-y1 draws.  Reverse translucency stays on the CPU path. */
     if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
-        if (d3d_gpu_use_translucent_spans && !local_transrev) {
+        if (d3d_gpu_translucent_spans_ready() && !local_transrev) {
             const int shade = d3d_gpu_shade_for(tspal);
             if (shade >= 0) {
                 d3d_gpu_sprite_vline(dest, numPixels - 1, shade,
@@ -884,7 +885,7 @@ OF_FASTTEXT void thlineskipmodify(int32_t i1, uint32_t i2, uint32_t i3, int32_t 
 
 #ifdef OPENFPGA
     if (d3d_gpu_use_spans && d3d_gpu_present && !d3d_gpu_force_cpu_spans) {
-        if (d3d_gpu_use_translucent_spans && !local_transrev) {
+        if (d3d_gpu_translucent_spans_ready() && !local_transrev) {
             int shade_idx = d3d_gpu_shade_for(local_pal);
             if (shade_idx >= 0) {
                 d3d_gpu_thline(i6, counter + 1, shade_idx << 8,

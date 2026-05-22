@@ -1590,7 +1590,8 @@ if (!VOLUMEONE)
 
         if ( loadboard( fulllevelfilename,&ps[0].posx, &ps[0].posy, &ps[0].posz, &ps[0].ang,&ps[0].cursectnum ) == -1 )
         {
-            sprintf(text,"User Map %s not found!\n",fulllevelfilename);
+            snprintf(text, sizeof(text), "User Map %.480s not found!\n",
+                     fulllevelfilename);
             gameexit(text);
         }
     }
@@ -1604,7 +1605,9 @@ if (!VOLUMEONE)
 		printf("filename=%s\n",fulllevelfilename );
 		if ( loadboard(fulllevelfilename ,&ps[0].posx, &ps[0].posy, &ps[0].posz, &ps[0].ang,&ps[0].cursectnum ) == -1)
         {
-			sprintf(text,"Internal Map %s not found! Not using the right grp file?\n",level_file_names[(ud.volume_number*11)+ud.level_number]);
+			snprintf(text, sizeof(text),
+			         "Internal Map %.400s not found! Not using the right grp file?\n",
+			         level_file_names[(ud.volume_number*11)+ud.level_number]);
 			gameexit(text);
 		}
     }

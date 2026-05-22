@@ -55,6 +55,35 @@ int console_num_spaces = 0; //number of spaces
 int nConsole_Active = 0;
 
 void CVAR_RegisterDefaultCvarBindings(void);
+
+static void CONSOLE_CopyText(char *dst, const char *src)
+{
+    size_t len;
+
+    if(!src)
+    {
+        dst[0] = '\0';
+        return;
+    }
+
+    len = strlen(src);
+    if(len >= MAX_CONSOLE_STRING_LENGTH)
+        len = MAX_CONSOLE_STRING_LENGTH - 1;
+
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+static void CONSOLE_AppendChar(char *dst, char ch)
+{
+    size_t len = strlen(dst);
+    if(len < MAX_CONSOLE_STRING_LENGTH - 1)
+    {
+        dst[len] = ch;
+        dst[len + 1] = '\0';
+    }
+}
+
 // Initialize the console
 void CONSOLE_Init()
 {
@@ -181,7 +210,7 @@ void CONSOLE_HandleInput()
         {
             if(strlen(dirty_buffer) < MAX_CONSOLE_STRING_LENGTH-2)
             {
-                strncat(dirty_buffer, " ", 1);
+                CONSOLE_AppendChar(dirty_buffer, ' ');
                 console_num_spaces++;
             }
         }
@@ -256,7 +285,7 @@ void CONSOLE_HandleInput()
 					break;
 				}
 				console_used_command_list_current = console_used_command_list;
-				sprintf(dirty_buffer, "%s", console_used_command_list_current->text);
+				CONSOLE_CopyText(dirty_buffer, console_used_command_list_current->text);
 				CONSOLE_RecalculateDirtyBuffer();
 				break;
 			}
@@ -264,12 +293,12 @@ void CONSOLE_HandleInput()
             if(console_used_command_list_current->next != NULL)
             {
                 console_used_command_list_current = console_used_command_list_current->next;
-				sprintf(dirty_buffer, "%s", console_used_command_list_current->text);
+				CONSOLE_CopyText(dirty_buffer, console_used_command_list_current->text);
 				CONSOLE_RecalculateDirtyBuffer();
             }else
             if(console_used_command_list_current != NULL)
 			{
-				sprintf(dirty_buffer, "%s", console_used_command_list_current->text);
+				CONSOLE_CopyText(dirty_buffer, console_used_command_list_current->text);
 				CONSOLE_RecalculateDirtyBuffer();
 			}
 
@@ -302,7 +331,7 @@ void CONSOLE_HandleInput()
 				if(console_used_command_list_current->prev != NULL)
 				{
 					console_used_command_list_current = console_used_command_list_current->prev;
-					sprintf(dirty_buffer, "%s", console_used_command_list_current->text);
+					CONSOLE_CopyText(dirty_buffer, console_used_command_list_current->text);
 					CONSOLE_RecalculateDirtyBuffer();
 				}
 			}
@@ -343,7 +372,7 @@ void CONSOLE_HandleInput()
 
                 if(lastKey)
                 {
-                    strncat(dirty_buffer, lastKey, 1);
+                    CONSOLE_AppendChar(dirty_buffer, lastKey[0]);
                     console_cursor_pos++;
                     //printf("Key %s : %s\n", lastKey, console_buffer[0]);
                 }
@@ -515,8 +544,7 @@ void CONSOLE_InsertUsedCommand(const char * szUsedCommand)
         pElement->prev = NULL;
 
         //sprintf(console_buffer->text, "%s", msg);
-        memset(console_used_command_list->text, 0, MAX_CONSOLE_STRING_LENGTH);
-        strncpy(console_used_command_list->text, szUsedCommand, MAX_CONSOLE_STRING_LENGTH-2);
+        CONSOLE_CopyText(console_used_command_list->text, szUsedCommand);
     }
 }
 
@@ -570,7 +598,7 @@ void CONSOLE_Printf(const char  *newmsg, ...)
     va_list		argptr;
     char 		msg[512];//[MAX_CONSOLE_STRING_LENGTH];
     va_start (argptr,newmsg);
-    vsprintf (msg, newmsg, argptr);
+    vsnprintf (msg, sizeof(msg), newmsg, argptr);
     va_end (argptr);
 
     //create a new element in the list, and add it to the front
@@ -601,8 +629,7 @@ void CONSOLE_Printf(const char  *newmsg, ...)
         pElement->prev = NULL;
 
         //sprintf(console_buffer->text, "%s", msg);
-        memset(console_buffer->text, 0, MAX_CONSOLE_STRING_LENGTH);
-        strncpy(console_buffer->text, msg, MAX_CONSOLE_STRING_LENGTH-2);
+        CONSOLE_CopyText(console_buffer->text, msg);
     }
 
 }

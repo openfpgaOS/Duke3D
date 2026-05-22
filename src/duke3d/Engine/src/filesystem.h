@@ -24,6 +24,7 @@ uint32_t crc32_update(uint8_t  *buf, uint32_t length, uint32_t crc_to_update);
 int32_t  kopen4load(const char  *filename, int openOnlyFromGRP);
 int32_t  kgrp_find_file(const char *filename, int32_t *grpID,
                         int32_t *fileIndex, int32_t *offset, int32_t *size);
+int32_t  kgrp_slot_id(int32_t grpID);
 int32_t  kgrp_read_at(int32_t grpID, int32_t offset, void *buffer, int32_t leng);
 int32_t  kread(int32_t handle, void *buffer, int32_t leng);
 int32_t  kread8(int32_t handle, uint8_t  *buffer);

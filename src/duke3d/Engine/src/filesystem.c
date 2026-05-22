@@ -47,12 +47,56 @@ static inline void write_le16(void *p, int16_t v) {
 #include "../../Game/src/global.h"
 
 #ifdef OPENFPGA
+#include "of_file.h"
 #include "of_lzw.h"
 #endif
 
 
 
 char game_dir[512];
+
+static void copy_cstr_bounded(char *dst, size_t dst_size, const char *src)
+{
+    size_t len;
+
+    if (dst_size == 0)
+        return;
+    if (!src)
+        src = "";
+
+    len = strlen(src);
+    if (len >= dst_size)
+        len = dst_size - 1;
+
+    memcpy(dst, src, len);
+    dst[len] = '\0';
+}
+
+static void copy_game_path_bounded(char *dst, size_t dst_size,
+                                   const char *dir, const char *filename)
+{
+    size_t len;
+
+    if (dst_size == 0)
+        return;
+
+    copy_cstr_bounded(dst, dst_size, dir);
+    len = strlen(dst);
+
+    if (len + 1 < dst_size) {
+        dst[len++] = '\\';
+        dst[len] = '\0';
+    }
+
+    if (filename && len < dst_size - 1) {
+        size_t filename_len = strlen(filename);
+        size_t room = dst_size - 1 - len;
+        if (filename_len > room)
+            filename_len = room;
+        memcpy(dst + len, filename, filename_len);
+        dst[len + filename_len] = '\0';
+    }
+}
 
 //The multiplayer module in game.dll needs direct access to the crc32 (sic).
 int32_t groupefil_crc32[MAXGROUPFILES];
@@ -71,6 +115,9 @@ typedef struct grpArchive_s{
     int32_t  *filesizes           ;//Array containing the file offsets.
     int fileDescriptor            ;//The fd used for open,read operations.
     uint32_t crc32                ;//Hash to recognize GRP: Duke Shareware, Duke plutonimum etc...
+#ifdef OPENFPGA
+    int32_t dataSlot              ;//openfpgaOS data slot backing this GRP, or -1.
+#endif
     
 } grpArchive_t;
 
@@ -103,6 +150,16 @@ int32_t initgroupfile(const char  *filename)
     
     //Init the slot
     memset(archive, 0, sizeof(grpArchive_t));
+#ifdef OPENFPGA
+    archive->dataSlot = -1;
+    if (!strncasecmp(filename, "slot:", 5)) {
+        archive->dataSlot = atoi(filename + 5);
+    } else {
+        uint32_t slot_id;
+        if (of_file_slot_find(filename, &slot_id) == 0)
+            archive->dataSlot = (int32_t)slot_id;
+    }
+#endif
     
 	//groupfil_memory[numgroupfiles] = NULL; // addresses of raw GRP files in memory
 	//groupefil_crc32[numgroupfiles] = 0;
@@ -374,6 +431,18 @@ int32_t kgrp_find_file(const char *filename, int32_t *grpID,
     }
 
     return -1;
+}
+
+int32_t kgrp_slot_id(int32_t grpID)
+{
+#ifdef OPENFPGA
+    if (grpID < 0 || grpID >= grpSet.num)
+        return -1;
+    return grpSet.archives[grpID].dataSlot;
+#else
+    (void)grpID;
+    return -1;
+#endif
 }
 
 int32_t kgrp_read_at(int32_t grpID, int32_t offset, void *buffer, int32_t leng)
@@ -950,13 +1019,14 @@ int32_t TCkopen4load(const char  *filename, int readfromGRP)
     
 	if(game_dir[0] != '\0' && !readfromGRP)
 	{
-		sprintf(fullfilename, "%s\\%s", game_dir, filename);
+		copy_game_path_bounded(fullfilename, sizeof(fullfilename),
+                               game_dir, filename);
 		if (!SafeFileExists(fullfilename)) // try root
-			sprintf(fullfilename, "%s", filename);
+			copy_cstr_bounded(fullfilename, sizeof(fullfilename), filename);
 	}
 	else
 	{
-		sprintf(fullfilename, "%s", filename);
+		copy_cstr_bounded(fullfilename, sizeof(fullfilename), filename);
 	}
     
 	result = kopen4load(fullfilename, readfromGRP);
@@ -969,7 +1039,7 @@ void   setGameDir(char* gameDir){
     if (gameDir == NULL)
         return;
     
-    strncpy(game_dir,gameDir,sizeof(game_dir));
+    copy_cstr_bounded(game_dir, sizeof(game_dir), gameDir);
 }
 
 char*  getGameDir(void){

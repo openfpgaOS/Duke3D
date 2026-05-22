@@ -33,7 +33,7 @@ static OF_FASTDATA uint32_t    tick_counter;
 /* ------------------------------------------------------------------ */
 /* Tick-cost probe (Task #10)                                         */
 /* ------------------------------------------------------------------ */
-/* NOTE: VexRiscv here does not expose rdcycle to user mode, so we use
+/* NOTE: VexiiRiscv here does not expose rdcycle to user mode, so we use
  * OF_SVC->timer_get_us() (direct service-table call — NOT the ecall
  * of_time_us(), which would nest-trap when smp_voice_tick runs from
  * the MIDI timer ISR). Stats are in microseconds. */
@@ -55,7 +55,6 @@ static OF_FASTDATA uint8_t  tick_ch_active[16];
  * Incremented at actual HW-write sites (post-cache) and from
  * smp_voice_tick_record_pump(), then snapshotted by get_stats and zeroed
  * by reset_stats.  All in BRAM: the writes happen in the ISR. */
-static OF_FASTDATA uint32_t stat_filter_writes;
 static OF_FASTDATA uint32_t stat_rate_writes;
 static OF_FASTDATA uint32_t stat_vol_writes;
 static OF_FASTDATA uint32_t stat_pump_count;
@@ -63,7 +62,6 @@ static OF_FASTDATA uint32_t stat_pump_interval_max_us;
 static OF_FASTDATA uint32_t stat_pump_interval_min_us = 0xFFFFFFFFu;
 static OF_FASTDATA uint32_t stat_pump_burst_count;
 static OF_FASTDATA uint32_t stat_pump_budget_exceeded;
-static OF_FASTDATA uint16_t stat_cutoff_delta_max;
 
 /* A single 1 kHz voice tick should stay comfortably below the pump cap. */
 #define SMP_TICK_SPIKE_US  2000u
@@ -84,7 +82,7 @@ void smp_voice_tick_get_stats(smp_tick_stats_t *out)
     for (int i = 0; i < 16; i++)
         out->ch_active[i] = tick_ch_active[i];
 
-    out->filter_writes         = stat_filter_writes;
+    out->filter_writes         = 0;
     out->rate_writes           = stat_rate_writes;
     out->vol_writes            = stat_vol_writes;
     out->pump_count            = stat_pump_count;
@@ -92,7 +90,7 @@ void smp_voice_tick_get_stats(smp_tick_stats_t *out)
     out->pump_interval_min_us  = stat_pump_interval_min_us;
     out->pump_burst_count      = stat_pump_burst_count;
     out->pump_budget_exceeded  = stat_pump_budget_exceeded;
-    out->cutoff_delta_max      = stat_cutoff_delta_max;
+    out->cutoff_delta_max      = 0;
 }
 
 void smp_voice_tick_reset_stats(void)
@@ -102,7 +100,6 @@ void smp_voice_tick_reset_stats(void)
     tick_stat_count  = 0;
     tick_active_peak = 0;
 
-    stat_filter_writes        = 0;
     stat_rate_writes          = 0;
     stat_vol_writes           = 0;
     stat_pump_count           = 0;
@@ -110,7 +107,6 @@ void smp_voice_tick_reset_stats(void)
     stat_pump_interval_min_us = 0xFFFFFFFFu;
     stat_pump_burst_count     = 0;
     stat_pump_budget_exceeded = 0;
-    stat_cutoff_delta_max     = 0;
 }
 
 void smp_voice_tick_record_pump(uint32_t elapsed_us, int ticks_fired,
@@ -179,6 +175,32 @@ static int clamp_midi7(int v)
     if (v < 0) return 0;
     if (v > 127) return 127;
     return v;
+}
+
+static int midi_velocity_to_gain(int velocity)
+{
+    int v = clamp_midi7(velocity);
+    if (v <= 0) return 0;
+
+    int linear = (v << 1) + 1;
+    if (linear > 255) linear = 255;
+
+    /* Gentle perceptual lift for low/mid MIDI velocities.  A pure sqrt-like
+     * curve makes soft notes too loud; this keeps 75% of the old linear
+     * response and blends in 25% of a quadratic ease-out curve.
+     *
+     * Examples:
+     *   v=32:  65 ->  77
+     *   v=64: 129 -> 145
+     *   v=96: 193 -> 205
+     *   v=127:       255
+     */
+    int inv = 127 - v;
+    int ease = 255 - ((inv * inv * 255 + (127 * 127 / 2)) / (127 * 127));
+    int gain = ((linear * 3) + ease + 2) >> 2;
+    if (gain > 255) gain = 255;
+    if (gain < 0) gain = 0;
+    return gain;
 }
 
 /* ------------------------------------------------------------------ */
@@ -322,19 +344,19 @@ static void voice_cleanup_stolen(void);
 
 static int voice_hw_owned_by_music(const smp_voice_t *v)
 {
-    if (v->mixer_voice < 0)
+    if (v->mixer_voice == OF_MIXER_HANDLE_INVALID)
         return 0;
-    if (!of_mixer_voice_active(v->mixer_voice))
+    if (!of_mixer_handle_active(v->mixer_voice))
         return 0;
 
-    int group = of_mixer_voice_group(v->mixer_voice);
+    int group = of_mixer_handle_group(v->mixer_voice);
     return group < 0 || group == OF_MIXER_GROUP_MUSIC;
 }
 
 static void voice_stop_hw_if_owned(smp_voice_t *v)
 {
     if (voice_hw_owned_by_music(v))
-        of_mixer_stop(v->mixer_voice);
+        of_mixer_stop_h(v->mixer_voice);
 }
 
 static int voice_drop_if_stale(smp_voice_t *v)
@@ -343,7 +365,7 @@ static int voice_drop_if_stale(smp_voice_t *v)
         return 0;
 
     v->active = 0;
-    v->mixer_voice = -1;
+    v->mixer_voice = OF_MIXER_HANDLE_INVALID;
     return 1;
 }
 
@@ -355,7 +377,7 @@ static void voice_reclaim(int idx)
 {
     smp_voice_t *v = &voices[idx];
     voice_stop_hw_if_owned(v);
-    v->mixer_voice = -1;
+    v->mixer_voice = OF_MIXER_HANDLE_INVALID;
     v->active = 0;
 }
 
@@ -437,8 +459,8 @@ static void voice_force_off(int idx)
     if (voice_drop_if_stale(v))
         return;
 
-    of_mixer_set_vol_lr(v->mixer_voice, 0, 0);
-    of_mixer_set_volume_ramp(v->mixer_voice, 16);
+    of_mixer_set_vol_lr_h(v->mixer_voice, 0, 0);
+    of_mixer_set_volume_ramp_h(v->mixer_voice, 16);
     v->active = STEAL_PENDING;
 }
 
@@ -448,7 +470,7 @@ static void voice_cleanup_stolen(void)
         if (voices[i].active == STEAL_PENDING) {
             voice_stop_hw_if_owned(&voices[i]);
             voices[i].active = 0;
-            voices[i].mixer_voice = -1;
+            voices[i].mixer_voice = OF_MIXER_HANDLE_INVALID;
         }
     }
 }
@@ -595,7 +617,7 @@ void smp_voice_init(void)
 {
     for (int i = 0; i < SMP_MAX_VOICES; i++) {
         voices[i].active = 0;
-        voices[i].mixer_voice = -1;
+        voices[i].mixer_voice = OF_MIXER_HANDLE_INVALID;
     }
 
     for (int i = 0; i < 16; i++) {
@@ -657,18 +679,17 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     v->zone = zone;
     v->midi_ch = (uint8_t)midi_ch;
     v->note = (uint8_t)note;
-    v->velocity = (uint8_t)velocity;
+    v->velocity = (uint8_t)clamp_midi7(velocity);
     v->sustain_held = 0;
-    v->mixer_voice = -1;
+    v->mixer_voice = OF_MIXER_HANDLE_INVALID;
     v->age = tick_counter;
 
-    /* Pre-bake voice_base_vol = (vel_scale × initial_attn_scale) >> 8.
+    /* Pre-bake voice_base_vol = (velocity_gain × initial_attn_scale) >> 8.
      * One u8 field now replaces the two multiplies the old compute_vol_lr
      * did per tick, and matches the awe_voice_t.voice_base_vol the AWE
      * fabric reads from voice-state RAM (Phase 3 onward). */
     {
-        int vel_scale = (velocity * 2) + 1;
-        if (vel_scale > 255) vel_scale = 255;
+        int vel_scale = midi_velocity_to_gain(velocity);
         int attn_scale = zone ? zone->initial_attn_scale : 255;
         int bv = (vel_scale * attn_scale) >> 8;
         if (bv > 255) bv = 255;
@@ -696,21 +717,22 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
     const uint8_t *sample_ptr = (const uint8_t *)sample_base
                               + zone->sample_offset;
 
-    int mhv = of_mixer_alloc_for_group(OF_MIXER_GROUP_MUSIC,
-                                       sample_ptr, zone->sample_length,
-                                       sr, 0, 200);
-    if (mhv < 0) { v->active = 0; return -1; }
+    of_mixer_handle_t mhv = of_mixer_alloc_for_group_h(OF_MIXER_GROUP_MUSIC,
+                                                       sample_ptr,
+                                                       zone->sample_length,
+                                                       sr, 0, 200);
+    if (mhv == OF_MIXER_HANDLE_INVALID) { v->active = 0; return -1; }
 
 
     v->mixer_voice = mhv;
-    of_mixer_set_rate_raw(mhv, v->base_rate_fp16);
+    of_mixer_set_rate_raw_h(mhv, v->base_rate_fp16);
     stat_rate_writes++;
 
     /* Loop setup */
     if (zone->loop_mode == OFSF_LOOP_FORWARD || zone->loop_mode == OFSF_LOOP_BIDI) {
-        of_mixer_set_loop(mhv, zone->loop_start, zone->loop_end);
+        of_mixer_set_loop_h(mhv, zone->loop_start, zone->loop_end);
         if (zone->loop_mode == OFSF_LOOP_BIDI)
-            of_mixer_set_bidi(mhv, 1);
+            of_mixer_set_bidi_h(mhv, 1);
         /* Looping voice: let the envelope decide when it ends. */
         v->sample_ticks_remaining = 0;
     } else {
@@ -748,7 +770,7 @@ int smp_voice_note_on(const ofsf_zone_t *zone, int midi_ch, int note,
 
     int vl, vr;
     compute_vol_lr(v, &vl, &vr);
-    of_mixer_set_vol_lr(mhv, vl, vr);
+    of_mixer_set_vol_lr_h(mhv, vl, vr);
     stat_vol_writes++;
     prev_vol_l[idx] = vl;
     prev_vol_r[idx] = vr;
@@ -836,7 +858,7 @@ void smp_voice_tick(void)
         if (v->vol_env.stage == ENV_DONE) {
             voice_stop_hw_if_owned(v);
             v->active = 0;
-            v->mixer_voice = -1;
+            v->mixer_voice = OF_MIXER_HANDLE_INVALID;
             continue;
         }
 
@@ -845,7 +867,7 @@ void smp_voice_tick(void)
         uint32_t rate = compute_pitch(v);
         if (vl != prev_vol_l[i] || vr != prev_vol_r[i] ||
             rate != prev_rate[i]) {
-            of_mixer_set_voice_raw(v->mixer_voice, rate, vl, vr);
+            of_mixer_set_voice_raw_h(v->mixer_voice, rate, vl, vr);
             /* set_voice_raw coalesces rate + vol; count each independently
              * changed field so the stats reflect the underlying load. */
             if (rate != prev_rate[i]) stat_rate_writes++;
@@ -954,7 +976,7 @@ void smp_voice_all_off(int midi_ch)
         if (v->active && v->active != STEAL_PENDING && v->midi_ch == midi_ch) {
             voice_stop_hw_if_owned(v);
             v->active = 0;
-            v->mixer_voice = -1;
+            v->mixer_voice = OF_MIXER_HANDLE_INVALID;
         }
     }
 }
@@ -966,7 +988,7 @@ void smp_voice_all_off_global(void)
         if (v->active) {
             voice_stop_hw_if_owned(v);
             v->active = 0;
-            v->mixer_voice = -1;
+            v->mixer_voice = OF_MIXER_HANDLE_INVALID;
         }
     }
 }

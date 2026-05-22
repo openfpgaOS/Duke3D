@@ -532,21 +532,11 @@ static void retarget_frameplace_at(uint8_t *dst)
 {
     if (dst) {
         uint8_t *render_base = dst + OF_DISPLAY_W * OF_DISPLAY_BAR_H;
-        /* BUILD's CPU code paths (vlineasm1's GPU-rejected fallback,
-         * any direct *frameplace = ... store, etc.) write to FB through
-         * `frameplace`.  Routing through the uncached alias makes those
-         * writes bypass the L1 D-cache and land in SDRAM directly,
-         * eliminating the cross-frame cache-coherency hazard that was
-         * causing HUD / weapon / menu pixels to flash on alternate
-         * frames (cache lines stayed dirty in CPU L1, GPU's m_wr saw
-         * stale SDRAM at flip time).  GPU's m_wr master receives the
-         * cached alias via d3d_gpu_set_fb — its own AXI bypasses CPU
-         * cache anyway, so no perf cost.  Reads via frameplace
-         * (completemirror's mirror reverse-blit, the only known
-         * reader) become uncached too — ~10 cycles/byte vs ~1 cached
-         * — but that path is rare and now GPU-routed in any case
-         * (see completemirror in engine.c). */
-        frameplace = (uint8_t *)of_uncached(render_base);
+        /* Keep BUILD CPU fallback/2D writes on the uncached alias.  The
+         * cached framebuffer experiment is compiled off in the fixed GPU
+         * policy because the uncached path has the simpler coherency model. */
+        frameplace = D3D_GPU_USE_CACHED_FRAMEPLACE ?
+            render_base : (uint8_t *)of_uncached(render_base);
         extern int32_t viewoffset;
         frameoffset = frameplace + viewoffset;
         d3d_gpu_set_fb(render_base, OF_DISPLAY_W);
@@ -620,11 +610,12 @@ void _platform_init(int argc, char **argv, const char *title, const char *iconNa
  *   2. d3d_gpu_flip_to(idx) — emit CMD_FLIP via of_gpu_flip_to + kick;
  *      the GPU drains its m_wr_* writes, pulses the swap side-port,
  *      and publishes the fence token.
- *   3. of_video_acquire_next(idx) — kernel rotates triple-buffer state
- *      and returns the next free draw idx (non-blocking).
+ *   3. of_video_acquire_next(idx) — waits for the CMD_FLIP fence and
+ *      returns the next free draw idx.
  * No CPU spin on STATUS_BUSY: CMD_FLIP's drain primitive replaces it.
- * The pre-flip of_video_wait_flip overlaps the previous swap's vsync
- * wait with this frame's render — at typical fps it collapses to ~0. */
+ * Do not wait for the previous swap before submitting the drain/flip.
+ * GPU CMD_FLIP is back-pressured by fb_swap_pending, so queuing it early
+ * lets GPU write-drain overlap the tail of the current scanout. */
 void _nextpage(void)
 {
     ensure_video_init();
@@ -660,38 +651,41 @@ void _nextpage(void)
         bars_remaining--;
     }
 
-    /* No cache_clean needed before flip — frameplace is the uncached
-     * alias (set in retarget_frameplace_at), so any BUILD CPU FB
-     * write goes directly to SDRAM.  The GPU's AXI write master
-     * bypasses CPU cache too.  No path leaves dirty FB lines in L1. */
+    d3d_gpu_prepare_framebuffer_for_present();
 
-    /* Wait for the previous frame's swap to complete BEFORE emitting
-     * the next CMD_FLIP — without this, gpu_swap_req could pulse while
-     * fb_swap_pending=1 from the previous frame, overwriting the queued
-     * slot.  At typical render times the wait collapses to ~0. */
+    uint32_t wait_flip_us = 0;
+
+    uint32_t drain_batch_us = 0;
+    uint32_t flip_emit_us = 0;
+    uint32_t acquire_us = 0;
+
+    if (d3d_gpu_present) {
+        /* Ship pending spans + emit CMD_FLIP for the current draw idx.
+         * Both go through d3d_gpu wrappers because of_gpu.h's static ring
+         * state (_gpu_wrptr, _gpu_fence_next) MUST live in exactly one TU
+         * — d3d_gpu.c. */
+        uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+        d3d_gpu_drain_batch();
+        drain_batch_us = t0 ? (of_time_us() - t0) : 0;
+
+        t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+        uint32_t flip_token = d3d_gpu_flip_to(draw_idx);
+        flip_emit_us = t0 ? (of_time_us() - t0) : 0;
+
+        t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+        draw_idx = of_video_acquire_next(draw_idx, flip_token);
+        acquire_us = t0 ? (of_time_us() - t0) : 0;
+
+        retarget_frameplace_at(of_video_buffer_addr(draw_idx));
+    } else {
+        uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+        of_video_flip();
+        flip_emit_us = t0 ? (of_time_us() - t0) : 0;
+        draw_idx = -1;
+        retarget_frameplace();
+    }
+
     uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
-    of_video_wait_flip();
-    uint32_t wait_flip_us = t0 ? (of_time_us() - t0) : 0;
-
-    /* Ship pending spans + emit CMD_FLIP for the current draw idx.
-     * Both go through d3d_gpu wrappers because of_gpu.h's static ring
-     * state (_gpu_wrptr, _gpu_fence_next) MUST live in exactly one TU
-     * — d3d_gpu.c. */
-    t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
-    d3d_gpu_drain_batch();
-    uint32_t drain_batch_us = t0 ? (of_time_us() - t0) : 0;
-
-    t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
-    uint32_t flip_token = d3d_gpu_flip_to(draw_idx);
-    uint32_t flip_emit_us = t0 ? (of_time_us() - t0) : 0;
-
-    t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
-    draw_idx = of_video_acquire_next(draw_idx, flip_token);
-    uint32_t acquire_us = t0 ? (of_time_us() - t0) : 0;
-
-    retarget_frameplace_at(of_video_buffer_addr(draw_idx));
-
-    t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
     d3d_audio_pump();
     uint32_t audio_us = t0 ? (of_time_us() - t0) : 0;
 

@@ -454,7 +454,7 @@ void hitradius( short i, int32_t  r, int32_t  hp1, int32_t  hp2, int32_t  hp3, i
     int32_t sectcnt, sectend, dasect, startwall, endwall, nextsect;
     short j,k,p,x,nextj,sect;
     uint8_t  statlist[] = {0,1,6,10,12,2,5};
-    short *tempshort = (short *)tempbuf;
+    static short tempshort[1024];
 
     s = &sprite[i];
 
@@ -7161,4 +7161,3 @@ void moveeffectors(void)   //STATNUM 3
           alignflorslope(s->sectnum,wal->x,wal->y,sector[wal->nextsector].floorz);
      }
 }
-

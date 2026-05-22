@@ -1,6 +1,10 @@
 #include "multivoc.h"
 #include "_multivc.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #ifdef OPENFPGA
 extern float *MV_FooBuffer;
 #else

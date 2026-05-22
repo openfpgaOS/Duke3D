@@ -3971,10 +3971,10 @@ static void dorotatesprite (int32_t sx, int32_t sy, int32_t z, short a, short pi
 
 #ifdef OPENFPGA
     /* Menus, HUD and other BUILD 2D sprites go through this routine.
-     * Keep them on Ken's original CPU loops by default; the GPU span
-     * replacements remain opt-in until their 2D output is byte-stable. */
+     * Keep byte-sensitive rotatesprite paths on Ken's CPU loops; the GPU
+     * remains enabled for the 3D renderer. */
     if (d3d_gpu_present && d3d_gpu_use_spans &&
-        d3d_gpu_force_rotatesprite_cpu) {
+        D3D_GPU_FORCE_ROTATESPRITE_CPU) {
         d3d_gpu_prepare_cpu_fb_write();
         openfpga_saved_force_cpu_spans = d3d_gpu_force_cpu_spans;
         d3d_gpu_force_cpu_spans = 1;
@@ -9066,7 +9066,14 @@ void clearallviews(int32_t dacol)
 #endif
 
     case 2:
+#ifdef OPENFPGA
+        d3d_gpu_clear_rect_fb((uint8_t *)frameplace,
+                              (uint16_t)bytesperline,
+                              (uint16_t)ydim,
+                              0);
+#else
         clearbuf((void *)frameplace,(xdim*ydim)>>2,0L);
+#endif
         break;
     }
     faketimerhandler();
@@ -9130,6 +9137,10 @@ void setviewback(void)
     copybufbyte(&bakdmost[windowx1],&startdmost[windowx1],(windowx2-windowx1+1)*sizeof(startdmost[0]));
     vidoption = bakvidoption[setviewcnt];
     frameplace = bakframeplace[setviewcnt];
+#ifdef OPENFPGA
+    if (frameplace != NULL)
+        d3d_gpu_set_fb(frameplace, bytesperline);
+#endif
     if (setviewcnt == 0)
         k = bakxsiz[0];
     else

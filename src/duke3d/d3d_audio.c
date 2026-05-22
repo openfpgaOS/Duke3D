@@ -59,6 +59,7 @@ static d3d_sound_preload_item_t sound_preload_items[NUM_SOUNDS];
 
 typedef struct {
     int      voice;       /* OS mixer voice index (0-31), or -1 */
+    of_mixer_handle_t mixer_handle; /* stable OS mixer logical voice */
     int      handle;      /* Duke/MultiVoc-style generation handle */
     int      sound_num;   /* Duke sound number */
     int      has_owner;   /* 1 = xyzsound (tracked in SoundOwner), 0 = fire-and-forget */
@@ -80,6 +81,7 @@ static void init_voice_tracking(void) {
     next_voice_handle = 1;
     for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
         active_voices[i].voice = -1;
+        active_voices[i].mixer_handle = OF_MIXER_HANDLE_INVALID;
         active_voices[i].handle = 0;
     }
 }
@@ -87,6 +89,7 @@ static void init_voice_tracking(void) {
 static void untrack_voice(int voice) {
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return;
     active_voices[voice].voice = -1;
+    active_voices[voice].mixer_handle = OF_MIXER_HANDLE_INVALID;
     active_voices[voice].handle = 0;
     last_vol_valid[voice] = 0;
 }
@@ -135,11 +138,13 @@ static void retire_voice_owner_for_reuse(int voice)
     }
 }
 
-static int track_voice_timed(int voice, int sound_num, int has_owner,
+static int track_voice_timed(int voice, of_mixer_handle_t mixer_handle,
+                             int sound_num, int has_owner,
                              int priority, uint32_t duration_ms) {
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return -1;
     retire_voice_owner_for_reuse(voice);
     active_voices[voice].voice = voice;
+    active_voices[voice].mixer_handle = mixer_handle;
     active_voices[voice].handle = alloc_voice_handle();
     active_voices[voice].sound_num = sound_num;
     active_voices[voice].has_owner = has_owner;
@@ -151,14 +156,17 @@ static int track_voice_timed(int voice, int sound_num, int has_owner,
 static int d3d_voice_is_sfx_or_unknown(int voice)
 {
     if (voice < 0 || voice >= MAX_ACTIVE_VOICES) return 0;
-    int group = of_mixer_voice_group(voice);
+    of_mixer_handle_t mh = active_voices[voice].mixer_handle;
+    if (mh == OF_MIXER_HANDLE_INVALID || !of_mixer_handle_active(mh))
+        return 0;
+    int group = of_mixer_handle_group(mh);
     return group < 0 || group == OF_MIXER_GROUP_SFX;
 }
 
 static void d3d_stop_sfx_voice_if_owned(int voice)
 {
     if (d3d_voice_is_sfx_or_unknown(voice))
-        of_mixer_stop(voice);
+        of_mixer_stop_h(active_voices[voice].mixer_handle);
 }
 
 static void complete_voice(int i) {
@@ -187,14 +195,18 @@ static void complete_ended_voice(int i) {
 }
 
 static void poll_ended_voices(void) {
-    uint32_t ended = of_mixer_poll_ended();
-    if (!ended) return;
+    of_mixer_handle_t ended[8];
+    uint32_t count;
 
-    for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
-        if (!(ended & (1u << i))) continue;
-        if (active_voices[i].voice < 0) continue;
-        if (of_mixer_voice_active(i)) continue;
-        complete_ended_voice(i);
+    while ((count = of_mixer_poll_ended_h(ended, 8)) != 0) {
+        for (uint32_t e = 0; e < count; e++) {
+            for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
+                if (active_voices[i].voice < 0) continue;
+                if (active_voices[i].mixer_handle != ended[e]) continue;
+                complete_ended_voice(i);
+                break;
+            }
+        }
     }
 }
 
@@ -517,9 +529,9 @@ static int d3d_scaled_sfx_group_volume(void)
     return (d3d_sfx_user_volume * D3D_AUDIO_SFX_GROUP_VOLUME_MAX + 127) / 255;
 }
 
-static void d3d_prepare_sfx_voice(int voice)
+static void d3d_prepare_sfx_voice(of_mixer_handle_t voice)
 {
-    of_mixer_set_volume_ramp(voice, D3D_AUDIO_SFX_RAMP_RATE);
+    of_mixer_set_volume_ramp_h(voice, D3D_AUDIO_SFX_RAMP_RATE);
 }
 
 static int d3d_voice_can_steal_for_sfx(int voice, int priority, int allow_looped)
@@ -573,24 +585,27 @@ static int d3d_steal_sfx_voice_for_priority(int priority)
     return 0;
 }
 
-static int d3d_alloc_sfx_voice(const uint8_t *pcm, uint32_t sample_count,
-                               uint32_t rate, int priority, int volume)
+static of_mixer_handle_t d3d_alloc_sfx_voice(const uint8_t *pcm,
+                                             uint32_t sample_count,
+                                             uint32_t rate,
+                                             int priority,
+                                             int volume)
 {
-    int voice = of_mixer_alloc_for_group(OF_MIXER_GROUP_SFX, pcm,
-                                         sample_count, rate,
-                                         priority, volume);
-    if (voice >= 0)
+    of_mixer_handle_t voice = of_mixer_alloc_for_group_h(OF_MIXER_GROUP_SFX, pcm,
+                                                         sample_count, rate,
+                                                         priority, volume);
+    if (voice != OF_MIXER_HANDLE_INVALID)
         return voice;
 
     /* MultiVoc allowed an equal-priority sound to evict an existing voice.
      * The OS allocator only steals strictly lower priorities, so do the
      * Duke-owned eviction here and retry once. */
     if (!d3d_steal_sfx_voice_for_priority(priority))
-        return -1;
+        return OF_MIXER_HANDLE_INVALID;
 
-    return of_mixer_alloc_for_group(OF_MIXER_GROUP_SFX, pcm,
-                                    sample_count, rate,
-                                    priority, volume);
+    return of_mixer_alloc_for_group_h(OF_MIXER_GROUP_SFX, pcm,
+                                      sample_count, rate,
+                                      priority, volume);
 }
 
 /* ================================================================
@@ -804,17 +819,18 @@ int d3d_sound_play_pitch(int num, int priority, int volume, int pitch)
     int vol = d3d_clamp_u8(volume);
 
     uint32_t rate = pitched_rate(decoded[num].sample_rate, pitch);
-    int voice = d3d_alloc_sfx_voice(decoded[num].pcm,
-                                    decoded[num].sample_count,
-                                    rate, priority, vol);
+    of_mixer_handle_t mixer_handle = d3d_alloc_sfx_voice(decoded[num].pcm,
+                                                         decoded[num].sample_count,
+                                                         rate, priority, vol);
+    int voice = of_mixer_handle_voice(mixer_handle);
 
-    if (voice < 0)
+    if (mixer_handle == OF_MIXER_HANDLE_INVALID || voice < 0)
         return -1;
 
-    d3d_prepare_sfx_voice(voice);
+    d3d_prepare_sfx_voice(mixer_handle);
     uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
                  / rate + 50;
-    return track_voice_timed(voice, num, 0, priority, dur);
+    return track_voice_timed(voice, mixer_handle, num, 0, priority, dur);
 }
 
 /*
@@ -840,21 +856,22 @@ int d3d_sound_play_3d_pitch(int num, int priority, int angle, int distance, int 
     angle_dist_to_vol_lr(angle, distance, &vol_l, &vol_r);
 
     uint32_t rate = pitched_rate(decoded[num].sample_rate, pitch);
-    int voice = d3d_alloc_sfx_voice(decoded[num].pcm,
-                                    decoded[num].sample_count,
-                                    rate, priority,
-                                    d3d_max2(vol_l, vol_r));
+    of_mixer_handle_t mixer_handle = d3d_alloc_sfx_voice(decoded[num].pcm,
+                                                         decoded[num].sample_count,
+                                                         rate, priority,
+                                                         d3d_max2(vol_l, vol_r));
+    int voice = of_mixer_handle_voice(mixer_handle);
 
-    if (voice < 0)
+    if (mixer_handle == OF_MIXER_HANDLE_INVALID || voice < 0)
         return -1;
 
-    d3d_prepare_sfx_voice(voice);
+    d3d_prepare_sfx_voice(mixer_handle);
     uint32_t dur = (uint32_t)decoded[num].sample_count * 1000
                  / rate + 50;
-    int handle = track_voice_timed(voice, num, 0, priority, dur);
+    int handle = track_voice_timed(voice, mixer_handle, num, 0, priority, dur);
     if (handle < 0)
         return -1;
-    of_mixer_set_vol_lr(voice, vol_l, vol_r);
+    of_mixer_set_vol_lr_h(mixer_handle, vol_l, vol_r);
     last_vol_l[voice] = (uint8_t)vol_l;
     last_vol_r[voice] = (uint8_t)vol_r;
     last_vol_valid[voice] = 1;
@@ -879,6 +896,7 @@ void d3d_sound_set_pan(int handle, int angle, int distance)
     int voice = voice_from_handle(handle);
     if (voice < 0) return;
     if (!d3d_voice_is_sfx_or_unknown(voice)) return;
+    of_mixer_handle_t mixer_handle = active_voices[voice].mixer_handle;
 
     int vol_l, vol_r;
     angle_dist_to_vol_lr(angle, distance, &vol_l, &vol_r);
@@ -892,7 +910,7 @@ void d3d_sound_set_pan(int handle, int angle, int distance)
     last_vol_r[voice] = (uint8_t)vol_r;
     last_vol_valid[voice] = 1;
 
-    of_mixer_set_vol_lr(voice, vol_l, vol_r);
+    of_mixer_set_vol_lr_h(mixer_handle, vol_l, vol_r);
 }
 
 /*
@@ -905,7 +923,7 @@ void d3d_sound_set_loop(int handle)
     if (voice < 0) return;
     if (!d3d_voice_is_sfx_or_unknown(voice)) return;
 
-    of_mixer_set_loop(voice, 0, -1);
+    of_mixer_set_loop_h(active_voices[voice].mixer_handle, 0, -1);
     /* Cancel timer expiry — looping sounds play until explicitly stopped */
     active_voices[voice].expire_ms = 0;
 }
@@ -936,7 +954,7 @@ void d3d_sound_set_volume(int handle, int volume)
     if (voice < 0) return;
     if (!d3d_voice_is_sfx_or_unknown(voice)) return;
 
-    of_mixer_set_volume(voice, volume);
+    of_mixer_set_volume_h(active_voices[voice].mixer_handle, volume);
 }
 
 void d3d_sound_set_owned(int handle)

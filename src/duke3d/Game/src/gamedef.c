@@ -761,7 +761,13 @@ uint8_t parsecommand(int readfromGRP)
 				// fix path for unix. (doesn't really matter...)			
 				FixFilePath((char *)tempbuf);
 
-				sprintf(includedconfile, "%s", tempbuf);
+				{
+					size_t included_len = strlen((char *)tempbuf);
+					if(included_len >= sizeof(includedconfile))
+						included_len = sizeof(includedconfile) - 1;
+					memcpy(includedconfile, tempbuf, included_len);
+					includedconfile[included_len] = '\0';
+				}
 
 				fp = TCkopen4load(includedconfile,readfromGRP);
 				if(fp <= 0)
@@ -3371,4 +3377,3 @@ void execute(short i,short p,int32_t x)
 // Pen Patrol           (TD SIM)
 // 97.5 KPIG! - Wanker County
 // "Fauna" - Native Indiginouns Animal Life
-

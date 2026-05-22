@@ -24,31 +24,28 @@ extern "C" {
  * the same ELF runs on GPU-less targets without divergence. */
 extern int d3d_gpu_present;
 
-/* When 1, converted BUILD draw functions submit spans to the GPU instead
- * of running their original scalar software loops. */
+/* The single runtime hardware-renderer switch.  When 1, converted BUILD
+ * draw functions submit spans to the GPU; when 0 they use the original
+ * software loops.  All sub-path choices below are fixed to the current
+ * fastest stable command mix. */
 extern int d3d_gpu_use_spans;
 
 /* Scoped CPU fallback gate for BUILD paths that must preserve exact
- * software framebuffer semantics, such as dorotatesprite menus/HUD. */
+ * software framebuffer semantics.  This is internal flow control, not a
+ * user-facing renderer setting. */
 extern int d3d_gpu_force_cpu_spans;
-/* 1 keeps byte-sensitive HUD/menu sprites on Ken's original CPU loops;
- * 0 lets the existing GPU span hooks run. */
-extern int d3d_gpu_force_rotatesprite_cpu;
-/* Compact hardware span-group command enable. */
-extern int d3d_gpu_use_span_group;
-/* Mixed command-stream DMA enable.  When 0, scalar spans use the SDK helper. */
-extern int d3d_gpu_use_command_stream_batch;
-/* Hardware translucency unit enable.  The app uploads the LUT transposed
- * for Duke TRANS_NORMAL; TRANS_REVERSE falls back to CPU. */
-extern int d3d_gpu_use_translucent_spans;
 
-/* Runtime perf capture.  Samples are kept in RAM; UART dump is explicit or
- * exit-only so active gameplay timing is not distorted by serial writes. */
-extern int d3d_gpu_perf_enable;
-extern int d3d_gpu_perf_deep_enable;
-/* Opt-in only: per-path timings call the timer syscall in the inner render
- * wrappers. Path call/span/pixel counters still work when this is 0. */
-extern int d3d_gpu_perf_time_paths;
+/* Fixed command policy for the current openfpgaOS GPU:
+ * BUILD computes spans on the CPU and Duke submits only native grouped
+ * affine/perspective span commands with explicit colormap ids.  Rotatesprite
+ * stays on CPU for byte-sensitive 2D/menu/save paths. */
+#define D3D_GPU_FORCE_ROTATESPRITE_CPU      1
+#define D3D_GPU_USE_CACHED_FRAMEPLACE       0
+
+/* Perf tracing is compiled cold for release builds. */
+#define d3d_gpu_perf_enable      0
+#define d3d_gpu_perf_deep_enable 0
+#define d3d_gpu_perf_time_paths  0
 
 enum {
     D3D_GPU_PERF_PHASE_DISPLAYROOMS = 0,
@@ -143,10 +140,10 @@ typedef struct d3d_gpu_perf_capture_s {
 
 extern volatile d3d_gpu_perf_capture_t d3d_gpu_perf_latest;
 extern volatile d3d_gpu_perf_capture_t d3d_gpu_perf_worst;
-extern int d3d_gpu_perf_dump_on_exit;
 
 void d3d_gpu_init(void);
 void d3d_gpu_set_fb(uint8_t *fb_pixels, int stride_pixels);
+void d3d_gpu_prepare_framebuffer_for_present(void);
 void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades);
 void d3d_gpu_flush(void);
 void d3d_gpu_perf_capture_pending(void);
@@ -191,9 +188,8 @@ uint32_t d3d_gpu_flip_to(int idx);
  * earlier rendering drains to SDRAM before the tex_cache reads
  * back.  Per-row affine spans with sstep=-0x10000 do the reverse
  * sample.  Replaces the old CPU memcpy + reverse loop, which was
- * the last documented CPU FB read+write path; eliminating it lets
- * us run with frameplace set to the uncached alias (no cache_clean
- * before flip needed). */
+ * the last documented CPU FB read+write path; cached frameplace mode
+ * now cleans CPU fallback writes before later GPU work/present. */
 void d3d_gpu_blit_mirror(uint8_t *dst, const uint8_t *src,
                          int count, int rows, int row_stride);
 
@@ -212,6 +208,7 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
  * SDK helper so callers don't need to drag of_gpu.h's static state into
  * a second TU. */
 void d3d_gpu_upload_transluc(const uint8_t *table, uint32_t size);
+int d3d_gpu_translucent_spans_ready(void);
 
 /* Invalidate the GPU texture cache immediately.  Call only when the GPU is
  * already idle; hot tile-loading paths drain before using this. */
@@ -337,9 +334,10 @@ void d3d_gpu_tvline(uint8_t *dest, int num_pixels, int shade,
 /* Translucent paired columns — replaces draw.c::tvlineasm2.  Issues two
  * column spans at dest_a and dest_a+1 (BUILD's tran2edi / tran2edi+1).
  * The two columns share v_shift but otherwise have independent vplce /
- * vince / texture / shade. */
+ * vince / texture / shade / colormap slot. */
 void d3d_gpu_tvline2(uint8_t *dest_a, int num_pixels,
                      int shade_a, int shade_b,
+                     int slot_a, int slot_b,
                      uint32_t vplce_a, uint32_t vince_a,
                      uint32_t vplce_b, uint32_t vince_b,
                      uint8_t v_shift,

@@ -28,6 +28,21 @@ extern "C" {
 /* Forward declare input state struct */
 struct of_input_state;
 
+/* Display timing snapshot shared by the SDK API and OS services table.
+ * Times are sampled from the CPU cycle counter and converted to
+ * microseconds by the OS when the snapshot is copied. */
+#ifndef OF_VIDEO_TIMING_T_DEFINED
+#define OF_VIDEO_TIMING_T_DEFINED
+typedef struct of_video_timing {
+    uint32_t vblank_count;
+    uint32_t present_count;
+    uint32_t last_presented_idx;
+    uint32_t reserved;
+    uint64_t last_vblank_us;
+    uint64_t last_flip_presented_us;
+} of_video_timing_t;
+#endif
+
 /* Forward declare AWE per-voice config -- full definition in of_awe.h.
  * Kept opaque here so this header doesn't pull the AWE-specific types
  * into every TU that just wants the services table. */
@@ -140,7 +155,7 @@ struct of_services_table {
      *    The openFPGA manifest identifies data slots by numeric id;
      *    this service lets apps tell the kernel which id holds which
      *    filename so fopen() by name resolves correctly. Overwrites
-     *    any prior mapping for the same filename. Max 16 entries. */
+     *    any prior mapping for the same filename. Max 32 entries. */
     void      (*file_slot_register)(uint32_t slot_id, const char *filename);
 
     /* -- SoundFont preload (append-only, ABI-stable) --
@@ -227,6 +242,72 @@ struct of_services_table {
      * reports, exposed separately from the two gamepad player snapshots. */
     void      (*input_get_keyboard_state)(void *out);
     void      (*input_read_mouse_state)(void *out);
+
+    /* -- Mixer stable handles (append-only) --
+     * These entries name logical sounds instead of physical mixer slots.
+     * A stale handle must never be able to mutate a slot after reuse. */
+    uint64_t  (*mixer_play_h)(const uint8_t *pcm_s16,
+                              uint32_t sample_count,
+                              uint32_t sample_rate,
+                              int priority,
+                              int volume);
+    uint64_t  (*mixer_play_8bit_h)(const uint8_t *pcm_s8,
+                                   uint32_t sample_count,
+                                   uint32_t sample_rate,
+                                   int priority,
+                                   int volume);
+    uint64_t  (*mixer_alloc_for_group_h)(int group,
+                                         const uint8_t *pcm_s16,
+                                         uint32_t sample_count,
+                                         uint32_t sample_rate,
+                                         int priority,
+                                         int volume);
+    uint64_t  (*mixer_retrigger_h)(uint64_t handle,
+                                   const uint8_t *pcm_s16,
+                                   uint32_t sample_count,
+                                   uint32_t sample_rate,
+                                   int volume);
+    void      (*mixer_stop_h)(uint64_t handle);
+    int       (*mixer_handle_active)(uint64_t handle);
+    int       (*mixer_handle_group)(uint64_t handle);
+    int       (*mixer_handle_voice)(uint64_t handle);
+    void      (*mixer_set_volume_h)(uint64_t handle, int volume);
+    void      (*mixer_set_pan_h)(uint64_t handle, int pan);
+    void      (*mixer_set_loop_h)(uint64_t handle, int loop_start, int loop_end);
+    void      (*mixer_set_rate_h)(uint64_t handle, int sample_rate_hz);
+    void      (*mixer_set_rate_raw_h)(uint64_t handle, uint32_t rate_fp16);
+    void      (*mixer_set_vol_lr_h)(uint64_t handle, int vol_l, int vol_r);
+    void      (*mixer_set_bidi_h)(uint64_t handle, int enable);
+    int       (*mixer_get_position_h)(uint64_t handle);
+    void      (*mixer_set_position_h)(uint64_t handle, int sample_offset);
+    void      (*mixer_set_voice_h)(uint64_t handle,
+                                   int sample_rate_hz,
+                                   int vol_l,
+                                   int vol_r);
+    void      (*mixer_set_voice_raw_h)(uint64_t handle,
+                                       uint32_t rate_fp16,
+                                       int vol_l,
+                                       int vol_r);
+    void      (*mixer_set_vol_rate_h)(uint64_t handle, int rate);
+    void      (*mixer_set_filter_h)(uint64_t handle,
+                                    int cutoff_q016,
+                                    int q,
+                                    int enable);
+    uint32_t  (*mixer_poll_ended_h)(uint64_t *out_handles,
+                                    uint32_t max_handles);
+
+    /* -- Video timing (append-only) --
+     * Snapshot of the most recent vblank and presented flip.  This is
+     * intentionally additive so existing flip APIs keep their behavior
+     * while apps that need smooth interpolation can pace against the
+     * actual scanout clock. */
+    void      (*video_get_timing)(of_video_timing_t *out);
+
+    /* -- Video refresh policy (append-only) --
+     * v_total=0 restores the OS automatic render-period policy.
+     * Nonzero values request a fixed scanout line count; hardware clamps
+     * again and fixed Analogizer/SNAC modes override this request. */
+    void      (*video_set_refresh_vtotal)(uint32_t v_total);
 };
 
 #ifndef OF_PC

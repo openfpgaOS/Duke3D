@@ -15,6 +15,7 @@
 #include "filesystem.h"
 #ifdef OPENFPGA
 #include "of_cache.h"
+#include "of_file.h"
 #include "of_timer.h"
 #include "../../d3d_audio.h"
 #include "../../d3d_gpu.h"
@@ -53,20 +54,14 @@ static void tile_sync_for_gpu(uint8_t *ptr, uint32_t size)
     if (!ptr || size == 0)
         return;
 
-    /* Hot loads may be rendered in the same frame.  Mirror through the
-     * uncached alias so DRAM is current, then invalidate the GPU texture
-     * cache before the next textured span can sample stale lines. */
-    volatile uint8_t *dst = (volatile uint8_t *)of_uncached(ptr);
-    for (uint32_t i = 0; i < size; i++) {
-        dst[i] = ptr[i];
-        if ((i & 4095u) == 4095u)
-            d3d_audio_pump_loading();
-    }
-    __asm__ volatile("fence" ::: "memory");
-
+    /* Hot loads may be rendered in the same frame.  Publish the changed
+     * tile bytes with the range writeback+invalidate service, then flush
+     * the GPU texture cache before the next textured span can sample stale
+     * lines. */
     d3d_audio_pump_loading();
     of_cache_flush_range(ptr, size);
     d3d_audio_pump_loading();
+    __asm__ volatile("fence" ::: "memory");
     d3d_gpu_tex_invalidate();
 }
 
@@ -154,10 +149,12 @@ void setviewtotile(short tilenume, int32_t tileWidth, int32_t tileHeight)
         uint32_t tileBytes = (uint32_t)tileWidth * (uint32_t)tileHeight;
         of_cache_inval_range(bakviewtiledata[setviewcnt], tileBytes);
         frameplace = (uint8_t *)of_uncached(bakviewtiledata[setviewcnt]);
+        d3d_gpu_set_fb(bakviewtiledata[setviewcnt], tileHeight);
     }
     else
     {
         frameplace = NULL;
+        d3d_gpu_set_fb(NULL, tileHeight);
     }
 #else
     frameplace = tiles[tilenume].data;
@@ -313,6 +310,270 @@ void loadtile(short tilenume)
 
 #ifdef OPENFPGA
 #define TILE_BULK_READ_CHUNK (64 * 1024)
+#define TILE_ASYNC_READ_ALIGN 64u
+#define TILE_ASYNC_WAIT_TIMEOUT_MS 5000u
+
+/* Experimental openfpgaOS async data-slot path for level ART preload.
+ * Keep it opt-in for now: current firmware can expose a small async read
+ * window and any missed completion leaves level loading waiting in this
+ * blocking preload path. */
+int d3d_tile_async_preload = 0;
+static uint8_t *tile_async_stage[2];
+static uint32_t tile_async_chunk_size;
+static int tile_async_disabled;
+static volatile int tile_async_done;
+static volatile int tile_async_result;
+
+typedef struct tile_async_reader_s {
+    int slot_id;
+    int ready_buf;
+    int pending_buf;
+    uint32_t file_base;
+    uint32_t file_size;
+    uint32_t chunk_size;
+    uint32_t start[2];
+    uint32_t len[2];
+    uint8_t *buf[2];
+} tile_async_reader_t;
+
+static void tile_async_callback(int token, int result)
+{
+    (void)token;
+    tile_async_result = result;
+    tile_async_done = 1;
+}
+
+static void tile_async_pump_wait(void)
+{
+    of_file_async_poll();
+    d3d_audio_pump_loading();
+    faketimerhandler();
+}
+
+static int tile_async_wait_idle(void)
+{
+    uint32_t start_ms = of_time_ms();
+
+    while (of_file_async_busy()) {
+        tile_async_pump_wait();
+        if ((uint32_t)(of_time_ms() - start_ms) >
+            TILE_ASYNC_WAIT_TIMEOUT_MS) {
+            tile_async_disabled = 1;
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int tile_async_stage_init(void)
+{
+    uint32_t max_read;
+    uint32_t stage_size;
+    uint32_t size;
+
+    if (!d3d_tile_async_preload || tile_async_disabled)
+        return 0;
+
+    if (tile_async_stage[0] && tile_async_stage[1])
+        return tile_async_chunk_size > 0;
+
+    max_read = of_file_async_max_read();
+    stage_size = of_file_dma_stage_size();
+    if (max_read == 0 || stage_size < 8192u)
+        return 0;
+
+    size = TILE_BULK_READ_CHUNK;
+    if (size > max_read)
+        size = max_read;
+    if (size > stage_size / 2u)
+        size = stage_size / 2u;
+    size &= ~(TILE_ASYNC_READ_ALIGN - 1u);
+    if (size < 4096u)
+        return 0;
+
+    tile_async_stage[0] = of_file_dma_stage_alloc(size, TILE_ASYNC_READ_ALIGN);
+    tile_async_stage[1] = of_file_dma_stage_alloc(size, TILE_ASYNC_READ_ALIGN);
+    if (!tile_async_stage[0] || !tile_async_stage[1]) {
+        tile_async_stage[0] = NULL;
+        tile_async_stage[1] = NULL;
+        tile_async_chunk_size = 0;
+        return 0;
+    }
+
+    tile_async_chunk_size = size;
+    return 1;
+}
+
+static int tile_async_contains(const tile_async_reader_t *reader,
+                               int buf, uint32_t off)
+{
+    if (buf < 0)
+        return 0;
+    return off >= reader->start[buf] &&
+           off < reader->start[buf] + reader->len[buf];
+}
+
+static int tile_async_wait_pending(tile_async_reader_t *reader)
+{
+    uint32_t start_ms;
+
+    if (reader->pending_buf < 0)
+        return 1;
+
+    start_ms = of_time_ms();
+    while (!tile_async_done) {
+        if (of_file_async_poll() > 0 && !tile_async_done) {
+            tile_async_result = 0;
+            tile_async_done = 1;
+            break;
+        }
+        if (tile_async_done)
+            break;
+
+        /* Some firmware paths complete through poll/busy without invoking
+         * the optional callback.  Treat idle as successful completion so
+         * level loading cannot spin forever waiting for an IRQ callback. */
+        if (!of_file_async_busy()) {
+            tile_async_result = 0;
+            tile_async_done = 1;
+            break;
+        }
+
+        d3d_audio_pump_loading();
+        faketimerhandler();
+        if ((uint32_t)(of_time_ms() - start_ms) >
+            TILE_ASYNC_WAIT_TIMEOUT_MS) {
+            tile_async_disabled = 1;
+            reader->pending_buf = -1;
+            return 0;
+        }
+    }
+
+    if (tile_async_result != 0) {
+        tile_async_disabled = 1;
+        reader->pending_buf = -1;
+        return 0;
+    }
+
+    /* The async staging buffers are allocated from CRAM0, which is uncached
+     * on Pocket.  async_complete() has already returned the CRAM0 mux to the
+     * CPU side, so a CPU fence is enough before copying from the stage buffer.
+     */
+    __asm__ volatile("fence" ::: "memory");
+
+    reader->ready_buf = reader->pending_buf;
+    reader->pending_buf = -1;
+    return 1;
+}
+
+static int tile_async_start_read(tile_async_reader_t *reader,
+                                 int buf, uint32_t start)
+{
+    uint32_t len;
+    int token;
+
+    if (start >= reader->file_size)
+        return 0;
+
+    if (!tile_async_wait_idle())
+        return 0;
+
+    len = reader->file_size - start;
+    if (len > reader->chunk_size)
+        len = reader->chunk_size;
+
+    tile_async_done = 0;
+    tile_async_result = -1;
+    token = of_file_read_async(reader->slot_id,
+                               reader->file_base + start,
+                               reader->buf[buf], len,
+                               tile_async_callback);
+    if (token < 0) {
+        tile_async_done = 1;
+        return 0;
+    }
+
+    reader->start[buf] = start;
+    reader->len[buf] = len;
+    reader->pending_buf = buf;
+    return 1;
+}
+
+static void tile_async_prefetch_next(tile_async_reader_t *reader)
+{
+    uint32_t next;
+    int buf;
+
+    if (reader->ready_buf < 0 || reader->pending_buf >= 0)
+        return;
+
+    next = reader->start[reader->ready_buf] + reader->len[reader->ready_buf];
+    if (next >= reader->file_size)
+        return;
+
+    buf = reader->ready_buf ^ 1;
+    (void)tile_async_start_read(reader, buf, next);
+}
+
+static int tile_async_ensure(tile_async_reader_t *reader, uint32_t off)
+{
+    uint32_t start;
+    int buf;
+
+    if (tile_async_contains(reader, reader->ready_buf, off))
+        return 1;
+
+    if (tile_async_contains(reader, reader->pending_buf, off)) {
+        if (!tile_async_wait_pending(reader))
+            return 0;
+        tile_async_prefetch_next(reader);
+        return tile_async_contains(reader, reader->ready_buf, off);
+    }
+
+    if (reader->pending_buf >= 0 && !tile_async_wait_pending(reader))
+        return 0;
+
+    if (tile_async_contains(reader, reader->ready_buf, off))
+        return 1;
+
+    start = (off / reader->chunk_size) * reader->chunk_size;
+    buf = (reader->ready_buf >= 0) ? (reader->ready_buf ^ 1) : 0;
+    if (!tile_async_start_read(reader, buf, start))
+        return 0;
+    if (!tile_async_wait_pending(reader))
+        return 0;
+
+    tile_async_prefetch_next(reader);
+    return tile_async_contains(reader, reader->ready_buf, off);
+}
+
+static void tile_async_reader_end(tile_async_reader_t *reader)
+{
+    (void)tile_async_wait_pending(reader);
+}
+
+static int tile_async_reader_begin(tile_async_reader_t *reader,
+                                   int slot_id,
+                                   uint32_t file_base,
+                                   uint32_t file_size)
+{
+    if (slot_id < 0 || file_size == 0)
+        return 0;
+    if (!tile_async_stage_init())
+        return 0;
+
+    memset(reader, 0, sizeof(*reader));
+    reader->slot_id = slot_id;
+    reader->ready_buf = -1;
+    reader->pending_buf = -1;
+    reader->file_base = file_base;
+    reader->file_size = file_size;
+    reader->chunk_size = tile_async_chunk_size;
+    reader->buf[0] = tile_async_stage[0];
+    reader->buf[1] = tile_async_stage[1];
+    return 1;
+}
 
 static int TILE_PreloadMarkedSlow(void)
 {
@@ -359,6 +620,8 @@ int TILE_PreloadMarked(void)
         char filename[20];
         int32_t chunk_start = -1;
         int32_t chunk_len = 0;
+        int use_async = 0;
+        tile_async_reader_t async_reader;
 
         d3d_audio_pump_loading();
 
@@ -373,11 +636,30 @@ int TILE_PreloadMarked(void)
             continue;
 
         tile_art_filename(filename, filenum);
-        fil = TCkopen4load(filename, 0);
-        if (fil == -1) {
-            printf("Error, unable to load artfile:'%s'.\n", filename);
-            getchar();
-            exit(0);
+        memset(&async_reader, 0, sizeof(async_reader));
+        async_reader.ready_buf = -1;
+        async_reader.pending_buf = -1;
+        {
+            int32_t grpID, fileIndex, grpOffset, grpSize;
+            if (kgrp_find_file(filename, &grpID, &fileIndex,
+                               &grpOffset, &grpSize) == 0) {
+                (void)fileIndex;
+                use_async = tile_async_reader_begin(
+                    &async_reader,
+                    kgrp_slot_id(grpID),
+                    (uint32_t)grpOffset,
+                    (uint32_t)grpSize);
+            }
+        }
+
+        fil = -1;
+        if (!use_async) {
+            fil = TCkopen4load(filename, 0);
+            if (fil == -1) {
+                printf("Error, unable to load artfile:'%s'.\n", filename);
+                getchar();
+                exit(0);
+            }
         }
 
         for (i = 0; i < MAXTILES; i++) {
@@ -398,28 +680,54 @@ int TILE_PreloadMarked(void)
             remaining = tileFilesize;
 
             while (remaining > 0) {
+                const uint8_t *read_chunk = chunk;
                 int32_t chunk_end = chunk_start + chunk_len;
                 int32_t avail, copy_len;
 
                 if (chunk_len <= 0 || tile_off < chunk_start ||
                     tile_off >= chunk_end) {
-                    klseek(fil, tile_off, SEEK_SET);
-                    chunk_start = tile_off;
-                    d3d_audio_pump_loading();
-                    chunk_len = kread(fil, chunk, TILE_BULK_READ_CHUNK);
-                    d3d_audio_pump_loading();
-                    faketimerhandler();
-                    if (chunk_len <= 0) {
-                        printf("Error reading artfile:'%s'.\n", filename);
-                        getchar();
-                        exit(0);
+                    if (use_async) {
+                        if (!tile_async_ensure(&async_reader,
+                                               (uint32_t)tile_off)) {
+                            use_async = 0;
+                            tile_async_reader_end(&async_reader);
+                            fil = TCkopen4load(filename, 0);
+                            if (fil == -1) {
+                                printf("Error, unable to load artfile:'%s'.\n",
+                                       filename);
+                                getchar();
+                                exit(0);
+                            }
+                            chunk_start = -1;
+                            chunk_len = 0;
+                            continue;
+                        }
+                        chunk_start =
+                            (int32_t)async_reader.start[async_reader.ready_buf];
+                        chunk_len =
+                            (int32_t)async_reader.len[async_reader.ready_buf];
+                        read_chunk = async_reader.buf[async_reader.ready_buf];
+                    } else {
+                        klseek(fil, tile_off, SEEK_SET);
+                        chunk_start = tile_off;
+                        d3d_audio_pump_loading();
+                        chunk_len = kread(fil, chunk, TILE_BULK_READ_CHUNK);
+                        d3d_audio_pump_loading();
+                        faketimerhandler();
+                        if (chunk_len <= 0) {
+                            printf("Error reading artfile:'%s'.\n", filename);
+                            getchar();
+                            exit(0);
+                        }
                     }
                     chunk_end = chunk_start + chunk_len;
                 }
+                if (use_async)
+                    read_chunk = async_reader.buf[async_reader.ready_buf];
 
                 avail = chunk_end - tile_off;
                 copy_len = (remaining < avail) ? remaining : avail;
-                memcpy(dst, chunk + (tile_off - chunk_start), copy_len);
+                memcpy(dst, read_chunk + (tile_off - chunk_start), copy_len);
                 dst += copy_len;
                 tile_off += copy_len;
                 remaining -= copy_len;
@@ -433,7 +741,10 @@ int TILE_PreloadMarked(void)
                 faketimerhandler();
         }
 
-        kclose(fil);
+        if (use_async)
+            tile_async_reader_end(&async_reader);
+        else
+            kclose(fil);
     }
 
     tile_end_bulk_preload();

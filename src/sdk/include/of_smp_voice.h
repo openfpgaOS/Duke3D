@@ -48,10 +48,10 @@ typedef struct {
     uint8_t midi_ch;
     uint8_t note;
     uint8_t velocity;
-    uint8_t voice_base_vol;  /* Pre-baked at note-on: (vel_scale × initial_attn_scale) >> 8.
+    uint8_t voice_base_vol;  /* Pre-baked at note-on: (velocity_gain × initial_attn_scale) >> 8.
                                 Collapses two multiplies into one slot, drops one mul/tick. */
     uint8_t sustain_held; /* CC64 holding this note in sustain */
-    int mixer_voice;      /* hardware mixer voice index */
+    uint64_t mixer_voice; /* stable hardware mixer handle */
     env_state_t vol_env;
     env_state_t mod_env;
     lfo_state_t mod_lfo;
@@ -84,7 +84,7 @@ void smp_voice_tick(void);  /* 1 kHz ISR */
 /* Diagnostic stats for smp_voice_tick cost.  Task #10 probe: detect
  * whether a 1 kHz voice tick exceeds the 2 ms pump cap.
  * Fields are named cycles_* but actually hold microseconds — the
- * VexRiscv here does not expose rdcycle to user mode, so of_time_us()
+ * VexiiRiscv here does not expose rdcycle to user mode, so of_time_us()
  * (kernel ecall) is used instead. */
 typedef struct {
     uint32_t cycles_max;     /* worst-case microseconds for a single tick */
@@ -106,7 +106,7 @@ typedef struct {
     /* MMIO-write counters — incremented on every actual HW write since
      * last reset (after the cache-skip guards, so these are the writes
      * that genuinely hit the mixer bus). */
-    uint32_t filter_writes;  /* of_mixer_set_filter calls */
+    uint32_t filter_writes;  /* retired filter path; currently always 0 */
     uint32_t rate_writes;    /* pitch / voice rate register writes */
     uint32_t vol_writes;     /* volume register writes */
 
@@ -118,10 +118,8 @@ typedef struct {
     uint32_t pump_burst_count;       /* pumps where >1 ticks fired */
     uint32_t pump_budget_exceeded;   /* pumps where tick_budget==0 at end */
 
-    /* Biggest single-tick jump in HW cutoff (Q0.16 units, 0..65535) across
-     * all voices since reset.  Large jumps → larger SVF state-variable
-     * transients.  Useful for judging whether filter LFOs / env sweeps
-     * are producing audibly steppy cutoff trajectories. */
+    /* Retired SVF diagnostic; kept in the stats struct for source
+     * compatibility and currently remains 0. */
     uint16_t cutoff_delta_max;
 } smp_tick_stats_t;
 

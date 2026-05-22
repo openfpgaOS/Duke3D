@@ -13,6 +13,21 @@ extern "C" {
 
 #include <stdint.h>
 
+/* Snapshot returned by of_video_get_timing().  The OS samples these
+ * from the vblank IRQ and presented-swap state so apps can pace
+ * interpolation against scanout instead of render-loop timing. */
+#ifndef OF_VIDEO_TIMING_T_DEFINED
+#define OF_VIDEO_TIMING_T_DEFINED
+typedef struct of_video_timing {
+    uint32_t vblank_count;
+    uint32_t present_count;
+    uint32_t last_presented_idx;
+    uint32_t reserved;
+    uint64_t last_vblank_us;
+    uint64_t last_flip_presented_us;
+} of_video_timing_t;
+#endif
+
 /* Screen constants */
 #define OF_SCREEN_W     320
 #define OF_SCREEN_H     240
@@ -22,9 +37,35 @@ extern "C" {
 #define OF_DISPLAY_FRAMEBUFFER 1  /* Framebuffer only */
 #define OF_DISPLAY_OVERLAY     2  /* White terminal text over framebuffer */
 
+#define OF_VIDEO_VTOTAL_AUTO 0u
+#define OF_VIDEO_VTOTAL_60HZ 262u
+#define OF_VIDEO_VTOTAL_55HZ 285u
+#define OF_VIDEO_VTOTAL_50HZ 310u
+#define OF_VIDEO_VTOTAL_45HZ 340u
+#define OF_VIDEO_VTOTAL_42HZ 375u
+
+/* Color mode + framebuffer-size constants — referenced by both branches
+ * (the PC SDL2 stub uses them too), so define here above the OF_PC fence. */
+#define OF_VIDEO_MODE_8BIT     0  /* 8-bit indexed: 256 colors, 1 byte/pixel */
+#define OF_VIDEO_MODE_4BIT     1  /* 4-bit indexed: 16 colors, 0.5 byte/pixel */
+#define OF_VIDEO_MODE_2BIT     2  /* 2-bit indexed: 4 colors, 0.25 byte/pixel */
+#define OF_VIDEO_MODE_RGB565   3  /* 16-bit direct: R5G6B5, 2 bytes/pixel */
+#define OF_VIDEO_MODE_RGB555   4  /* 15-bit direct: X1R5G5B5, 2 bytes/pixel */
+#define OF_VIDEO_MODE_RGBA5551 5  /* 15+1 bit: R5G5B5A1, 2 bytes/pixel */
+
+/* Framebuffer size per mode (320x240) */
+#define OF_FB_SIZE_8BIT     (320 * 240)         /* 76,800 bytes */
+#define OF_FB_SIZE_4BIT     (320 * 240 / 2)     /* 38,400 bytes */
+#define OF_FB_SIZE_2BIT     (320 * 240 / 4)     /* 19,200 bytes */
+#define OF_FB_SIZE_16BPP    (320 * 240 * 2)     /* 153,600 bytes */
+
 #ifndef OF_PC
 
 #include "of_services.h"
+
+#define OF_VIDEO_SVC_INDEX(field) \
+    ((uint32_t)((offsetof(struct of_services_table, field) - \
+                 offsetof(struct of_services_table, video_init)) / sizeof(void *)))
 
 static inline void of_video_init(void) {
     OF_SVC->video_init();
@@ -128,19 +169,7 @@ static inline void of_video_set_display_mode(int mode) {
     OF_SVC->video_set_display_mode(mode);
 }
 
-/* Color mode constants */
-#define OF_VIDEO_MODE_8BIT     0  /* 8-bit indexed: 256 colors, 1 byte/pixel */
-#define OF_VIDEO_MODE_4BIT     1  /* 4-bit indexed: 16 colors, 0.5 byte/pixel */
-#define OF_VIDEO_MODE_2BIT     2  /* 2-bit indexed: 4 colors, 0.25 byte/pixel */
-#define OF_VIDEO_MODE_RGB565   3  /* 16-bit direct: R5G6B5, 2 bytes/pixel */
-#define OF_VIDEO_MODE_RGB555   4  /* 15-bit direct: X1R5G5B5, 2 bytes/pixel */
-#define OF_VIDEO_MODE_RGBA5551 5  /* 15+1 bit: R5G5B5A1, 2 bytes/pixel */
-
-/* Framebuffer size per mode (320x240) */
-#define OF_FB_SIZE_8BIT     (320 * 240)         /* 76,800 bytes */
-#define OF_FB_SIZE_4BIT     (320 * 240 / 2)     /* 38,400 bytes */
-#define OF_FB_SIZE_2BIT     (320 * 240 / 4)     /* 19,200 bytes */
-#define OF_FB_SIZE_16BPP    (320 * 240 * 2)     /* 153,600 bytes */
+/* Color mode + FB size constants are defined above the OF_PC fence. */
 
 static inline void of_video_set_color_mode(int mode) {
     OF_SVC->video_set_color_mode(mode);
@@ -150,6 +179,51 @@ static inline void of_video_set_color_mode(int mode) {
  * Pass NULL to disable. Callback runs in kernel context — keep it short. */
 static inline void of_video_set_vsync_callback(void (*cb)(void)) {
     OF_SVC->video_set_vsync_callback(cb);
+}
+
+static inline void of_video_get_timing(of_video_timing_t *out) {
+    if (!out)
+        return;
+    if (OF_SVC->count > OF_VIDEO_SVC_INDEX(video_get_timing) &&
+        OF_SVC->video_get_timing) {
+        OF_SVC->video_get_timing(out);
+    } else {
+        out->vblank_count = 0;
+        out->present_count = 0;
+        out->last_presented_idx = 0;
+        out->reserved = 0;
+        out->last_vblank_us = 0;
+        out->last_flip_presented_us = 0;
+    }
+}
+
+static inline uint64_t of_video_last_vblank_us(void) {
+    of_video_timing_t timing;
+    of_video_get_timing(&timing);
+    return timing.last_vblank_us;
+}
+
+static inline uint64_t of_video_last_flip_presented_us(void) {
+    of_video_timing_t timing;
+    of_video_get_timing(&timing);
+    return timing.last_flip_presented_us;
+}
+
+static inline uint32_t of_video_vblank_count(void) {
+    of_video_timing_t timing;
+    of_video_get_timing(&timing);
+    return timing.vblank_count;
+}
+
+/* Request a fixed scanout V_TOTAL, or pass OF_VIDEO_VTOTAL_AUTO to restore
+ * the OS automatic render-period policy. Hardware clamps again at the
+ * frame-boundary latch, and Analogizer/SNAC fixed-rate output overrides this
+ * request. */
+static inline void of_video_set_refresh_vtotal(uint32_t v_total) {
+    if (OF_SVC->count > OF_VIDEO_SVC_INDEX(video_set_refresh_vtotal) &&
+        OF_SVC->video_set_refresh_vtotal) {
+        OF_SVC->video_set_refresh_vtotal(v_total);
+    }
 }
 
 /* Get surface as 16-bit for direct color modes */
@@ -168,6 +242,13 @@ void     of_video_palette(uint8_t index, uint32_t rgb);
 void     of_video_palette_bulk(const uint32_t *pal, int count);
 void     of_video_flush(void);
 void     of_video_set_display_mode(int mode);
+void     of_video_get_timing(of_video_timing_t *out);
+uint64_t of_video_last_vblank_us(void);
+uint64_t of_video_last_flip_presented_us(void);
+uint32_t of_video_vblank_count(void);
+static inline void of_video_set_refresh_vtotal(uint32_t v_total) {
+    (void)v_total;
+}
 
 /* Convert and set a VGA 6-bit palette (768 bytes: R,G,B triplets, 0-63 range).
  * Converts to 8-bit 0x00RRGGBB and sets all 256 entries at once. */
