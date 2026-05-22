@@ -55,6 +55,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // #define IS_QUIET( ptr )  ( ( void * )( ptr ) == ( void * )&MV_VolumeTable[ 0 ] )
 #define IS_QUIET( vol ) ( ( vol ) == 0 )
 
+static inline uint16_t MV_ReadLE16(const uint8_t *src)
+{
+   return (uint16_t)((uint16_t)src[0] | ((uint16_t)src[1] << 8));
+}
+
+static inline uint32_t MV_ReadLE32(const uint8_t *src)
+{
+   return (uint32_t)src[0] |
+          ((uint32_t)src[1] << 8) |
+          ((uint32_t)src[2] << 16) |
+          ((uint32_t)src[3] << 24);
+}
+
 static int       MV_ReverbLevel;
 int       MV_ReverbDelay;
 static int       MV_ReverbTable = -1;
@@ -1714,13 +1727,18 @@ int MV_PlayLoopedWAV
    )
 
    {
-   riff_header   *riff;
-   format_header *format;
-   data_header   *data;
+   uint8_t       *format;
+   uint8_t       *data;
    VoiceNode     *voice;
    int length;
    int absloopend;
    int absloopstart;
+   uint32_t format_size;
+   uint32_t data_size;
+   uint32_t samples_per_sec;
+   uint16_t format_tag;
+   uint16_t channels;
+   uint16_t bits_per_sample;
 
    if ( !MV_Installed )
       {
@@ -1728,40 +1746,45 @@ int MV_PlayLoopedWAV
       return( MV_Error );
       }
 
-   riff = ( riff_header * )ptr;
-
-   if ( ( strncmp( riff->RIFF, "RIFF", 4 ) != 0 ) ||
-      ( strncmp( riff->WAVE, "WAVE", 4 ) != 0 ) ||
-      ( strncmp( riff->fmt, "fmt ", 4) != 0 ) )
+   if ( ( strncmp( ( char * )ptr, "RIFF", 4 ) != 0 ) ||
+      ( strncmp( ( char * )( ptr + 8 ), "WAVE", 4 ) != 0 ) ||
+      ( strncmp( ( char * )( ptr + 12 ), "fmt ", 4) != 0 ) )
       {
       MV_SetErrorCode( MV_InvalidWAVFile );
       return( MV_Error );
       }
 
-   format = ( format_header * )( riff + 1 );
-   data   = ( data_header * )( ( ( char * )format ) + riff->format_size );
+   format_size = MV_ReadLE32( ptr + 16 );
+   format = ptr + sizeof( riff_header );
+   data   = format + format_size;
+
+   format_tag      = MV_ReadLE16( format + 0 );
+   channels        = MV_ReadLE16( format + 2 );
+   samples_per_sec = MV_ReadLE32( format + 4 );
+   bits_per_sample = MV_ReadLE16( format + 14 );
+   data_size       = MV_ReadLE32( data + 4 );
 
    // Check if it's PCM data.
-   if ( format->wFormatTag != 1 )
+   if ( format_tag != 1 )
       {
       MV_SetErrorCode( MV_InvalidWAVFile );
       return( MV_Error );
       }
 
-   if ( format->nChannels != 1 )
+   if ( channels != 1 )
       {
       MV_SetErrorCode( MV_InvalidWAVFile );
       return( MV_Error );
       }
 
-   if ( ( format->nBitsPerSample != 8 ) &&
-      ( format->nBitsPerSample != 16 ) )
+   if ( ( bits_per_sample != 8 ) &&
+      ( bits_per_sample != 16 ) )
       {
       MV_SetErrorCode( MV_InvalidWAVFile );
       return( MV_Error );
       }
 
-   if ( strncmp( data->DATA, "data", 4 ) != 0 )
+   if ( strncmp( ( char * )data, "data", 4 ) != 0 )
       {
       MV_SetErrorCode( MV_InvalidWAVFile );
       return( MV_Error );
@@ -1776,21 +1799,21 @@ int MV_PlayLoopedWAV
       }
 
    voice->wavetype    = WAV;
-   voice->bits        = format->nBitsPerSample;
+   voice->bits        = bits_per_sample;
    voice->GetSound    = MV_GetNextWAVBlock;
 
-   length = data->size;
+   length = data_size;
    absloopstart = loopstart;
    absloopend   = loopend;
    if ( voice->bits == 16 )
       {
       loopstart  *= 2;
-      data->size &= ~1;
+      data_size  &= ~1;
       loopend    *= 2;
       length     /= 2;
       }
 
-   loopend    = min( loopend, data->size );
+   loopend    = min( loopend, data_size );
    absloopend = min( absloopend, length );
 
    voice->Playing     = TRUE;
@@ -1800,7 +1823,7 @@ int MV_PlayLoopedWAV
    voice->position    = 0;
    voice->length      = 0;
    voice->BlockLength = absloopend;
-   voice->NextBlock   = ( char * )( data + 1 );
+   voice->NextBlock   = data + sizeof( data_header );
    voice->next        = NULL;
    voice->prev        = NULL;
    voice->priority    = priority;
@@ -1815,14 +1838,14 @@ int MV_PlayLoopedWAV
    voice->LoopEnd     = voice->NextBlock + loopend;
    voice->LoopSize    = absloopend - absloopstart;
 
-   if ( ( loopstart >= data->size ) || ( loopstart < 0 ) )
+   if ( ( loopstart >= data_size ) || ( loopstart < 0 ) )
       {
       voice->LoopStart = NULL;
       voice->LoopEnd   = NULL;
       voice->BlockLength = length;
       }
 
-   MV_SetVoicePitch( voice, format->nSamplesPerSec, pitchoffset );
+   MV_SetVoicePitch( voice, samples_per_sec, pitchoffset );
    MV_SetVoiceVolume( voice, vol, left, right );
    MV_PlayVoice( voice );
 

@@ -32,6 +32,12 @@ extern int g_CV_CubicInterpolation;
 #define gval0 MV_GVal[*MV_GPos&3]
 #define gval(x) MV_GVal[(*MV_GPos+x)&3]
 
+static inline int MV_ReadS16LE(const uint8_t *src)
+{
+	uint16_t v = (uint16_t)src[0] | ((uint16_t)src[1] << 8);
+	return (int16_t)v;
+}
+
 int MV_cubic(int position)
 {
 	int xd, fa;
@@ -70,7 +76,7 @@ static int MV_cubic8(const unsigned char *src, int position, int rate)
 }
 */
 
-static int MV_cubic16(const short *src, int position, int rate)
+static int MV_cubic16(const uint8_t *src, int position, int rate)
 {
 	int temp, hpos = position >> 16;
 
@@ -80,7 +86,7 @@ static int MV_cubic16(const short *src, int position, int rate)
 
 	while (hpos > *MV_GLast)
 	{
-		gval0 = src[temp++];
+		gval0 = MV_ReadS16LE(src + (temp++ << 1));
 		*MV_GPos = (*MV_GPos + 1) & 3;
 		(*MV_GLast)++;
 	}
@@ -139,13 +145,13 @@ void MV_Mix8BitMono( uint32_t position, uint32_t rate,
 	for (i = 0; i < length; i++) {
 		int s = MV_cubic8to16(src, position, rate);
 		int d = (*dest - 0x80) << 8;
-		
+
 		d += DIV63(s * MV_LeftVolume);
 
 		if (d < -32768) *dest = 0;
 		else if (d > 32767) *dest = 255;
 		else *dest = (d >> 8) + 128;
-		
+
 		position += rate;
 		dest += MV_SampleSize;
 	}
@@ -168,7 +174,7 @@ void MV_Mix8BitStereo( uint32_t position,
 		int s = MV_cubic8to16(src, position, rate);
 		int dl = (dest[0] - 0x80) << 8;
 		int dr = (dest[MV_RightChannelOffset] - 0x80) << 8;
-		
+
 		dl += DIV63(MV_LeftVolume * s);
 		dr += DIV63(MV_RightVolume * s);
 
@@ -253,11 +259,11 @@ void MV_Mix16BitStereo( uint32_t position,
 void MV_Mix8BitMono16( uint32_t position, uint32_t rate,
    const char *start, uint32_t length )
 {
-	const short *src;
+	const uint8_t *src;
 	unsigned char *dest;
 	unsigned int i;
 
-	src = (const short *)start;
+	src = (const uint8_t *)start;
 	dest = (unsigned char *)MV_MixDestination;
 
 	for (i = 0; i < length; i++) {
@@ -281,11 +287,11 @@ void MV_Mix8BitMono16( uint32_t position, uint32_t rate,
 void MV_Mix8BitStereo16( uint32_t position,
    uint32_t rate, const char *start, uint32_t length )
 {
-	const short *src;
+	const uint8_t *src;
 	unsigned char *dest;
 	unsigned int i;
-	
-	src = (const short *)start;
+
+	src = (const uint8_t *)start;
 	dest = (unsigned char *)MV_MixDestination;
 	
 	for (i = 0; i < length; i++) {
@@ -315,11 +321,11 @@ void MV_Mix8BitStereo16( uint32_t position,
 void MV_Mix16BitMono16( uint32_t position,
    uint32_t rate, const char *start, uint32_t length )
 {
-	const short *src;
+	const uint8_t *src;
 	short *dest;
 	unsigned int i;
-	
-	src = (const short *)start;
+
+	src = (const uint8_t *)start;
 	dest = (short *)MV_MixDestination;
 	
 	for (i = 0; i < length; i++) {
@@ -343,11 +349,11 @@ void MV_Mix16BitMono16( uint32_t position,
 void MV_Mix16BitStereo16( uint32_t position,
    uint32_t rate, const char *start, uint32_t length )
 {
-	const short *src;
+	const uint8_t *src;
 	short *dest;
 	unsigned int i;
 
-	src = (const short *)start;
+	src = (const uint8_t *)start;
 	dest = (short *)MV_MixDestination;
 
 	for (i = 0; i < length; i++) {
@@ -433,11 +439,11 @@ void MV_MixFPStereo8( uint32_t position,
 void MV_MixFPMono16( uint32_t position,
    uint32_t rate, const uint8_t *start, uint32_t length )
 {
-	const short *src;
+	const uint8_t *src;
 	double *dest;
 	unsigned int i;
 
-	src = (const short *)start;
+	src = (const uint8_t *)start;
 	dest = (double *)MV_MixDestination;
 
 	for (i = 0; i < length; i++) {
@@ -459,11 +465,11 @@ void MV_MixFPMono16( uint32_t position,
 void MV_MixFPStereo16( uint32_t position,
    uint32_t rate, const uint8_t *start, uint32_t length )
 {
-	const short *src;
+	const uint8_t *src;
 	double *dest;
 	unsigned int i;
-	
-	src = (const short *)start;
+
+	src = (const uint8_t *)start;
 	dest = (double *)MV_MixDestination;
 
 	for (i = 0; i < length; i++) {

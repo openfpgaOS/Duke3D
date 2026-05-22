@@ -49,6 +49,11 @@ Prepared for public release: 03/21/2003 - Charlie Wiederhold, 3D Realms
 anim_t * anim=NULL;
 static boolean Anim_Started = false;
 
+static inline uint16 anim_read_le16(const byte *p)
+   {
+   return (uint16)((uint16)p[0] | ((uint16)p[1] << 8));
+   }
+
 //****************************************************************************
 //
 //      CheckAnimStarted ()
@@ -153,7 +158,7 @@ run:
 
    goto nextOp;
 longOp:
-   wordCnt = *((uint16 *)srcP);
+   wordCnt = anim_read_le16(srcP);
    srcP += sizeof(uint16);
    if ((int16)wordCnt <= 0)
       goto notLongSkip;       /* Do SIGNED test. */
@@ -215,7 +220,10 @@ void renderframe (uint16 framenumber, uint16 *pagepointer)
 
    ppointer+=anim->curlp.nRecords*2+offset;
    if(ppointer[1])
-      ppointer += (4 + (((uint16 *)ppointer)[1] + (((uint16 *)ppointer)[1] & 1)));
+      {
+      uint16 frame_size = anim_read_le16(ppointer + 2);
+      ppointer += (4 + (frame_size + (frame_size & 1)));
+      }
    else
       ppointer+=4;
 

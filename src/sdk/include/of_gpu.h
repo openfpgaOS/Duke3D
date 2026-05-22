@@ -569,10 +569,14 @@ static inline void of_gpu_translucency_upload(const uint8_t *table, uint32_t siz
     GPU_TRANSLUC_ADDR = 0;
     for (int s7 = 0; s7 < 128; s7++) {
         const uint8_t *row = &table[(s7 << 1) << 8];
-        const uint32_t *row32 = (const uint32_t *)row;
         for (int w = 0; w < 64; w++) {
+            const uint8_t *src = row + (w << 2);
+            uint32_t word = ((uint32_t)src[0]) |
+                            ((uint32_t)src[1] << 8) |
+                            ((uint32_t)src[2] << 16) |
+                            ((uint32_t)src[3] << 24);
             _gpu_wait_transluc_idle();
-            GPU_TRANSLUC_DATA = row32[w];
+            GPU_TRANSLUC_DATA = word;
         }
     }
     _gpu_wait_transluc_idle();
