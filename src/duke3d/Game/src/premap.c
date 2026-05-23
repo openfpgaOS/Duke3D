@@ -306,22 +306,16 @@ uint8_t  getsound(uint16_t num)
     if(num >= NUM_SOUNDS || SoundToggle == 0) return 0;
     if (FXDevice == SC_Unknown) return 0;
 
+#ifdef OPENFPGA
+    return d3d_sound_precache(num) ? 1 : 0;
+#endif
+
     fp = TCkopen4load(sounds[num],0);
     if(fp == -1) return 0;
 
     l = kfilelength( fp );
     soundsiz[num] = l;
 
-#ifdef OPENFPGA
-    /* Always pre-load all sounds into malloc'd buffers on openfpgaOS */
-    {
-        Sound[num].lock = 199;
-        if (Sound[num].ptr == NULL)
-            Sound[num].ptr = (uint8_t *)malloc(l);
-        if (Sound[num].ptr != NULL)
-            kread( fp, Sound[num].ptr , l);
-    }
-#else
     if( (ud.level_number == 0 && ud.volume_number == 0 && (num == 189 || num == 232 || num == 99 || num == 233 || num == 17 ) ) ||
         ( l < 12288 ) )
     {
@@ -330,7 +324,6 @@ uint8_t  getsound(uint16_t num)
         if(Sound[num].ptr != NULL)
             kread( fp, Sound[num].ptr , l);
     }
-#endif
     kclose( fp );
     return 1;
 }

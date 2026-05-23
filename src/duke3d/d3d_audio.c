@@ -40,8 +40,9 @@ typedef struct {
 } decoded_sound_t;
 
 static decoded_sound_t decoded[NUM_SOUNDS];
+static int all_sounds_precached = 0;
 
-#define D3D_SOUND_BULK_CHUNK (64u * 1024u)
+#define D3D_SOUND_BULK_CHUNK (512u * 1024u)
 
 typedef struct {
     int     num;
@@ -51,6 +52,17 @@ typedef struct {
 } d3d_sound_preload_item_t;
 
 static d3d_sound_preload_item_t sound_preload_items[NUM_SOUNDS];
+
+static void release_raw_sound(int num)
+{
+    if (num < 0 || num >= NUM_SOUNDS)
+        return;
+    free(Sound[num].ptr);
+    Sound[num].ptr = NULL;
+    Sound[num].length = 0;
+    if (Sound[num].lock < 200)
+        Sound[num].lock = 199;
+}
 
 /* ================================================================
  * Voice tracking for completion callbacks
@@ -385,20 +397,20 @@ static int load_raw_sound_from_file(int num)
     return 1;
 }
 
-static int decode_loaded_sound(int num)
+static int decode_raw_sound(int num, const uint8_t *raw, uint32_t raw_size)
 {
     if (decoded[num].pcm != NULL)
         return 1;
-    if (Sound[num].ptr == NULL || soundsiz[num] <= 0)
+    if (raw == NULL || raw_size == 0)
         return 0;
 
     of_codec_result_t result;
-    int rc = d3d_parse_sound_local(Sound[num].ptr, (uint32_t)soundsiz[num], &result);
+    int rc = d3d_parse_sound_local(raw, raw_size, &result);
     if (rc < 0) {
-        if (*Sound[num].ptr == 'C')
-            rc = of_codec_parse_voc(Sound[num].ptr, soundsiz[num], &result);
+        if (*raw == 'C')
+            rc = of_codec_parse_voc(raw, raw_size, &result);
         else
-            rc = of_codec_parse_wav(Sound[num].ptr, soundsiz[num], &result);
+            rc = of_codec_parse_wav(raw, raw_size, &result);
     }
 
     if (rc < 0 || result.pcm == NULL || result.pcm_len == 0)
@@ -435,11 +447,23 @@ static int decode_loaded_sound(int num)
     decoded[num].sample_count = sample_count;
     decoded[num].sample_rate = result.sample_rate;
     decoded[num].is_16bit = 1;
-
-    /* Keep Sound[num].ptr alive — pan3dsound and other engine code
-     * checks ptr != NULL to avoid re-loading from GRP every frame. */
+    soundsiz[num] = raw_size;
+    Sound[num].lock = 199;
 
     return 1;
+}
+
+static int decode_loaded_sound(int num)
+{
+    if (decoded[num].pcm != NULL)
+        return 1;
+    if (Sound[num].ptr == NULL || soundsiz[num] <= 0)
+        return 0;
+
+    int ok = decode_raw_sound(num, Sound[num].ptr, (uint32_t)soundsiz[num]);
+    if (ok)
+        release_raw_sound(num);
+    return ok;
 }
 
 static int d3d_sound_preload_cmp(const void *a, const void *b)
@@ -634,6 +658,7 @@ void d3d_audio_init(void)
      * The mididemo never calls free_samples for the same reason. */
     init_voice_tracking();
     memset(decoded, 0, sizeof(decoded));
+    all_sounds_precached = 0;
     audio_initialized = 1;
 }
 
@@ -653,10 +678,13 @@ void d3d_audio_shutdown(void)
 }
 
 /* Decode a sound from GRP and upload to CRAM1 (cached). */
-static int ensure_decoded(int num)
+static int ensure_decoded(int num, int allow_io)
 {
     if (decoded[num].pcm != NULL)
         return 1;  /* already cached */
+
+    if (!allow_io)
+        return 0;
 
     if (!load_raw_sound_from_file(num))
         return 0;
@@ -668,13 +696,15 @@ int d3d_sound_precache(int sound_num)
 {
     if (!audio_initialized) return 0;
     if (sound_num < 0 || sound_num >= NUM_SOUNDS) return 0;
-    return ensure_decoded(sound_num);
+    return ensure_decoded(sound_num, 1);
 }
 
 int d3d_sound_precache_all(void)
 {
     if (!audio_initialized)
         return 0;
+
+    all_sounds_precached = 0;
 
     int item_count = 0;
     int decoded_count = 0;
@@ -703,12 +733,14 @@ int d3d_sound_precache_all(void)
             sound_preload_items[item_count].size = size;
             item_count++;
         } else {
-            decoded_count += ensure_decoded(i) ? 1 : 0;
+            decoded_count += ensure_decoded(i, 1) ? 1 : 0;
         }
     }
 
-    if (item_count == 0)
+    if (item_count == 0) {
+        all_sounds_precached = 1;
         return decoded_count;
+    }
 
     qsort(sound_preload_items, item_count, sizeof(sound_preload_items[0]),
           d3d_sound_preload_cmp);
@@ -716,8 +748,9 @@ int d3d_sound_precache_all(void)
     uint8_t *chunk = (uint8_t *)malloc(D3D_SOUND_BULK_CHUNK);
     if (chunk == NULL) {
         for (int i = 0; i < item_count; i++)
-            decoded_count += ensure_decoded(sound_preload_items[i].num) ? 1 : 0;
+            decoded_count += ensure_decoded(sound_preload_items[i].num, 1) ? 1 : 0;
         d3d_audio_pump_loading();
+        all_sounds_precached = 1;
         return decoded_count;
     }
 
@@ -736,65 +769,46 @@ int d3d_sound_precache_all(void)
             decoded_count++;
             continue;
         }
-        if (Sound[num].ptr == NULL) {
-            Sound[num].lock = 199;
-            Sound[num].length = item->size;
-            soundsiz[num] = item->size;
-            Sound[num].ptr = (uint8_t *)malloc(item->size);
-
-            if (Sound[num].ptr != NULL) {
-                int copied = 0;
-
-                if ((uint32_t)item->size <= D3D_SOUND_BULK_CHUNK) {
-                    int32_t item_end = item->offset + item->size;
-                    int window_has_item =
-                        window_grp == item->grpID &&
-                        item->offset >= window_start &&
-                        item_end <= window_start + window_len;
-
-                    if (!window_has_item) {
-                        window_grp = item->grpID;
-                        window_start = item->offset;
-                        d3d_audio_pump_loading();
-                        window_len = kgrp_read_at(window_grp, window_start,
-                                                  chunk, D3D_SOUND_BULK_CHUNK);
-                        d3d_audio_pump_loading();
-                        if (window_len < 0)
-                            window_len = 0;
-                        window_has_item = item_end <= window_start + window_len;
-                    }
-
-                    if (window_has_item) {
-                        memcpy(Sound[num].ptr,
-                               chunk + (item->offset - window_start),
-                               item->size);
-                        copied = 1;
-                    }
-                }
-
-                if (!copied) {
-                    d3d_audio_pump_loading();
-                    int32_t got = kgrp_read_at(item->grpID, item->offset,
-                                               Sound[num].ptr, item->size);
-                    d3d_audio_pump_loading();
-                    copied = (got == item->size);
-                }
-
-                if (!copied) {
-                    free(Sound[num].ptr);
-                    Sound[num].ptr = NULL;
-                    Sound[num].length = 0;
-                    soundsiz[num] = 0;
-                }
-            }
+        if (Sound[num].ptr != NULL) {
+            decoded_count += decode_loaded_sound(num) ? 1 : 0;
+            continue;
         }
 
-        d3d_audio_pump_loading();
-        decoded_count += decode_loaded_sound(num) ? 1 : 0;
+        int decoded_ok = 0;
+        if ((uint32_t)item->size <= D3D_SOUND_BULK_CHUNK) {
+            int32_t item_end = item->offset + item->size;
+            int window_has_item =
+                window_grp == item->grpID &&
+                item->offset >= window_start &&
+                item_end <= window_start + window_len;
+
+            if (!window_has_item) {
+                window_grp = item->grpID;
+                window_start = item->offset;
+                d3d_audio_pump_loading();
+                window_len = kgrp_read_at(window_grp, window_start,
+                                          chunk, D3D_SOUND_BULK_CHUNK);
+                d3d_audio_pump_loading();
+                if (window_len < 0)
+                    window_len = 0;
+                window_has_item = item_end <= window_start + window_len;
+            }
+
+            if (window_has_item)
+                decoded_ok = decode_raw_sound(num,
+                                              chunk + (item->offset - window_start),
+                                              (uint32_t)item->size);
+        }
+
+        if (!decoded_ok)
+            decoded_ok = ensure_decoded(num, 1);
+
+        decoded_count += decoded_ok ? 1 : 0;
         d3d_audio_pump_loading();
     }
 
     free(chunk);
+    all_sounds_precached = 1;
     return decoded_count;
 }
 
@@ -813,7 +827,7 @@ int d3d_sound_play_pitch(int num, int priority, int volume, int pitch)
 
     poll_ended_voices();
 
-    if (!ensure_decoded(num))
+    if (!ensure_decoded(num, !all_sounds_precached))
         return -1;
 
     int vol = d3d_clamp_u8(volume);
@@ -849,7 +863,7 @@ int d3d_sound_play_3d_pitch(int num, int priority, int angle, int distance, int 
 
     poll_ended_voices();
 
-    if (!ensure_decoded(num))
+    if (!ensure_decoded(num, !all_sounds_precached))
         return -1;
 
     int vol_l, vol_r;

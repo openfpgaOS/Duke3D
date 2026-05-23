@@ -69,15 +69,13 @@ static uint8_t drawpixel_color = 0;
 static uint32_t of_palette[256];
 static int sync_next_palette_update = 0;
 
-/* Analog stick dead zone (out of +/-32767) */
-#define STICK_DEADZONE  8000
-#define STICK_MOUSE_SCALE  6   /* right stick -> mouse sensitivity */
 #define DOCK_MOUSE_DIVISOR  32  /* physical mouse deltas are high-DPI */
 #define DOCK_MOUSE_FIRE_SCANCODE  0x1D  /* LCtrl */
 #define DOCK_MOUSE_USE_SCANCODE   0x39  /* Space */
 #define OPEN_BUTTON_MENU_SCANCODE  0x01  /* Escape = menu back */
 #define B_TAP_USE_MS  500
 #define TAP_USE_HOLD_MS  80
+#define STICK_BUTTON_SUPPRESS_DEADZONE  8000
 
 /* ======================================================================
  * Button-to-scancode mapping
@@ -111,8 +109,8 @@ typedef struct {
 
 static const btn_map_t button_map[] = {
     /* Buttons with shoulder-modified alternatives are reconciled below. */
-    { OF_BTN_L2,     0x33, 0x00 },  /* L2     -> ','    = Strafe Left  */
-    { OF_BTN_R2,     0x34, 0x00 },  /* R2     -> '.'    = Strafe Right */
+    { OF_BTN_L2,     0x39, 0x00 },  /* L2     -> Space  = Open        */
+    { OF_BTN_R2,     0x1D, 0x00 },  /* R2     -> LCtrl  = Fire        */
 
     /* D-pad = movement/turning */
     { OF_BTN_UP,     0x48, 0xE0 },  /* D-Up   -> Up     = Forward      */
@@ -207,10 +205,6 @@ static const keymod_map_t keymod_map[] = {
 #define SC_STRAFE_RIGHT    0x34  /* . */
 #define SC_RUN             0x2A  /* LShift */
 
-static uint8_t lstick_up_held    = 0;
-static uint8_t lstick_down_held  = 0;
-static uint8_t lstick_left_held  = 0;
-static uint8_t lstick_right_held = 0;
 static held_key_t pocket_btn_a_key;
 static held_key_t pocket_btn_x_key;
 static held_key_t pocket_btn_y_key;
@@ -225,6 +219,8 @@ static uint8_t tap_use_held = 0;
 static unsigned int tap_use_release_ms = 0;
 static int32_t dock_mouse_accum_x = 0;
 static int32_t dock_mouse_accum_y = 0;
+static of_input_state_t joystick_state;
+static int joystick_state_valid = 0;
 
 /* ======================================================================
  * Helpers
@@ -263,6 +259,25 @@ static void update_pocket_button_key(uint32_t buttons, uint32_t btn,
         held->scancode = 0;
         held->extended = 0;
     }
+}
+
+static int stick_axis_active(int16_t axis)
+{
+    return axis <= -STICK_BUTTON_SUPPRESS_DEADZONE ||
+           axis >=  STICK_BUTTON_SUPPRESS_DEADZONE;
+}
+
+static uint32_t filter_stick_direction_buttons(uint32_t buttons,
+                                               const of_input_state_t *state)
+{
+    if (stick_axis_active(state->joy_lx) ||
+        stick_axis_active(state->joy_ly) ||
+        stick_axis_active(state->joy_rx) ||
+        stick_axis_active(state->joy_ry)) {
+        buttons &= ~(OF_BTN_UP | OF_BTN_DOWN | OF_BTN_LEFT | OF_BTN_RIGHT);
+    }
+
+    return buttons;
 }
 
 static void update_tap_use_release(void)
@@ -903,8 +918,10 @@ static void handle_events(void)
     of_input_keyboard_state(&kb);
     of_input_mouse_state(&ms);
     of_input_state(0, &state);
+    joystick_state = state;
+    joystick_state_valid = 1;
 
-    buttons  = state.buttons;
+    buttons  = filter_stick_direction_buttons(state.buttons, &state);
     pressed  = buttons & ~prev_buttons;   /* just went down */
     released = ~buttons & prev_buttons;   /* just went up   */
     prev_buttons = buttons;
@@ -961,62 +978,6 @@ static void handle_events(void)
     update_pocket_button_key(buttons, OF_BTN_START,
                              right_modifier ? SC_INVENTORY_RIGHT : SC_ESCAPE,
                              0x00, &pocket_btn_start_key);
-
-    /* --- Left analog stick -> movement keys (Up/Down/Left/Right arrows) --- */
-    {
-        int16_t lx = state.joy_lx;
-        int16_t ly = state.joy_ly;
-
-        /* Up (negative Y) */
-        int up_active    = (ly < -STICK_DEADZONE);
-        int down_active  = (ly >  STICK_DEADZONE);
-        int left_active  = (lx < -STICK_DEADZONE);
-        int right_active = (lx >  STICK_DEADZONE);
-
-        if (up_active && !lstick_up_held) {
-            lstick_up_held = 1;
-            send_key(SC_UP, SC_EXT, 1);
-        } else if (!up_active && lstick_up_held) {
-            lstick_up_held = 0;
-            send_key(SC_UP, SC_EXT, 0);
-        }
-
-        if (down_active && !lstick_down_held) {
-            lstick_down_held = 1;
-            send_key(SC_DOWN, SC_EXT, 1);
-        } else if (!down_active && lstick_down_held) {
-            lstick_down_held = 0;
-            send_key(SC_DOWN, SC_EXT, 0);
-        }
-
-        if (left_active && !lstick_left_held) {
-            lstick_left_held = 1;
-            send_key(SC_LEFT, SC_EXT, 1);
-        } else if (!left_active && lstick_left_held) {
-            lstick_left_held = 0;
-            send_key(SC_LEFT, SC_EXT, 0);
-        }
-
-        if (right_active && !lstick_right_held) {
-            lstick_right_held = 1;
-            send_key(SC_RIGHT, SC_EXT, 1);
-        } else if (!right_active && lstick_right_held) {
-            lstick_right_held = 0;
-            send_key(SC_RIGHT, SC_EXT, 0);
-        }
-    }
-
-    /* --- Right analog stick -> mouse look --- */
-    {
-        int16_t rx = state.joy_rx;
-        int16_t ry = state.joy_ry;
-
-        if (rx > STICK_DEADZONE || rx < -STICK_DEADZONE)
-            mouse_relative_x += rx / (32768 / STICK_MOUSE_SCALE);
-
-        if (ry > STICK_DEADZONE || ry < -STICK_DEADZONE)
-            mouse_relative_y += ry / (32768 / STICK_MOUSE_SCALE);
-    }
 
     /* --- Physical dock mouse --- */
     if (ms.present) {
@@ -1149,12 +1110,49 @@ void screencapture(char *filename)
     /* No-op on openfpgaOS -- no filesystem to save screenshots to */
 }
 
-void _joystick_init(void)   { /* no-op */ }
-void _joystick_deinit(void) { /* no-op */ }
-int  _joystick_update(void) { return 0; }
-int  _joystick_axis(int axis)     { (void)axis;   return 0; }
-int  _joystick_hat(int hat)       { (void)hat;    return -1; }
-int  _joystick_button(int button) { (void)button; return 0; }
+void _joystick_init(void)
+{
+    memset(&joystick_state, 0, sizeof(joystick_state));
+    joystick_state_valid = 0;
+}
+
+void _joystick_deinit(void)
+{
+    joystick_state_valid = 0;
+}
+
+int _joystick_update(void)
+{
+    return joystick_state_valid;
+}
+
+int _joystick_axis(int axis)
+{
+    if (!joystick_state_valid)
+        return 0;
+
+    switch (axis) {
+    case 0: return joystick_state.joy_lx;
+    case 1: return joystick_state.joy_ly;
+    case 2: return joystick_state.joy_rx;
+    case 3: return joystick_state.joy_ry;
+    case 4: return 0;
+    case 5: return 0;
+    default: return 0;
+    }
+}
+
+int _joystick_hat(int hat)
+{
+    (void)hat;
+    return 0;
+}
+
+int _joystick_button(int button)
+{
+    (void)button;
+    return 0;
+}
 
 void _uninitengine(void)
 {

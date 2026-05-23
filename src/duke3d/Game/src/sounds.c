@@ -250,6 +250,10 @@ uint8_t  loadsound(uint16_t num)
     if(num >= NUM_SOUNDS || SoundToggle == 0) return 0;
     if (FXDevice == SC_Unknown) return 0;
 
+#ifdef OPENFPGA
+    return d3d_sound_precache(num) ? 1 : 0;
+#endif
+
     fp = TCkopen4load(sounds[num],0);
     if(fp == -1)
     {
@@ -263,19 +267,9 @@ uint8_t  loadsound(uint16_t num)
 
     Sound[num].lock = 200;
 
-#ifdef OPENFPGA
-    /* Use malloc for aligned, non-evictable sound buffers */
-    if (Sound[num].ptr == NULL)
-        Sound[num].ptr = (uint8_t *)malloc(l);
-    if (Sound[num].ptr == NULL) { kclose(fp); return 0; }
-#else
     allocache(&Sound[num].ptr,l,(uint8_t  *)&Sound[num].lock);
-#endif
     kread( fp, Sound[num].ptr , l);
     kclose( fp );
-#ifdef OPENFPGA
-    Sound[num].lock = 199;
-#endif
     return 1;
 }
 
@@ -732,7 +726,9 @@ void pan3dsound(void)
                 }
         }
 
+#ifndef OPENFPGA
         if(Sound[j].ptr == 0 && loadsound(j) == 0 ) continue;
+#endif
         if( soundm[j]&16 ) sndist = 0;
 
         if(sndist < ((255-LOUDESTVOLUME)<<6) )

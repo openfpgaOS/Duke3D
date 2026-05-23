@@ -38,7 +38,7 @@ typedef struct of_video_timing {
 #define OF_DISPLAY_OVERLAY     2  /* White terminal text over framebuffer */
 
 #define OF_VIDEO_VTOTAL_AUTO 0u
-#define OF_VIDEO_VTOTAL_60HZ 262u
+#define OF_VIDEO_VTOTAL_60HZ 258u  /* experimental fast LCD mode, estimated ~60.14 Hz */
 #define OF_VIDEO_VTOTAL_55HZ 285u
 #define OF_VIDEO_VTOTAL_50HZ 310u
 #define OF_VIDEO_VTOTAL_45HZ 340u
@@ -216,9 +216,8 @@ static inline uint32_t of_video_vblank_count(void) {
 }
 
 /* Request a fixed scanout V_TOTAL, or pass OF_VIDEO_VTOTAL_AUTO to restore
- * the OS automatic render-period policy. Hardware clamps again at the
- * frame-boundary latch, and Analogizer/SNAC fixed-rate output overrides this
- * request. */
+ * the OS automatic cadence/recovery policy. Hardware clamps again, and
+ * Analogizer/SNAC fixed-rate output overrides this request. */
 static inline void of_video_set_refresh_vtotal(uint32_t v_total) {
     if (OF_SVC->count > OF_VIDEO_SVC_INDEX(video_set_refresh_vtotal) &&
         OF_SVC->video_set_refresh_vtotal) {

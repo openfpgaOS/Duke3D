@@ -3126,10 +3126,6 @@ static void transmaskvline2 (int32_t x)
 static OF_FASTTEXT void transmaskwallscan(int32_t x1, int32_t x2)
 {
     int32_t x;
-#ifdef OPENFPGA
-    int openfpga_saved_force_cpu_spans = 0;
-    int openfpga_forced_cpu_spans = 0;
-#endif
 
     setgotpic(globalpicnum);
     
@@ -3140,24 +3136,11 @@ static OF_FASTTEXT void transmaskwallscan(int32_t x1, int32_t x2)
 
     TILE_MakeAvailable(globalpicnum);
 
-#ifdef OPENFPGA
-    if (d3d_gpu_present && d3d_gpu_use_spans) {
-        d3d_gpu_prepare_cpu_fb_write();
-        openfpga_saved_force_cpu_spans = d3d_gpu_force_cpu_spans;
-        d3d_gpu_force_cpu_spans = 1;
-        openfpga_forced_cpu_spans = 1;
-    }
-#endif
-
     x = x1;
     while ((startumost[x+windowx1] > startdmost[x+windowx1]) && (x <= x2)) x++;
     if ((x <= x2) && (x&1)) transmaskvline(x), x++;
     while (x < x2) transmaskvline2(x), x += 2;
     while (x <= x2) transmaskvline(x), x++;
-#ifdef OPENFPGA
-    if (openfpga_forced_cpu_spans)
-        d3d_gpu_force_cpu_spans = openfpga_saved_force_cpu_spans;
-#endif
     faketimerhandler();
 }
 

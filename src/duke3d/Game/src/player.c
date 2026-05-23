@@ -1823,6 +1823,11 @@ void getinput(short snum)
     CONTROL_GetInput( &info );
 
 	// FIX_00021: Duke was moving when moving the mouse up/down. Y axis move is disabled.
+#ifdef OPENFPGA
+	if (CONTROL_JoystickEnabled && ControllerType == controltype_joystickandmouse)
+		info.dz = CONTROL_GetFilteredAxisValue(1);
+	else
+#endif
 	info.dz = 0; // remove y axis
 
     if( (p->gm&MODE_MENU) || (p->gm&MODE_TYPE) || (ud.pause_on && !KB_KeyPressed(sc_Pause)) )
@@ -3448,7 +3453,11 @@ void processinput(short snum)
             p->horiz -= (p->hard_landing<<4);
         }
 
-        if(p->aim_mode)
+        if(p->aim_mode
+#ifdef OPENFPGA
+           || (CONTROL_JoystickEnabled && ControllerType == controltype_joystickandmouse)
+#endif
+           )
             p->horiz += sync[snum].horz>>1;
         else
         {

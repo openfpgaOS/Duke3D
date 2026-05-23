@@ -297,7 +297,11 @@ void CONFIG_SetDefaults( void )
    strcpy(ud.ridecule[9],"AARRRGHHHHH!!!");
 
    // Controller
+#ifdef OPENFPGA
+	ControllerType = controltype_joystickandmouse;
+#else
 	ControllerType = controltype_keyboardandmouse;
+#endif
 }
 
 /*
@@ -519,10 +523,17 @@ void CONFIG_SetupJoystick( int32 scripthandle )
         memset(temp,0,sizeof(temp));
         SCRIPT_GetString(scripthandle, "Controls", str,temp);
         function = CONFIG_AnalogNameToNum(temp);
-        //if (function != -1)
-            //{
-            CONTROL_MapAnalogAxis(i,function);
-            //}
+#ifdef OPENFPGA
+        switch (i)
+           {
+           case 0: function = analog_strafing; break;
+           case 1: function = analog_moving; break;
+           case 2: function = analog_turning; break;
+           case 3: function = analog_lookingupanddown; break;
+           default: function = -1; break;
+           }
+#endif
+        CONTROL_MapAnalogAxis(i,function);
         sprintf(str,"JoystickDigitalAxes%d_0",i);
         memset(temp,0,sizeof(temp));
         SCRIPT_GetString(scripthandle, "Controls", str,temp);
@@ -536,11 +547,26 @@ void CONFIG_SetupJoystick( int32 scripthandle )
         if (function != -1)
             CONTROL_MapDigitalAxis( i, function, 1 );
         sprintf(str,"JoystickAnalogScale%d",i);
+#ifdef OPENFPGA
+        scale = (i == 3) ? 0.06f :
+                ((i == 2) ? 0.05f :
+                 ((i == 0 || i == 1) ? 0.24f : 1.0f));
+#else
+        scale = 1.0f;
+#endif
+#ifndef OPENFPGA
         SCRIPT_GetFloat(scripthandle, "Controls", str,&scale);
+#endif
         CONTROL_SetAnalogAxisScale( i, scale );
+#ifdef OPENFPGA
+        deadzone = 10000;
+#else
         deadzone = 0;
+#endif
         sprintf(str,"JoystickAnalogDeadzone%d",i);
+#ifndef OPENFPGA
         SCRIPT_GetNumber(scripthandle, "Controls", str, &deadzone);
+#endif
         CONTROL_SetAnalogAxisDeadzone( i, deadzone);
       }
 
@@ -774,6 +800,9 @@ void CONFIG_ReadSetup( void )
    MusicDevice = SC_SoundScape;
 #endif
    SCRIPT_GetNumber( scripthandle, "Controls","ControllerType",&ControllerType);
+#ifdef OPENFPGA
+   ControllerType = controltype_joystickandmouse;
+#endif
    SCRIPT_GetNumber( scripthandle, "Controls","MouseAimingFlipped",&ud.mouseflip);
    SCRIPT_GetNumber( scripthandle, "Controls","MouseAiming",&MouseAiming);
    SCRIPT_GetNumber( scripthandle, "Controls","GameMouseAiming",(int32 *)&ps[0].aim_mode);
