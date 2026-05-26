@@ -1,7 +1,8 @@
 /*
  * of_video.h -- Video subsystem API for openfpgaOS
  *
- * 320x240 framebuffer, 8-bit indexed color, triple-buffered.
+ * Triple-buffered framebuffer API. Boots as 320x240 8-bit indexed and can
+ * switch to larger source framebuffer modes at runtime.
  */
 
 #ifndef OF_VIDEO_H
@@ -52,6 +53,20 @@ typedef struct of_video_timing {
 #define OF_VIDEO_MODE_RGB565   3  /* 16-bit direct: R5G6B5, 2 bytes/pixel */
 #define OF_VIDEO_MODE_RGB555   4  /* 15-bit direct: X1R5G5B5, 2 bytes/pixel */
 #define OF_VIDEO_MODE_RGBA5551 5  /* 15+1 bit: R5G5B5A1, 2 bytes/pixel */
+
+#define OF_VIDEO_MAX_WIDTH     800
+#define OF_VIDEO_MAX_HEIGHT    600
+
+#ifndef OF_VIDEO_MODE_T_DEFINED
+#define OF_VIDEO_MODE_T_DEFINED
+typedef struct of_video_mode {
+    uint16_t width;
+    uint16_t height;
+    uint16_t stride;      /* bytes per source framebuffer row, 0 = default */
+    uint8_t color_mode;   /* OF_VIDEO_MODE_* */
+    uint8_t reserved;
+} of_video_mode_t;
+#endif
 
 /* Framebuffer size per mode (320x240) */
 #define OF_FB_SIZE_8BIT     (320 * 240)         /* 76,800 bytes */
@@ -175,6 +190,52 @@ static inline void of_video_set_color_mode(int mode) {
     OF_SVC->video_set_color_mode(mode);
 }
 
+static inline int of_video_set_mode(const of_video_mode_t *mode) {
+    if (OF_SVC->count > OF_VIDEO_SVC_INDEX(video_set_mode) &&
+        OF_SVC->video_set_mode) {
+        return OF_SVC->video_set_mode(mode);
+    }
+    return -1;
+}
+
+static inline void of_video_get_mode(of_video_mode_t *out) {
+    if (!out)
+        return;
+    if (OF_SVC->count > OF_VIDEO_SVC_INDEX(video_get_mode) &&
+        OF_SVC->video_get_mode) {
+        OF_SVC->video_get_mode(out);
+    } else {
+        out->width = OF_SCREEN_W;
+        out->height = OF_SCREEN_H;
+        out->stride = OF_SCREEN_W;
+        out->color_mode = OF_VIDEO_MODE_8BIT;
+        out->reserved = 0;
+    }
+}
+
+static inline int of_video_get_mode_count(void) {
+    if (OF_SVC->count > OF_VIDEO_SVC_INDEX(video_get_mode_count) &&
+        OF_SVC->video_get_mode_count) {
+        return OF_SVC->video_get_mode_count();
+    }
+    return 1;
+}
+
+static inline int of_video_get_mode_info(int index, of_video_mode_t *out) {
+    if (OF_SVC->count > OF_VIDEO_SVC_INDEX(video_get_mode_info) &&
+        OF_SVC->video_get_mode_info) {
+        return OF_SVC->video_get_mode_info(index, out);
+    }
+    if (!out || index != 0)
+        return -1;
+    out->width = OF_SCREEN_W;
+    out->height = OF_SCREEN_H;
+    out->stride = OF_SCREEN_W;
+    out->color_mode = OF_VIDEO_MODE_8BIT;
+    out->reserved = 0;
+    return 0;
+}
+
 /* Register a callback invoked on every vsync (vblank) IRQ.
  * Pass NULL to disable. Callback runs in kernel context — keep it short. */
 static inline void of_video_set_vsync_callback(void (*cb)(void)) {
@@ -241,6 +302,28 @@ void     of_video_palette(uint8_t index, uint32_t rgb);
 void     of_video_palette_bulk(const uint32_t *pal, int count);
 void     of_video_flush(void);
 void     of_video_set_display_mode(int mode);
+static inline int of_video_set_mode(const of_video_mode_t *mode) {
+    (void)mode;
+    return 0;
+}
+static inline void of_video_get_mode(of_video_mode_t *out) {
+    if (!out)
+        return;
+    out->width = OF_SCREEN_W;
+    out->height = OF_SCREEN_H;
+    out->stride = OF_SCREEN_W;
+    out->color_mode = OF_VIDEO_MODE_8BIT;
+    out->reserved = 0;
+}
+static inline int of_video_get_mode_count(void) {
+    return 1;
+}
+static inline int of_video_get_mode_info(int index, of_video_mode_t *out) {
+    if (!out || index != 0)
+        return -1;
+    of_video_get_mode(out);
+    return 0;
+}
 void     of_video_get_timing(of_video_timing_t *out);
 uint64_t of_video_last_vblank_us(void);
 uint64_t of_video_last_flip_presented_us(void);

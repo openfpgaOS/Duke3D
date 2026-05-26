@@ -58,6 +58,14 @@ static int openfpga_sound_pitch(short num)
     }
     return pitchs;
 }
+
+static int openfpga_voice_line_active(void)
+{
+    for (int j = 0; j < NUM_SOUNDS; j++)
+        if ((soundm[j] & 4) && Sound[j].num > 0)
+            return 1;
+    return 0;
+}
 #endif
 
 /*
@@ -290,6 +298,16 @@ int xyzsound(short num,short i,int32_t x,int32_t y,int32_t z)
 
         /* Redirect non-positional sounds */
         if (soundm[num] & 128) { sound(num); return 0; }
+
+        if (soundm[num] & 4) {
+            if (VoiceToggle == 0 ||
+                (ud.multimode > 1 && i >= 0 && PN == APLAYER &&
+                 sprite[i].yvel != screenpeek && !OpponentSoundToggle))
+                return -1;
+
+            if (openfpga_voice_line_active())
+                return -1;
+        }
 
         pitch = openfpga_sound_pitch(num);
 

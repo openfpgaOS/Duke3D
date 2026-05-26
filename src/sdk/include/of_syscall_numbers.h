@@ -102,6 +102,10 @@ enum of_video_fid {
     OF_VIDEO_FID_SET_PALETTE_VGA4    = 10,
     OF_VIDEO_FID_VSYNC               = 11,
     OF_VIDEO_FID_SET_VSYNC_CALLBACK  = 12,
+    OF_VIDEO_FID_SET_MODE            = 13,
+    OF_VIDEO_FID_GET_MODE            = 14,
+    OF_VIDEO_FID_GET_MODE_COUNT      = 15,
+    OF_VIDEO_FID_GET_MODE_INFO       = 16,
 };
 
 /* -- OF_EID_AUDIO -- */

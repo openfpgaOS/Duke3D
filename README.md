@@ -118,8 +118,8 @@ The packaged bank is `runtime/bank.ofsf`. Users can replace it with another comp
 | D-pad left/right | Turn left/right; with L1, strafe left/right |
 | Left analog stick | Move forward/backward and turn left/right |
 | Right analog stick | Mouse look |
-| A | Fire; with R1, quick kick |
-| B | Hold Run; tap and release within 500 ms for Open/Use; with R1, use inventory item |
+| A | Fire; with R1, look up; with R1+L1, kick |
+| B | Hold Run; tap and release within 500 ms for Open/Use; with R1, look down; with R1+L1, use inventory item |
 | X | Jump; with R1, next weapon |
 | Y | Crouch; with R1, previous weapon |
 | L1 | D-pad strafe modifier |
@@ -132,6 +132,8 @@ The packaged bank is `runtime/bank.ofsf`. Users can replace it with another comp
 When a Duke menu is open, B is treated as Back/Escape instead of Open/Use.
 
 B always holds Duke's Run key while pressed in-game. Open/Use is sent on release only when B was held for less than 500 ms, which makes tap-to-use and hold-to-run share the same button.
+
+Looking up (R1+A) or down (R1+B) holds the view at that angle after you release the buttons; it eases back to center only when you move forward or backward.
 
 ## Dock Keyboard and Mouse
 

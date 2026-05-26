@@ -111,10 +111,6 @@ static const btn_map_t button_map[] = {
     /* Buttons with shoulder-modified alternatives are reconciled below. */
     { OF_BTN_L2,     0x39, 0x00 },  /* L2     -> Space  = Open        */
     { OF_BTN_R2,     0x1D, 0x00 },  /* R2     -> LCtrl  = Fire        */
-
-    /* D-pad = movement/turning */
-    { OF_BTN_UP,     0x48, 0xE0 },  /* D-Up   -> Up     = Forward      */
-    { OF_BTN_DOWN,   0x50, 0xE0 },  /* D-Down -> Down   = Backward     */
 };
 
 #define NUM_BTN_MAPS  (sizeof(button_map) / sizeof(button_map[0]))
@@ -188,6 +184,8 @@ static const keymod_map_t keymod_map[] = {
 #define SC_DOWN   0x50
 #define SC_LEFT   0x4B
 #define SC_RIGHT  0x4D
+#define SC_PGUP   0x49
+#define SC_PGDN   0x51
 #define SC_EXT    0xE0
 #define SC_FIRE   0x1D  /* LCtrl */
 #define SC_ESCAPE 0x01
@@ -210,6 +208,8 @@ static held_key_t pocket_btn_x_key;
 static held_key_t pocket_btn_y_key;
 static held_key_t pocket_btn_select_key;
 static held_key_t pocket_btn_start_key;
+static held_key_t pocket_dpad_up_key;
+static held_key_t pocket_dpad_down_key;
 static held_key_t pocket_dpad_left_key;
 static held_key_t pocket_dpad_right_key;
 static uint8_t pocket_b_mode = 0;
@@ -319,8 +319,11 @@ static void stop_pocket_b_mode(uint8_t mode, int allow_tap_use)
     case 2: /* menu back */
         send_key(OPEN_BUTTON_MENU_SCANCODE, 0x00, 0);
         break;
-    case 3: /* R1+B inventory use */
+    case 3: /* R1+L1+B inventory use */
         send_key(SC_INVENTORY_USE, 0x00, 0);
+        break;
+    case 4: /* R1+B look down */
+        send_key(SC_PGDN, SC_EXT, 0);
         break;
     default:
         break;
@@ -343,13 +346,17 @@ static void start_pocket_b_mode(uint8_t mode)
         cancel_tap_use();
         send_key(SC_INVENTORY_USE, 0x00, 1);
         break;
+    case 4:
+        cancel_tap_use();
+        send_key(SC_PGDN, SC_EXT, 1);
+        break;
     default:
         break;
     }
 }
 
 static void update_pocket_b_button(uint32_t buttons, int menu_active,
-                                   int right_modifier)
+                                   int right_modifier, int both_shoulder_modifier)
 {
     uint8_t desired_mode = 0;
     uint8_t old_mode;
@@ -357,8 +364,10 @@ static void update_pocket_b_button(uint32_t buttons, int menu_active,
     if (buttons & OF_BTN_B) {
         if (menu_active)
             desired_mode = 2;
-        else if (right_modifier)
+        else if (both_shoulder_modifier)
             desired_mode = 3;
+        else if (right_modifier)
+            desired_mode = 4;
         else
             desired_mode = 1;
     }
@@ -909,6 +918,7 @@ static void handle_events(void)
     int menu_active;
     int left_modifier;
     int right_modifier;
+    int both_shoulder_modifier;
     int i;
 
     memset(&kb, 0, sizeof(kb));
@@ -928,6 +938,7 @@ static void handle_events(void)
     menu_active = duke_menu_active();
     left_modifier = !menu_active && (buttons & OF_BTN_L1);
     right_modifier = !menu_active && (buttons & OF_BTN_R1);
+    both_shoulder_modifier = left_modifier && right_modifier;
 
     update_tap_use_release();
 
@@ -954,6 +965,10 @@ static void handle_events(void)
     }
 
     /* --- Pocket shoulder modifiers --- */
+    update_pocket_button_key(buttons, OF_BTN_UP,
+                             SC_UP, SC_EXT, &pocket_dpad_up_key);
+    update_pocket_button_key(buttons, OF_BTN_DOWN,
+                             SC_DOWN, SC_EXT, &pocket_dpad_down_key);
     update_pocket_button_key(buttons, OF_BTN_LEFT,
                              left_modifier ? SC_STRAFE_LEFT : SC_LEFT,
                              left_modifier ? 0x00 : SC_EXT,
@@ -963,9 +978,12 @@ static void handle_events(void)
                              left_modifier ? 0x00 : SC_EXT,
                              &pocket_dpad_right_key);
     update_pocket_button_key(buttons, OF_BTN_A,
-                             right_modifier ? SC_QUICK_KICK : SC_FIRE,
-                             0x00, &pocket_btn_a_key);
-    update_pocket_b_button(buttons, menu_active, right_modifier);
+                             both_shoulder_modifier ? SC_QUICK_KICK :
+                                 (right_modifier ? SC_PGUP : SC_FIRE),
+                             (right_modifier && !both_shoulder_modifier) ? SC_EXT : 0x00,
+                             &pocket_btn_a_key);
+    update_pocket_b_button(buttons, menu_active, right_modifier,
+                           both_shoulder_modifier);
     update_pocket_button_key(buttons, OF_BTN_X,
                              right_modifier ? SC_NEXT_WEAPON : SC_JUMP,
                              0x00, &pocket_btn_x_key);

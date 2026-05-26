@@ -27,9 +27,12 @@ static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
 static SDL_Texture  *g_texture;
 
-/* Double-buffered 320x240 indexed framebuffers */
-static uint8_t  g_fb[2][OF_SCREEN_W * OF_SCREEN_H];
+/* Double-buffered 320x240 framebuffers, sized for the largest color mode. */
+static uint8_t  g_fb[2][OF_FB_SIZE_16BPP];
 static int      g_draw_buf;    /* index of current draw buffer */
+static int      g_color_mode;
+static uint32_t g_present_count;
+static uint64_t g_last_present_us;
 
 /* Palette: 256 entries, 0x00RRGGBB */
 static uint32_t g_palette[256];
@@ -75,10 +78,32 @@ static SDL_mutex *g_audio_mutex;
 /* ---- Timer ---- */
 static uint64_t g_start_us;
 
+static const struct of_capabilities g_caps = {
+    .magic = OF_CAPS_MAGIC,
+    .version = OF_CAPS_VERSION,
+    .fb_width = OF_SCREEN_W,
+    .fb_height = OF_SCREEN_H,
+    .fb_stride = OF_SCREEN_W,
+    .fb_size = OF_FB_SIZE_8BIT,
+    .hw_features = OF_HW_MIXER | OF_HW_SAVE_SLOTS,
+    .mixer_voices = OF_MIXER_MAX_VOICES,
+    .mixer_rate = OF_AUDIO_RATE,
+    .platform_id = OF_PLATFORM_SIM,
+    .cpu_freq_hz = 100000000u,
+};
+
 static uint64_t get_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + ts.tv_nsec / 1000ULL;
+}
+
+const struct of_capabilities *of_get_caps(void) {
+    return &g_caps;
+}
+
+int of_has_feature(uint32_t feature) {
+    return (g_caps.hw_features & feature) != 0;
 }
 
 /* ======================================================================
@@ -140,9 +165,57 @@ static void render_sprite_scanline(uint8_t *line, int y) {
     }
 }
 
+static uint32_t rgb565_to_argb(uint16_t v) {
+    uint32_t r = (uint32_t)((v >> 11) & 0x1F);
+    uint32_t g = (uint32_t)((v >> 5) & 0x3F);
+    uint32_t b = (uint32_t)(v & 0x1F);
+    r = (r << 3) | (r >> 2);
+    g = (g << 2) | (g >> 4);
+    b = (b << 3) | (b >> 2);
+    return 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
+static uint32_t rgb555_to_argb(uint16_t v) {
+    uint32_t r = (uint32_t)((v >> 10) & 0x1F);
+    uint32_t g = (uint32_t)((v >> 5) & 0x1F);
+    uint32_t b = (uint32_t)(v & 0x1F);
+    r = (r << 3) | (r >> 2);
+    g = (g << 3) | (g >> 2);
+    b = (b << 3) | (b >> 2);
+    return 0xFF000000u | (r << 16) | (g << 8) | b;
+}
+
+static uint32_t rgba5551_to_argb(uint16_t v) {
+    uint32_t r = (uint32_t)((v >> 11) & 0x1F);
+    uint32_t g = (uint32_t)((v >> 6) & 0x1F);
+    uint32_t b = (uint32_t)((v >> 1) & 0x1F);
+    uint32_t a = (v & 1) ? 0xFF000000u : 0x00000000u;
+    r = (r << 3) | (r >> 2);
+    g = (g << 3) | (g >> 2);
+    b = (b << 3) | (b >> 2);
+    return a | (r << 16) | (g << 8) | b;
+}
+
+static uint8_t framebuffer_index_at(const uint8_t *fb, int x, int y) {
+    switch (g_color_mode) {
+    case OF_VIDEO_MODE_4BIT: {
+        uint8_t packed = fb[y * (OF_SCREEN_W / 2) + (x >> 1)];
+        return (x & 1) ? (packed >> 4) : (packed & 0x0F);
+    }
+    case OF_VIDEO_MODE_2BIT: {
+        uint8_t packed = fb[y * (OF_SCREEN_W / 4) + (x >> 2)];
+        return (packed >> ((x & 3) * 2)) & 0x03;
+    }
+    default:
+        return fb[y * OF_SCREEN_W + x];
+    }
+}
+
 /* Composite all layers and upload to texture */
 static void composite_and_present(void) {
     int disp = g_draw_buf ^ 1;  /* display buffer is the one we just flipped from */
+    const uint8_t *fb = g_fb[disp];
+    const uint16_t *fb16 = (const uint16_t *)fb;
     uint8_t tile_line[OF_SCREEN_W];
     uint8_t sprite_line[OF_SCREEN_W];
 
@@ -153,16 +226,25 @@ static void composite_and_present(void) {
             render_sprite_scanline(sprite_line, y);
 
         for (int x = 0; x < OF_SCREEN_W; x++) {
-            uint8_t fb_idx = g_fb[disp][y * OF_SCREEN_W + x];
             uint32_t color = 0xFF000000;  /* opaque black */
+
+            if (g_color_mode == OF_VIDEO_MODE_RGB565) {
+                color = rgb565_to_argb(fb16[y * OF_SCREEN_W + x]);
+            } else if (g_color_mode == OF_VIDEO_MODE_RGB555) {
+                color = rgb555_to_argb(fb16[y * OF_SCREEN_W + x]);
+            } else if (g_color_mode == OF_VIDEO_MODE_RGBA5551) {
+                color = rgba5551_to_argb(fb16[y * OF_SCREEN_W + x]);
+            } else {
+                uint8_t fb_idx = framebuffer_index_at(fb, x, y);
+                if (fb_idx && g_palette[fb_idx])
+                    color = g_palette[fb_idx] | 0xFF000000;
+            }
 
             /* Compositing: sprite > tile(hi) > FB > tile(lo) > black */
             if (g_sprite_enabled && sprite_line[x]) {
                 color = g_palette[sprite_line[x]] | 0xFF000000;
             } else if (g_tile_enabled && g_tile_priority && tile_line[x]) {
                 color = g_palette[tile_line[x]] | 0xFF000000;
-            } else if (fb_idx && g_palette[fb_idx]) {
-                color = g_palette[fb_idx] | 0xFF000000;
             } else if (g_tile_enabled && !g_tile_priority && tile_line[x]) {
                 color = g_palette[tile_line[x]] | 0xFF000000;
             }
@@ -175,6 +257,8 @@ static void composite_and_present(void) {
     SDL_RenderClear(g_renderer);
     SDL_RenderCopy(g_renderer, g_texture, NULL, NULL);
     SDL_RenderPresent(g_renderer);
+    g_present_count++;
+    g_last_present_us = get_us();
 }
 
 void of_video_init(void) {
@@ -199,6 +283,7 @@ void of_video_init(void) {
 
     memset(g_fb, 0, sizeof(g_fb));
     g_draw_buf = 0;
+    g_color_mode = OF_VIDEO_MODE_8BIT;
     memset(g_palette, 0, sizeof(g_palette));
 }
 
@@ -206,18 +291,36 @@ uint8_t *of_video_surface(void) {
     return g_fb[g_draw_buf];
 }
 
-uint8_t *of_video_flip(void) {
+void of_video_flip(void) {
     composite_and_present();
     g_draw_buf ^= 1;
-    return g_fb[g_draw_buf];
 }
 
-void of_video_sync(void) {
+void of_video_wait_flip(void) {
     /* vsync is handled by SDL_RENDERER_PRESENTVSYNC */
 }
 
+int of_video_acquire_next(int just_flipped_idx, uint32_t fence_token) {
+    (void)just_flipped_idx;
+    (void)fence_token;
+    return g_draw_buf;
+}
+
+uint8_t *of_video_buffer_addr(int idx) {
+    if (idx < 0)
+        idx = g_draw_buf;
+    return g_fb[idx & 1];
+}
+
 void of_video_clear(uint8_t color) {
-    memset(g_fb[g_draw_buf], color, OF_SCREEN_W * OF_SCREEN_H);
+    size_t size = OF_FB_SIZE_8BIT;
+    if (g_color_mode == OF_VIDEO_MODE_4BIT)
+        size = OF_FB_SIZE_4BIT;
+    else if (g_color_mode == OF_VIDEO_MODE_2BIT)
+        size = OF_FB_SIZE_2BIT;
+    else if (g_color_mode >= OF_VIDEO_MODE_RGB565)
+        size = OF_FB_SIZE_16BPP;
+    memset(g_fb[g_draw_buf], color, size);
 }
 
 void of_video_palette(uint8_t index, uint32_t rgb) {
@@ -231,6 +334,38 @@ void of_video_palette_bulk(const uint32_t *pal, int count) {
 
 void of_video_flush(void) {
     /* no-op on PC */
+}
+
+void of_video_set_display_mode(int mode) {
+    (void)mode;
+}
+
+void of_video_set_color_mode(int mode) {
+    if (mode < OF_VIDEO_MODE_8BIT || mode > OF_VIDEO_MODE_RGBA5551)
+        mode = OF_VIDEO_MODE_8BIT;
+    g_color_mode = mode;
+}
+
+void of_video_get_timing(of_video_timing_t *out) {
+    if (!out) return;
+    out->vblank_count = g_present_count;
+    out->present_count = g_present_count;
+    out->last_presented_idx = (uint32_t)(g_draw_buf ^ 1);
+    out->reserved = 0;
+    out->last_vblank_us = g_last_present_us;
+    out->last_flip_presented_us = g_last_present_us;
+}
+
+uint64_t of_video_last_vblank_us(void) {
+    return g_last_present_us;
+}
+
+uint64_t of_video_last_flip_presented_us(void) {
+    return g_last_present_us;
+}
+
+uint32_t of_video_vblank_count(void) {
+    return g_present_count;
 }
 
 /* ======================================================================
@@ -347,6 +482,22 @@ uint32_t of_input_state(int player, of_input_state_t *state) {
     if (player >= 0 && player < 2 && state)
         *state = g_input[player];
     return 0;
+}
+
+/* Keyboard/mouse/deadzone stubs — declared as plain externs in
+ * of_input.h's OF_PC branch.  The PC backend doesn't expose dock
+ * peripherals through SDL, so return empty state and accept the
+ * deadzone for API compatibility. */
+void of_input_keyboard_state(of_keyboard_state_t *state) {
+    if (state) memset(state, 0, sizeof(*state));
+}
+
+void of_input_mouse_state(of_mouse_state_t *state) {
+    if (state) memset(state, 0, sizeof(*state));
+}
+
+void of_input_set_deadzone(int16_t deadzone) {
+    (void)deadzone;
 }
 
 /* ======================================================================

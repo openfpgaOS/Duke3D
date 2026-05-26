@@ -43,7 +43,8 @@ static int d3d_gpu_translucent_spans_enabled = 1;
 static const uint8_t *pending_transluc_table;
 static uint32_t pending_transluc_size;
 
-#define D3D_GPU_REQUIRED_FEATURES (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE)
+#define D3D_GPU_REQUIRED_FEATURES \
+    (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE | OF_HW_GPU_PARAM_SPAN_LIST)
 #define D3D_GPU_TRANSLUC_WAIT_TIMEOUT_US 50000u
 
 /* Cached framebuffer base for the GPU-disabled CPU-fallback path.
@@ -756,12 +757,7 @@ static inline void d3d_gpu_emit_span_encoded(int path,
                                              int16_t fb_stride,
                                              uint16_t tex_width,
                                              uint16_t tex_w_mask,
-                                             uint16_t tex_h_mask,
-                                             int32_t sdivz, int32_t tdivz,
-                                             int32_t zi_persp,
-                                             int32_t sdivz_step,
-                                             int32_t tdivz_step,
-                                             int32_t zi_step);
+                                             uint16_t tex_h_mask);
 
 void d3d_gpu_perf_note_cpu_fallback(void)
 {
@@ -852,11 +848,6 @@ void d3d_gpu_perf_report_frame(uint32_t frame_period_us,
     gpu_perf_last_report_ms = now_ms;
 }
 
-/* GPU texture-cache invalidate is unconditional at every frame boundary in
- * d3d_gpu_set_fb().  That covers BUILD paths that mutate tile bytes without
- * issuing a mid-frame cache walk while the renderer is actively submitting
- * spans. */
-
 void d3d_gpu_init(void)
 {
     perf_reset_interval();
@@ -886,9 +877,6 @@ void d3d_gpu_init(void)
                (unsigned)D3D_GPU_REQUIRED_FEATURES);
         return;
     }
-    if ((caps->hw_features & OF_HW_GPU_PERSP) == 0)
-        printf("[d3d_gpu] warning: GPU perspective feature bit is not advertised\n");
-
     of_gpu_init();
     d3d_gpu_present = 1;
     printf("[d3d_gpu] GPU init ok (base=0x%08x features=0x%08x)\n",
@@ -898,10 +886,11 @@ void d3d_gpu_init(void)
         d3d_gpu_upload_transluc(pending_transluc_table, pending_transluc_size);
 }
 
-/* Native affine span submission.
+/* Native affine span submission via the SDK helper.
  *
  * Duke/BUILD already computes exact spans on the CPU.  The GPU side should
- * only consume compact affine span groups with explicit colormap slots. */
+ * only consume compact affine span groups with explicit per-lane colormap
+ * slots; the SDK lowers these groups to GPU_CMD_DRAW_PARAM_SPAN_LIST. */
 static of_gpu_affine_span_group_t affine_batch;
 static int affine_batch_count;
 
@@ -913,7 +902,7 @@ static inline int d3d_gpu_affine_batch_compatible(uint8_t flags,
 {
     return affine_batch_count > 0 &&
            affine_batch_count < (int)OF_GPU_AFFINE_SPAN_GROUP_MAX_LANES &&
-           affine_batch.flags == (uint8_t)(flags & ~OF_GPU_SPAN_PERSP) &&
+           affine_batch.flags == flags &&
            affine_batch.fb_step == fb_step &&
            affine_batch.tex_width == tex_width &&
            affine_batch.tex_w_mask == tex_w_mask &&
@@ -969,6 +958,20 @@ static inline void d3d_gpu_flush_tex_cache_now(void)
     if (d3d_gpu_perf_enable)
         gpu_perf.tex_flushes++;
     GPU_TEX_FLUSH = 1;
+}
+
+static void d3d_gpu_finish_for_lookup_update(void)
+{
+    d3d_gpu_flush_batch();
+    uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+    of_gpu_finish();
+    if (d3d_gpu_perf_enable) {
+        uint32_t dt = perf_dt_us(t0);
+        gpu_perf.finish_calls++;
+        perf_add_time(&gpu_perf.finish_us, &gpu_perf.max_finish_us, dt);
+    }
+    gpu_fb_drained_for_cpu = 1;
+    cpu_fb_read_coherent = 0;
 }
 
 /* Public wrapper around d3d_gpu_flush_batch — called by display_of.c's
@@ -1048,8 +1051,7 @@ void d3d_gpu_blit_mirror(uint8_t *dst, const uint8_t *src,
                                   0, 0, 0x10000, 0,
                                   (uint16_t)count,
                                   0, 0, 0,
-                                  -1, 1, 0xFFFF, 0xFFFF,
-                                  0, 0, 0, 0, 0, 0);
+                                  -1, 1, 0xFFFF, 0xFFFF);
         if (d3d_gpu_perf_enable) {
             gpu_perf.direct_spans++;
             gpu_perf.direct_pixels += (uint32_t)count;
@@ -1126,8 +1128,6 @@ static inline void d3d_gpu_queue_affine_span(uint32_t fb_addr,
                                              uint16_t tex_w_mask,
                                              uint16_t tex_h_mask)
 {
-    flags = (uint8_t)(flags & ~OF_GPU_SPAN_PERSP);
-
     if (!d3d_gpu_affine_batch_compatible(flags, fb_step,
                                          tex_width, tex_w_mask,
                                          tex_h_mask)) {
@@ -1166,12 +1166,7 @@ static inline void d3d_gpu_emit_span_encoded(int path,
                                              int16_t fb_stride,
                                              uint16_t tex_width,
                                              uint16_t tex_w_mask,
-                                             uint16_t tex_h_mask,
-                                             int32_t sdivz, int32_t tdivz,
-                                             int32_t zi_persp,
-                                             int32_t sdivz_step,
-                                             int32_t tdivz_step,
-                                             int32_t zi_step)
+                                             uint16_t tex_h_mask)
 {
     perf_note_span_values(path, count, flags);
     if (D3D_GPU_SKIP_SUBMIT) return;
@@ -1180,36 +1175,12 @@ static inline void d3d_gpu_emit_span_encoded(int path,
     if (flags & OF_GPU_SPAN_TRANSLUC)
         d3d_gpu_barrier_before_fb_read();
 
-    if (flags & OF_GPU_SPAN_PERSP) {
+    d3d_gpu_queue_affine_span(fb_addr, tex_addr, s, t,
+                              sstep, tstep, count, light,
+                              flags, colormap_id, fb_stride,
+                              tex_width, tex_w_mask, tex_h_mask);
+    if (flags & OF_GPU_SPAN_TRANSLUC)
         d3d_gpu_flush_batch();
-        of_gpu_persp_span_group_t sp;
-        memset(&sp, 0, sizeof(sp));
-        sp.fb_addr = fb_addr;
-        sp.tex_addr = tex_addr;
-        sp.lane_count = 1;
-        sp.flags = flags;
-        sp.colormap_id = colormap_id;
-        sp.minor_fb_step = fb_stride;
-        sp.tex_width = tex_width;
-        sp.tex_w_mask = tex_w_mask;
-        sp.tex_h_mask = tex_h_mask;
-        sp.count[0] = count;
-        sp.sdivz = sdivz;
-        sp.tdivz = tdivz;
-        sp.zi_persp = zi_persp;
-        sp.sdivz_minor_step = sdivz_step;
-        sp.tdivz_minor_step = tdivz_step;
-        sp.zi_minor_step = zi_step;
-        sp.light = (int32_t)((uint32_t)(light & 0x3F) << 16);
-        of_gpu_draw_persp_span_group(&sp);
-    } else {
-        d3d_gpu_queue_affine_span(fb_addr, tex_addr, s, t,
-                                  sstep, tstep, count, light,
-                                  flags, colormap_id, fb_stride,
-                                  tex_width, tex_w_mask, tex_h_mask);
-        if (flags & OF_GPU_SPAN_TRANSLUC)
-            d3d_gpu_flush_batch();
-    }
     mark_gpu_fb_dirty();
     gpu_fb_read_barrier_needed = 1;
 }
@@ -1305,6 +1276,12 @@ void d3d_gpu_upload_palookup(const uint8_t *palookup_table, int num_shades)
     if (!d3d_gpu_present || !palookup_table) return;
     if (num_shades <= 0)  num_shades = d3d_gpu_pal_shades();
     if (num_shades > D3D_GPU_MAX_SHADES)  num_shades = D3D_GPU_MAX_SHADES;
+
+    /* Palookup slots are sampled by GPU fragments but updated through
+     * CPU-visible SDRAM, not through the command stream.  Retire queued
+     * spans before overwriting slot 0. */
+    d3d_gpu_finish_for_lookup_update();
+
     if (d3d_gpu_perf_enable)
         gpu_perf.pal_uploads++;
     uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
@@ -1339,6 +1316,8 @@ void d3d_gpu_upload_transluc(const uint8_t *table, uint32_t size)
      * path stays GPU-accelerated.  TRANS_REVERSE falls back to the CPU
      * because the current hardware no longer has a per-span reverse bit.
      */
+    d3d_gpu_finish_for_lookup_update();
+
     uint32_t wait_start = of_time_us();
     while (GPU_STATUS & GPU_STATUS_TRANSLUC_BUSY) {
         if ((uint32_t)(of_time_us() - wait_start) >
@@ -1573,8 +1552,8 @@ void d3d_gpu_drain(void)
  *                            (vplce >> v_shift) & MASK
  *   - palookupoffse        = pointer into palookup[pal][shade*256]
  *
- * GPU equivalent uses a SPAN_COLUMN with tex_width=1 so address-gen is
- * `tex_addr + (t >> 16)`.  We renormalise vplce / vince from "texel-
+ * GPU equivalent uses an affine span group with tex_width=1 so address-gen
+ * is `tex_addr + (t >> 16)`.  We renormalise vplce / vince from "texel-
  * units shifted by v_shift" to the GPU's 16.16 by:
  *
  *   t     = vplce << (16 - v_shift)        if v_shift <= 16
@@ -1624,7 +1603,11 @@ static inline void ensure_pal0_uploaded(void)
     if (!palookup[0]) return;
     if (gpu_pal_base_of_slot[0] == palookup[0]) return;
 
-    /* Stale or first time: reset cache + upload pal0 to slot 0. */
+    /* Stale or first time: retire queued spans before resetting slot 0.
+     * Palette slot memory is outside the command stream, so this is a real
+     * rendering boundary. */
+    d3d_gpu_finish_for_lookup_update();
+
     for (int i = 0; i < D3D_GPU_PAL_SLOTS; i++)
         gpu_pal_base_of_slot[i] = NULL;
     d3d_gpu_shade_cache_clear();
@@ -1640,14 +1623,13 @@ static inline void ensure_pal0_uploaded(void)
     }
     gpu_pal_base_of_slot[0] = palookup[0];
     gpu_pal_next_slot = 1;
-    /* Sticky GPU state resets to 0; resolved-slot cache starts there too. */
+    /* The current resolved slot starts at pal0. */
     gpu_current_slot = 0;
 }
 
 /* Returns the shade index (0..63) and slot for the given palookup row, or -1
- * if no GPU slot is available.  Slot changes are per-span now: word 6's
- * colormap_id nibble overrides sticky GPU state, so palette churn does not
- * force a batch flush. */
+ * if no GPU slot is available.  Slot selection is encoded per lane in the
+ * affine span group metadata, so palette changes do not force batch splits. */
 int d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out)
 {
     uint32_t pal_bytes = d3d_gpu_pal_bytes();
@@ -1759,8 +1741,7 @@ static inline void emit_column_span_slot(uint8_t *dest, int num_pixels, int shad
                               (uint16_t)num_pixels,
                               (uint8_t)(shade & 0x3F),
                               flags, span_colormap_id_for_slot(slot),
-                              (int16_t)bytesperline, 1, 0, tex_h_mask,
-                              0, 0, 0, 0, 0, 0);
+                              (int16_t)bytesperline, 1, 0, tex_h_mask);
 }
 
 static inline void emit_column_span(uint8_t *dest, int num_pixels, int shade,
@@ -2237,7 +2218,7 @@ static inline void emit_rotsprite_hline(uint8_t *dest, int num_pixels, int shade
                               (uint8_t)(shade & 0x3F),
                               flags, current_span_colormap_id(),
                               (int16_t)-1, (uint16_t)rs_tileHeight,
-                              0, 0, 0, 0, 0, 0, 0, 0);
+                              0, 0);
 }
 
 int d3d_gpu_rhline(uint8_t *dest, int num_pixels, int shade,
@@ -2316,7 +2297,7 @@ void d3d_gpu_sprite_vline(uint8_t *dest, int num_pixels, int shade,
                               (uint8_t)(shade & 0x3F),
                               flags, current_span_colormap_id(),
                               (int16_t)bytesperline, tile_height,
-                              0, 0, 0, 0, 0, 0, 0, 0);
+                              0, 0);
     perf_note_path_time(PERF_PATH_SPRITE, t0);
 }
 
@@ -2352,8 +2333,7 @@ static inline void emit_fwd_hline(uint8_t *dest, int num_pixels, int shade_x256,
                               flags, current_span_colormap_id(),
                               (int16_t)+1, tex_w,
                               (uint16_t)(tex_w - 1),
-                              (uint16_t)(tex_h - 1),
-                              0, 0, 0, 0, 0, 0);
+                              (uint16_t)(tex_h - 1));
 }
 
 void d3d_gpu_mhline(uint8_t *dest, int num_pixels, int shade_x256,
@@ -2443,8 +2423,7 @@ static inline void emit_hline_span(uint8_t *dest_right, int num_pixels,
                               current_span_colormap_id(),
                               (int16_t)-1, tex_w,
                               (uint16_t)(tex_w - 1),
-                              (uint16_t)(tex_h - 1),
-                              0, 0, 0, 0, 0, 0);
+                              (uint16_t)(tex_h - 1));
 }
 
 void d3d_gpu_hline(uint8_t *dest_right, int num_pixels, int shade_x256,

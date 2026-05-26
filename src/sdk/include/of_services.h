@@ -43,6 +43,17 @@ typedef struct of_video_timing {
 } of_video_timing_t;
 #endif
 
+#ifndef OF_VIDEO_MODE_T_DEFINED
+#define OF_VIDEO_MODE_T_DEFINED
+typedef struct of_video_mode {
+    uint16_t width;
+    uint16_t height;
+    uint16_t stride;
+    uint8_t color_mode;
+    uint8_t reserved;
+} of_video_mode_t;
+#endif
+
 /* Forward declare AWE per-voice config -- full definition in of_awe.h.
  * Kept opaque here so this header doesn't pull the AWE-specific types
  * into every TU that just wants the services table. */
@@ -308,6 +319,14 @@ struct of_services_table {
      * Nonzero values request a fixed scanout line count; hardware clamps
      * again and fixed Analogizer/SNAC modes override this request. */
     void      (*video_set_refresh_vtotal)(uint32_t v_total);
+
+    /* -- Dynamic framebuffer modes (append-only) --
+     * The active source framebuffer can be resized at runtime.  The
+     * scanout scaler maps it into the target's physical output timing. */
+    int       (*video_set_mode)(const of_video_mode_t *mode);
+    void      (*video_get_mode)(of_video_mode_t *out);
+    int       (*video_get_mode_count)(void);
+    int       (*video_get_mode_info)(int index, of_video_mode_t *out);
 };
 
 #ifndef OF_PC

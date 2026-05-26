@@ -2109,6 +2109,11 @@ void getinput(short snum)
     if(horiz < -MAXHORIZ) horiz = -MAXHORIZ;
     if(horiz > MAXHORIZ) horiz = MAXHORIZ;
 
+    /* A look-up/down view is held until the player walks forward or back,
+       at which point the horizon eases back to center (see processinput). */
+    if( vel )
+        p->return_to_center = 9;
+
     if(ud.scrollmode && ud.overhead_on)
     {
         ud.folfvel = vel;
@@ -3417,14 +3422,14 @@ void processinput(short snum)
 
         if( sb_snum&(1<<13) )
         {
-            p->return_to_center = 9;
+            /* Hold this look-up angle; recenter only on forward/back movement. */
             if( sb_snum&(1<<5) ) p->horiz += 12;
             p->horiz += 12;
         }
 
         else if( sb_snum&(1<<14) )
         {
-            p->return_to_center = 9;
+            /* Hold this look-down angle; recenter only on forward/back movement. */
             if( sb_snum&(1<<5) ) p->horiz -= 12;
             p->horiz -= 12;
         }

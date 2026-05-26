@@ -36,9 +36,10 @@ extern int d3d_gpu_use_spans;
 extern int d3d_gpu_force_cpu_spans;
 
 /* Fixed command policy for the current openfpgaOS GPU:
- * BUILD computes spans on the CPU and Duke submits only native grouped
- * affine/perspective span commands with explicit colormap ids.  Rotatesprite
- * stays on CPU for byte-sensitive 2D/menu/save paths. */
+ * BUILD computes spans on the CPU and Duke submits SDK affine span groups
+ * with explicit per-lane colormap ids.  The SDK lowers those groups to the
+ * unified GPU_CMD_DRAW_PARAM_SPAN_LIST command.  Rotatesprite stays on CPU
+ * for byte-sensitive 2D/menu/save paths. */
 #define D3D_GPU_FORCE_ROTATESPRITE_CPU      1
 #define D3D_GPU_USE_CACHED_FRAMEPLACE       0
 
@@ -237,12 +238,11 @@ void d3d_gpu_pre_cpu_fb_access(void);
  * skips the full D-cache flush needed only before CPU framebuffer reads. */
 void d3d_gpu_prepare_cpu_fb_write(void);
 
-/* Returns shade index 0..31 if `palookupoffse` is inside a GPU-loaded
+/* Returns shade index 0..63 if `palookupoffse` is inside a GPU-loaded
  * palookup slot, or can be lazily uploaded into one.  Returns -1 if no
  * slot is available; caller must fall back to the SW path so the draw
  * uses the correct per-pal shading.  The slot variant also reports the
- * selected slot, which the span encoder can put in word 6's colormap_id
- * nibble. */
+ * selected slot, which the span encoder writes into the lane metadata. */
 int  d3d_gpu_shade_for(const uint8_t *palookupoffse);
 int  d3d_gpu_shade_slot_for(const uint8_t *palookupoffse, int *slot_out);
 
@@ -319,9 +319,9 @@ void d3d_gpu_mvline4(uint8_t *fb_at_y0, int num_pixels,
  * it skips the draw rather than silently writing the wrong shading;
  * missing translucent geometry is an honest signal that the gap is real.
  *
- * The host fabric is expected to already advertise OF_HW_GPU_TRANSLUC
- * (capability gating is stage 7); on bitstreams without the BLEND unit
- * these calls render with COLORMAP+SKIP_ZERO and look opaque. -------- */
+ * The translucency LUT upload path disables these helpers if the fabric
+ * BLEND unit does not respond, so reverse translucency and missing hardware
+ * still fall back through the original CPU call sites. -------- */
 
 /* Translucent vertical wall column — replaces draw.c::tvlineasm1 for
  * Duke TRANS_NORMAL. `texture` is the 1-D column data (BUILD's `source`

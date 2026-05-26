@@ -41,7 +41,6 @@ extern "C" {
 #define OF_HW_NET           (1 << 2)    /* Networking (link cable / serial / wifi) */
 #define OF_HW_ANALOGIZER    (1 << 3)    /* Analog video output */
 #define OF_HW_GPU_SPAN      (1 << 4)    /* GPU span renderer (always set) */
-#define OF_HW_GPU_TRIANGLE  (1 << 5)    /* GPU triangle rasterizer (Full only) */
 #define OF_HW_MIDI          (1 << 6)    /* MIDI playback (sample-based synth) */
 #define OF_HW_WIFI          (1 << 7)    /* Wireless networking */
 #define OF_HW_FPU           (1 << 8)    /* Hardware FPU (RISC-V F extension) */
@@ -51,11 +50,17 @@ extern "C" {
 #define OF_HW_GPU_ALPHA     (1 << 12)   /* GPU alpha / additive blending */
 #define OF_HW_GPU_PERSP     (1 << 13)   /* GPU perspective-correct spans */
 #define OF_HW_GPU_FRAGPIPE  (1 << 14)   /* GPU 1-px/cycle fragment pipeline */
+#define OF_HW_GPU_PARAM_SPAN_LIST (1 << 15) /* GPU parametric span-list command */
+#define OF_HW_GPU_PARAM_SPAN_Z    (1 << 16) /* Param-span Quake-compatible z writes */
+#define OF_HW_GPU_PARAM_SPAN_ZTEST (1 << 17) /* Param-span Quake-compatible z test/write */
+#define OF_HW_GPU_PARAM_SPAN_Q29_SCALE (1 << 18) /* Param-span Q29 dynamic scale */
+
+#define OF_EMIT_CAP_PARAM_SPAN_Q29_SCALE OF_HW_GPU_PARAM_SPAN_Q29_SCALE
 
 /* Convenience: all the GPU bits an app might care about for renderer choice. */
-#define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_PERSP | OF_HW_GPU_FRAGPIPE)
-#define OF_HW_GPU_FULL_MASK  (OF_HW_GPU_LITE_MASK | OF_HW_GPU_TRIANGLE | \
-                              OF_HW_GPU_VCOLOR | OF_HW_GPU_BILINEAR | OF_HW_GPU_ALPHA)
+#define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE)
+#define OF_HW_GPU_FULL_MASK  (OF_HW_GPU_LITE_MASK | OF_HW_GPU_VCOLOR | \
+                              OF_HW_GPU_BILINEAR | OF_HW_GPU_ALPHA)
 
 struct of_capabilities {
     uint32_t magic;             /* OF_CAPS_MAGIC */

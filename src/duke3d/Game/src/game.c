@@ -344,60 +344,68 @@ void drawpockethelppage(void)
 
     minitext(20,y,"DPAD U/D",0,2+8+16);
     minitext(78,y,"FORWARD/BACK",23,2+8+16);
-    minitext(174,y,"X",0,2+8+16);
-    minitext(232,y,"JUMP",23,2+8+16);
+    minitext(174,y,"R1+A",0,2+8+16);
+    minitext(232,y,"LOOK UP",23,2+8+16);
     y += row;
 
     minitext(20,y,"DPAD L/R",0,2+8+16);
     minitext(78,y,"TURN",23,2+8+16);
-    minitext(174,y,"Y",0,2+8+16);
-    minitext(232,y,"CROUCH",23,2+8+16);
+    minitext(174,y,"R1+B",0,2+8+16);
+    minitext(232,y,"LOOK DOWN",23,2+8+16);
     y += row;
 
     minitext(20,y,"L1+DPAD L/R",0,2+8+16);
     minitext(78,y,"STRAFE",23,2+8+16);
-    minitext(174,y,"L2/R2",0,2+8+16);
-    minitext(232,y,"STRAFE L/R",23,2+8+16);
+    minitext(174,y,"R1+L1+A",0,2+8+16);
+    minitext(232,y,"KICK",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"L2/R2",0,2+8+16);
+    minitext(78,y,"STRAFE L/R",23,2+8+16);
+    minitext(174,y,"R1+L1+B",0,2+8+16);
+    minitext(232,y,"USE INV",23,2+8+16);
     y += row;
 
     minitext(20,y,"LSTICK",0,2+8+16);
     minitext(78,y,"MOVE/TURN",23,2+8+16);
-    minitext(174,y,"START",0,2+8+16);
-    minitext(232,y,"MENU",23,2+8+16);
-    y += row;
-
-    minitext(20,y,"RSTICK",0,2+8+16);
-    minitext(78,y,"LOOK",23,2+8+16);
-    minitext(174,y,"SELECT",0,2+8+16);
-    minitext(232,y,"MAP",23,2+8+16);
-    y += row;
-
-    minitext(20,y,"A",0,2+8+16);
-    minitext(78,y,"FIRE",23,2+8+16);
-    minitext(174,y,"R1+A",0,2+8+16);
-    minitext(232,y,"QUICK KICK",23,2+8+16);
-    y += row;
-
-    minitext(20,y,"B TAP",0,2+8+16);
-    minitext(78,y,"OPEN/USE",23,2+8+16);
-    minitext(174,y,"R1+B",0,2+8+16);
-    minitext(232,y,"USE INV",23,2+8+16);
-    y += row;
-
-    minitext(20,y,"B HOLD",0,2+8+16);
-    minitext(78,y,"RUN",23,2+8+16);
     minitext(174,y,"R1+X/Y",0,2+8+16);
     minitext(232,y,"NEXT/PREV WPN",23,2+8+16);
     y += row;
 
-    minitext(20,y,"B IN MENU",0,2+8+16);
-    minitext(78,y,"BACK",23,2+8+16);
+    minitext(20,y,"RSTICK",0,2+8+16);
+    minitext(78,y,"LOOK",23,2+8+16);
     minitext(174,y,"R1+START",0,2+8+16);
     minitext(232,y,"NEXT INV",23,2+8+16);
     y += row;
 
+    minitext(20,y,"A",0,2+8+16);
+    minitext(78,y,"FIRE",23,2+8+16);
     minitext(174,y,"R1+SELECT",0,2+8+16);
     minitext(232,y,"PREV INV",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"X",0,2+8+16);
+    minitext(78,y,"JUMP",23,2+8+16);
+    minitext(174,y,"START",0,2+8+16);
+    minitext(232,y,"MENU",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"Y",0,2+8+16);
+    minitext(78,y,"CROUCH",23,2+8+16);
+    minitext(174,y,"SELECT",0,2+8+16);
+    minitext(232,y,"MAP",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"B TAP",0,2+8+16);
+    minitext(78,y,"OPEN/USE",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"B HOLD",0,2+8+16);
+    minitext(78,y,"RUN",23,2+8+16);
+    y += row;
+
+    minitext(20,y,"B IN MENU",0,2+8+16);
+    minitext(78,y,"BACK",23,2+8+16);
 
 }
 
