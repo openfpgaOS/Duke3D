@@ -21,6 +21,13 @@
             },
             {
                 "id": 2,
+                "name": "OS Config",
+                "required": false,
+                "parameters": 0,
+                "extensions": ["ini"]
+            },
+            {
+                "id": 3,
                 "name": "Application",
                 "required": false,
                 "parameters": 0,
@@ -28,24 +35,16 @@
                 "deferload": true
             },
             {
-                "id": 3,
+                "id": 4,
                 "name": "Data 1",
                 "required": false,
                 "parameters": 0,
-                "extensions": ["mid", "mod", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
-                "deferload": true
-            },
-            {
-                "id": 4,
-                "name": "Data 2",
-                "required": false,
-                "parameters": 0,
-                "extensions": ["mid", "mod", "ofsf", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
+                "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
                 "deferload": true
             },
             {
                 "id": 5,
-                "name": "Data 3",
+                "name": "Data 2",
                 "required": false,
                 "parameters": 0,
                 "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
@@ -53,7 +52,7 @@
             },
             {
                 "id": 6,
-                "name": "Data 4",
+                "name": "Data 3",
                 "required": false,
                 "parameters": 0,
                 "extensions": ["mid", "dat", "png", "bin", "grp", "pak", "wad", "rom", "nes"],
@@ -67,6 +66,7 @@
                 "extensions": ["ofsf"],
                 "deferload": true
             },
+            { "id": 8,  "name": "Shared Config", "required": false, "parameters": "0x84", "nonvolatile": true, "address": "0x20380000", "size_maximum": "0x40000", "extensions": ["cfg", "bin"] },
             { "id": 10, "name": "Save 0", "required": false, "parameters": "0x84", "nonvolatile": true, "address": "0x20100000", "size_maximum": "0x40000", "extensions": ["sav"] },
             { "id": 11, "name": "Save 1", "required": false, "parameters": "0x84", "nonvolatile": true, "address": "0x20140000", "size_maximum": "0x40000", "extensions": ["sav"] },
             { "id": 12, "name": "Save 2", "required": false, "parameters": "0x84", "nonvolatile": true, "address": "0x20180000", "size_maximum": "0x40000", "extensions": ["sav"] },
