@@ -21,6 +21,15 @@
             },
             {
                 "id": 2,
+                "name": "OS Config",
+                "required": false,
+                "parameters": 0,
+                "filename": "duke3d.ini",
+                "extensions": ["ini"],
+                "deferload": true
+            },
+            {
+                "id": 3,
                 "name": "Application",
                 "required": false,
                 "parameters": 0,
@@ -29,7 +38,7 @@
                 "deferload": true
             },
             {
-                "id": 3,
+                "id": 4,
                 "name": "Game Data",
                 "required": true,
                 "parameters": 0,
@@ -38,7 +47,7 @@
                 "deferload": true
             },
             {
-                "id": 4,
+                "id": 5,
                 "name": "Sound Bank",
                 "required": false,
                 "parameters": 0,
@@ -47,16 +56,8 @@
                 "deferload": true
             },
             {
-                "id": 5,
-                "name": "Data 3",
-                "required": false,
-                "parameters": 0,
-                "extensions": ["dat"],
-                "deferload": true
-            },
-            {
                 "id": 6,
-                "name": "Data 4",
+                "name": "Data 3",
                 "required": false,
                 "parameters": 0,
                 "extensions": ["dat"],
