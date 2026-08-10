@@ -63,6 +63,16 @@ static void CONFIG_RegisterSettingsSlot(void)
 }
 #endif
 
+/* Mouse sensitivity default, in the menu bar's own units: bar() in
+ * menues.c runs the slider over 0..63, so 75% of full scale is
+ * 0.75 * 63 = 47.  Used both by CONFIG_SetDefaults and as the repair
+ * value when a stored setting is out of range.
+ *
+ * Note this is a DEFAULT: CONFIG_ReadSetup applies it first and then
+ * lets the persisted settings slot overwrite it, so it only takes
+ * effect where nothing has been saved yet. */
+#define DEFAULT_MOUSE_SENSITIVITY 47
+
 //
 // Sound variables
 //
@@ -252,7 +262,7 @@ void CONFIG_SetDefaults( void )
    ReverseStereo = 0;
    
    // mouse
-   mouseSensitivity_X = 16;
+   mouseSensitivity_X = DEFAULT_MOUSE_SENSITIVITY;
    mouseSensitivity_Y = mouseSensitivity_X;
 
    // game
@@ -424,13 +434,13 @@ void CONFIG_SetupMouse( int32 scripthandle )
 
 	SCRIPT_GetNumber( scripthandle, "Controls","MouseSensitivity_X_Rancid",&mouseSensitivity_X);
 	if(mouseSensitivity_X>63 || mouseSensitivity_X < 0)
-		mouseSensitivity_X  = 15;
+		mouseSensitivity_X  = DEFAULT_MOUSE_SENSITIVITY;
 	// FIX_00014: Added Y cursor setup for mouse sensitivity in the menus 
 	// Copy Sensitivity_X into Sensitivity_Y in case it is not set.
 	mouseSensitivity_Y = mouseSensitivity_X;
 	SCRIPT_GetNumber( scripthandle, "Controls","MouseSensitivity_Y_Rancid",&mouseSensitivity_Y);
 	if(mouseSensitivity_Y>63 || mouseSensitivity_Y < 0)
-		mouseSensitivity_Y  = 15;
+		mouseSensitivity_Y  = DEFAULT_MOUSE_SENSITIVITY;
 
    }
 
