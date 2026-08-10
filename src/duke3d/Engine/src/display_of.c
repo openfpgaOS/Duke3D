@@ -2,10 +2,9 @@
  * display_of.c -- openfpgaOS display/input/timer shim for Duke Nukem 3D
  *
  * Replaces the SDL2 display.c with calls to the openfpgaOS API (of_*).
- * Targets openfpgaOS: 320x240 indexed framebuffer, gamepad input.
+ * Targets openfpgaOS: 320x200 indexed framebuffer, gamepad input.
  *
- * BUILD engine renders into a 320x200 uint8_t buffer. We blit that into the
- * 320x240 hardware surface centered vertically (20-pixel black bars top/bottom).
+ * BUILD engine renders directly into the active 320x200 hardware surface.
  */
 
 #ifdef OPENFPGA
@@ -35,8 +34,6 @@
 
 #define OF_DISPLAY_W  320
 #define OF_DISPLAY_H  200
-#define OF_DISPLAY_HW_H 240
-#define OF_DISPLAY_BAR_H ((OF_DISPLAY_HW_H - OF_DISPLAY_H) / 2)  /* 20px letterbox */
 /* Variables required by the engine (declared extern in display.h / build.h) */
 int32_t xres, yres, bytesperline, imageSize, maxpages;
 uint8_t *frameplace;
@@ -48,10 +45,6 @@ uint8_t permanentupdate = 0, vgacompatible;
 /* Fallback framebuffer for pre-video-init and 2D editor drawing.
  * Once video is up, BUILD renders directly into the HW back buffer. */
 static uint8_t of_framebuffer[OF_DISPLAY_W * OF_DISPLAY_H];
-
-/* Triple-buffer bar-clearing tracker: counts down from 3 so each
- * of the 3 HW buffers gets its letterbox bars cleared exactly once. */
-static int bars_remaining = 3;
 
 /* Input state */
 static int32_t mouse_relative_x = 0;
@@ -219,6 +212,7 @@ static uint8_t tap_use_held = 0;
 static unsigned int tap_use_release_ms = 0;
 static int32_t dock_mouse_accum_x = 0;
 static int32_t dock_mouse_accum_y = 0;
+static uint16_t dock_mouse_held = 0;   /* fire/use buttons we have latched */
 static of_input_state_t joystick_state;
 static int joystick_state_valid = 0;
 
@@ -435,17 +429,20 @@ static void send_hid_key(uint8_t usage, int pressed)
         send_key(scancode, extended, pressed);
 }
 
+static void send_hid_key_edges_word(int word, uint32_t bits, int pressed)
+{
+    while (bits) {
+        int bit = __builtin_ctz(bits);
+        send_hid_key((uint8_t)(word * 32 + bit), pressed);
+        bits &= bits - 1;
+    }
+}
+
 static void send_hid_key_edges(const uint32_t keys[OF_KEYBOARD_WORDS],
                                int pressed)
 {
-    for (int word = 0; word < (int)OF_KEYBOARD_WORDS; word++) {
-        uint32_t bits = keys[word];
-        while (bits) {
-            int bit = __builtin_ctz(bits);
-            send_hid_key((uint8_t)(word * 32 + bit), pressed);
-            bits &= bits - 1;
-        }
-    }
+    for (int word = 0; word < (int)OF_KEYBOARD_WORDS; word++)
+        send_hid_key_edges_word(word, keys[word], pressed);
 }
 
 static void send_modifier_edges(uint16_t modifiers, int pressed)
@@ -456,11 +453,67 @@ static void send_modifier_edges(uint16_t modifiers, int pressed)
     }
 }
 
+/* Mirror of the keyboard's level state, kept so a hot-unplug can undo it.
+ * The HAL derives edges per poll, so once the device is gone there is
+ * nothing left to derive a release from — this snapshot is the only
+ * record of what BUILD still believes is held. */
+static uint32_t kb_held_keys[OF_KEYBOARD_WORDS];
+static uint16_t kb_held_modifiers;
+
+static void remember_keyboard_held(const uint32_t keys[OF_KEYBOARD_WORDS],
+                                   uint16_t modifiers)
+{
+    memcpy(kb_held_keys, keys, sizeof(kb_held_keys));
+    kb_held_modifiers = modifiers;
+}
+
+static void release_keyboard_held(void)
+{
+    if (kb_held_modifiers) {
+        send_modifier_edges(kb_held_modifiers, 0);
+        kb_held_modifiers = 0;
+    }
+
+    for (int word = 0; word < (int)OF_KEYBOARD_WORDS; word++) {
+        if (!kb_held_keys[word])
+            continue;
+        send_hid_key_edges_word(word, kb_held_keys[word], 0);
+        kb_held_keys[word] = 0;
+    }
+}
+
+/* From caps v4 the OS hands us decoded mouse counts.  Older firmware
+ * passes the Pocket dock's packed sample pairs {a << 8 | b} through raw,
+ * where the true delta is the sum of the two int8 halves.  Feeding a
+ * packed pair to the scaler unchanged reads ~128x too fast and inverts
+ * on sign, so this has to run before any scaling.
+ *
+ * Probed once and cached: of_get_caps() is a pointer chase, and this
+ * sits in the per-frame input path. */
+static int32_t mouse_counts(int32_t v)
+{
+    static int raw_pairs = -1;
+
+    if (raw_pairs < 0) {
+        const struct of_capabilities *caps = of_get_caps();
+
+        raw_pairs = caps != NULL
+                 && caps->platform_id == OF_PLATFORM_POCKET
+                 && (caps->version < 4
+                  || !(caps->os_features & OF_OS_FEAT_MOUSE_COUNTS));
+    }
+
+    if (!raw_pairs)
+        return v;
+
+    return (int32_t)((int8_t)(v >> 8) + (int8_t)v);
+}
+
 static int32_t consume_scaled_mouse_delta(int32_t *accum, int32_t delta)
 {
     int32_t scaled;
 
-    *accum += delta;
+    *accum += mouse_counts(delta);
     scaled = *accum / DOCK_MOUSE_DIVISOR;
     *accum -= scaled * DOCK_MOUSE_DIVISOR;
     return scaled;
@@ -549,21 +602,50 @@ void *get_framebuffer(void)
     return of_framebuffer;
 }
 
+static void set_duke_video_mode(void)
+{
+    of_video_mode_t mode = {
+        OF_DISPLAY_W,
+        OF_DISPLAY_H,
+        OF_DISPLAY_W,
+        OF_VIDEO_MODE_8BIT,
+        0
+    };
+    of_video_mode_t actual;
+
+    if (of_video_set_mode(&mode) < 0) {
+        printf("Duke3D: failed to set openfpgaOS 320x200 video mode\n");
+        exit(1);
+    }
+
+    of_video_get_mode(&actual);
+    if (actual.width != OF_DISPLAY_W ||
+        actual.height != OF_DISPLAY_H ||
+        actual.stride != OF_DISPLAY_W ||
+        actual.color_mode != OF_VIDEO_MODE_8BIT) {
+        printf("Duke3D: unexpected video mode %ux%u stride %u color %u\n",
+               (unsigned)actual.width,
+               (unsigned)actual.height,
+               (unsigned)actual.stride,
+               (unsigned)actual.color_mode);
+        exit(1);
+    }
+}
+
 /* Point BUILD's rendering target at the given HW back buffer.
  * Also retargets the GPU framebuffer to the same back buffer so any
  * GPU-driven span draws this frame land in the right surface. */
 static void retarget_frameplace_at(uint8_t *dst)
 {
     if (dst) {
-        uint8_t *render_base = dst + OF_DISPLAY_W * OF_DISPLAY_BAR_H;
         /* Keep BUILD CPU fallback/2D writes on the uncached alias.  The
          * cached framebuffer experiment is compiled off in the fixed GPU
          * policy because the uncached path has the simpler coherency model. */
         frameplace = D3D_GPU_USE_CACHED_FRAMEPLACE ?
-            render_base : (uint8_t *)of_uncached(render_base);
+            dst : (uint8_t *)of_uncached(dst);
         extern int32_t viewoffset;
         frameoffset = frameplace + viewoffset;
-        d3d_gpu_set_fb(render_base, OF_DISPLAY_W);
+        d3d_gpu_set_fb(dst, OF_DISPLAY_W);
     }
 }
 
@@ -585,6 +667,7 @@ static void ensure_video_init(void) {
     if (!video_initialized) {
         video_initialized = 1;
         of_video_init();
+        set_duke_video_mode();
         of_video_set_display_mode(OF_DISPLAY_FRAMEBUFFER);
         of_video_palette_bulk(of_palette, 256);
         /* Clear all 3 triple-buffer frames using the kernel-driven flip
@@ -604,7 +687,6 @@ static void ensure_video_init(void) {
          * slot is currently drawable". */
         draw_idx = of_video_acquire_next(-1, 0);
         /* Point BUILD at the HW back buffer from now on */
-        bars_remaining = 3;
         retarget_frameplace_at(of_video_buffer_addr(draw_idx));
     }
 }
@@ -660,21 +742,7 @@ void _nextpage(void)
 
     _handle_events();
 
-    /* BUILD already rendered into the HW back buffer (via frameplace).
-     * Clear letterbox bars only until all 3 triple-buffer slots are
-     * done. */
-    if (bars_remaining > 0) {
-        uint8_t *dst = of_video_surface();
-        if (dst) {
-            d3d_gpu_clear_rect_fb(dst,
-                                  OF_DISPLAY_W, OF_DISPLAY_BAR_H, 0);
-            d3d_gpu_clear_rect_fb(dst + OF_DISPLAY_W *
-                                       (OF_DISPLAY_BAR_H + OF_DISPLAY_H),
-                                  OF_DISPLAY_W, OF_DISPLAY_BAR_H, 0);
-        }
-        bars_remaining--;
-    }
-
+    /* BUILD already rendered into the HW back buffer via frameplace. */
     d3d_gpu_prepare_framebuffer_for_present();
 
     uint32_t wait_flip_us = 0;
@@ -828,11 +896,10 @@ int32_t _setgamemode(int32_t daxdim, int32_t daydim)
 
     /* Always use 320x200 regardless of what was requested */
     if (video_initialized) {
-        /* Clear the full HW back buffer (bars + render area) via GPU. */
+        /* Clear the active 320x200 back buffer via GPU. */
         uint8_t *dst = of_video_surface();
         if (dst) d3d_gpu_clear_rect_fb(dst, OF_DISPLAY_W,
-                                       OF_DISPLAY_HW_H, 0);
-        bars_remaining = 3;
+                                       OF_DISPLAY_H, 0);
     } else {
         /* CPU fallback only — of_framebuffer is a static C array used
          * pre-video-init; the GPU isn't initialized yet and can't
@@ -948,6 +1015,12 @@ static void handle_events(void)
         send_hid_key_edges(kb.keys_pressed, 1);
         send_hid_key_edges(kb.keys_released, 0);
         send_modifier_edges(kb.modifiers_released, 0);
+        remember_keyboard_held(kb.keys, kb.modifiers);
+    } else {
+        /* Unplugged: the release edges for whatever was down never
+         * arrive, and BUILD latches key state — a keyboard pulled
+         * mid-strafe leaves the player walking into a wall forever. */
+        release_keyboard_held();
     }
 
     /* --- Digital buttons with no shoulder-modified alternate -> scancodes --- */
@@ -1010,6 +1083,17 @@ static void handle_events(void)
             send_key(DOCK_MOUSE_USE_SCANCODE, 0x00, 1);
         if (ms.buttons_released & 2)
             send_key(DOCK_MOUSE_USE_SCANCODE, 0x00, 0);
+
+        dock_mouse_held = ms.buttons & 3;
+    } else if (dock_mouse_held) {
+        /* Unplugged mid-click: the firmware's release edge is gone with
+         * the device, so LCtrl/Space would stay latched down — the
+         * player fires forever.  Same failure mode as the keyboard. */
+        if (dock_mouse_held & 1)
+            send_key(DOCK_MOUSE_FIRE_SCANCODE, 0x00, 0);
+        if (dock_mouse_held & 2)
+            send_key(DOCK_MOUSE_USE_SCANCODE, 0x00, 0);
+        dock_mouse_held = 0;
     }
 
     mouse_buttons = 0;
@@ -1266,9 +1350,8 @@ void drawline16(int32_t XStart, int32_t YStart, int32_t XEnd, int32_t YEnd, uint
 
 void clear2dscreen(void)
 {
-    /* BUILD 2D-mode full-screen clear of the render area (NOT the
-     * letterbox bars).  GPU-routed via clear_rect on the 320×200
-     * frameplace region — caller's setviewtotalarea / qsetmode
+    /* BUILD 2D-mode full-screen clear.  GPU-routed via clear_rect on the
+     * 320x200 frameplace region — caller's setviewtotalarea / qsetmode
      * sequencing fences before any reads. */
     d3d_gpu_clear_rect_fb((uint8_t *)frameplace,
                           OF_DISPLAY_W, OF_DISPLAY_H, 0);
