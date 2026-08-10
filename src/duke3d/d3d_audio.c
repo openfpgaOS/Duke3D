@@ -19,6 +19,7 @@
 #include "of_codec.h"
 #include "of_timer.h"
 #include "of_midi.h"
+#include "of_smp_voice.h"
 
 /* Game headers */
 #include "duke3d.h"
@@ -85,6 +86,13 @@ static int d3d_sfx_user_volume = 255;
 
 /* L/R target debounce cache for d3d_sound_set_pan.  Invalidated when a
  * slot is freed so a new sound's initial stereo volume always writes. */
+/* Orphaned-music-voice reclaim (see d3d_audio_pump).  250 ms is well inside
+ * the window where a leaked looping voice would be noticed, and slow enough
+ * that the scan never shows up next to the per-frame work. */
+#define D3D_ORPHAN_REAP_INTERVAL_MS 250
+static uint32_t next_orphan_reap_ms;
+static uint32_t orphan_reap_total;
+
 static uint8_t last_vol_l[MAX_ACTIVE_VOICES];
 static uint8_t last_vol_r[MAX_ACTIVE_VOICES];
 static uint8_t last_vol_valid[MAX_ACTIVE_VOICES];
@@ -1004,6 +1012,30 @@ void d3d_audio_pump(void)
     poll_ended_voices();
 
     uint32_t now = of_time_ms();
+
+    /* Reclaim leaked MUSIC voices.  of_smp_voice.h requires this be called
+     * periodically from the main thread and nothing ever did, so every voice
+     * the synth dropped on a stale handle generation kept its HW slot (and
+     * kept sounding, if looped).  Those orphans accumulate in a pool the two
+     * groups SHARE, so the visible symptom is on the SFX side: the free scan
+     * fails earlier and earlier, and since the kernel allocator steals a
+     * same-group victim before crossing groups, new effects cut off older
+     * effects while the dead music voices sit untouched.
+     *
+     * Throttled rather than run every pump: this is called from sampletimer
+     * as well as once per frame, and the scan costs a service call per
+     * unowned slot.  Orphans are rare and never urgent — the reaper's own
+     * grace window already defers voices mid-fade. */
+    if ((int32_t)(now - next_orphan_reap_ms) >= 0) {
+        next_orphan_reap_ms = now + D3D_ORPHAN_REAP_INTERVAL_MS;
+        int reaped = smp_voice_reap_orphans();
+        if (reaped > 0) {
+            orphan_reap_total += (uint32_t)reaped;
+            printf("[d3d_audio] reaped %d orphaned music voice%s (%u total)\n",
+                   reaped, reaped == 1 ? "" : "s",
+                   (unsigned)orphan_reap_total);
+        }
+    }
     for (int i = 0; i < MAX_ACTIVE_VOICES; i++) {
         if (active_voices[i].voice < 0) continue;
         if (active_voices[i].expire_ms == 0) continue;  /* looping — no expiry */
