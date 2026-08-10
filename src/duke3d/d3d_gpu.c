@@ -40,6 +40,97 @@ int d3d_gpu_force_cpu_spans = 0;  /* Scoped gate: when non-zero, draw.c
                                    * original CPU loops. */
 static int d3d_gpu_translucent_spans_enabled = 1;
 
+static int gpu_use_column_list;   /* 0x4C caps bit + probe, set at init */
+
+/* A/B verification toggle: force column-eligible spans (s=0/sstep=0)
+ * back onto the 0x48 affine span-group path.  Checked at queue time so
+ * it can be flipped live; both paths render byte-identical pixels. */
+int d3d_gpu_force_affine_columns = 0;
+
+/* --- Non-fatal emission guard --------------------------------------
+ * of_gpu.h's ring waits are bounded but FATAL: on timeout they trap and
+ * take the machine down.  That is right for a wedged pipeline, but wrong
+ * when the GPU is merely paused — the platform menu freezes scanout, so
+ * the ring stops draining while BUILD keeps drawing.  Duke fills a 16 KB
+ * ring well inside one frame, so the old behaviour was a hard trap on a
+ * condition that resolves the instant the menu closes.
+ *
+ * Every flush now probes for its WHOLE batch up front with
+ * of_gpu_can_emit(), then falls back to a short bounded reserve before
+ * giving up.  Ring space only grows until we emit (the GPU is the sole
+ * consumer), so a batch that probes clean cannot block partway through —
+ * that is the property the up-front probe buys, and why the probe covers
+ * the full chunked byte count rather than one command at a time.
+ *
+ * On failure the staged lanes are DROPPED, not emitted.  The frame is
+ * already lost (scanout is frozen); a torn frame that recovers beats a
+ * trap that does not.  The latch keeps the rest of the frame cheap —
+ * once stalled we stop re-probing per batch — and clears at the frame
+ * boundary so a recovered GPU resumes on the next page. */
+static int gpu_emit_stalled;
+static uint32_t gpu_emit_stall_events;
+static uint32_t gpu_emit_dropped_lanes;
+
+/* Short: this is the "GPU is paused" path, not the "GPU is slow" path.
+ * _gpu_ring_ensure's own fatal spin is 50M iterations; anything that
+ * needs more than a nudge here is a stall, and waiting longer only
+ * burns the frame we are trying to salvage. */
+#define D3D_GPU_EMIT_SPIN_LIMIT 20000u
+
+static int d3d_gpu_reserve_or_drop(uint32_t bytes)
+{
+    /* The healthy path must cost nothing.  _gpu_ring_ensure() decides on
+     * the CACHED rdptr and only touches the register once that says the
+     * ring is short; of_gpu_can_emit() always reads GPU_RING_RDPTR.
+     * Probing with it unconditionally would add an uncached MMIO read to
+     * every flush — and Duke flushes on every batch fill and every state
+     * change, so that is hundreds of reads a frame on a path that used
+     * to do none.
+     *
+     * Agreeing with the cached value is also what makes deferring safe:
+     * if it says there is room, the emit path's fast path reads the same
+     * value and never reaches the fatal spin.  A stale cache can only
+     * UNDER-report free space (wrptr advances, rdptr looks frozen), so
+     * the error direction is a needless register read, never a missed
+     * trap. */
+    if (_gpu_ring_free_known() >= bytes)
+        return 1;
+
+    /* Cached view says short — now the register read is worth paying. */
+    if (of_gpu_can_emit(bytes))
+        return 1;
+    if (of_gpu_try_reserve_bytes(bytes, D3D_GPU_EMIT_SPIN_LIMIT))
+        return 1;
+
+    if (!gpu_emit_stalled) {
+        gpu_emit_stalled = 1;
+        gpu_emit_stall_events++;
+        /* Reported unconditionally: this is a FAULT (we are dropping the
+         * frame's draws), not a perf metric, and the perf harness is
+         * compiled out of release builds — gating it there would make the
+         * only symptom invisible on exactly the builds that ship.
+         * Throttled because the latch re-arms every frame, so a menu held
+         * open would otherwise emit one line per frame forever. */
+        if (gpu_emit_stall_events <= 8u ||
+            (gpu_emit_stall_events & 0xFFu) == 0u)
+            printf("[d3d_gpu] ring stalled, dropping draws "
+                   "(event %u, %u lanes dropped so far)\n",
+                   gpu_emit_stall_events, gpu_emit_dropped_lanes);
+    }
+    return 0;
+}
+
+/* Worst-case wire bytes for a lane batch, matching the SDK's chunking:
+ * both emitters split at their MAX_NATIVE_LANES, and each chunk carries
+ * its own 1-word command header on top of the payload words. */
+static inline uint32_t d3d_gpu_batch_bytes(uint32_t lanes, uint32_t native,
+                                           uint32_t lane_words,
+                                           uint32_t payload_fixed)
+{
+    uint32_t chunks = (lanes + native - 1u) / native;
+    return (chunks * (1u + payload_fixed) + lanes * lane_words) * 4u;
+}
+
 static const uint8_t *pending_transluc_table;
 static uint32_t pending_transluc_size;
 
@@ -738,6 +829,13 @@ void d3d_gpu_perf_dump(void)
            cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_FAKE],
            cap.phase_avg_us[D3D_GPU_PERF_PHASE_DOMOVE_CYCLERS],
            cap.phase_max_us[D3D_GPU_PERF_PHASE_DOMOVE_CYCLERS]);
+
+    /* Only when it has actually happened — a silent counter would let a
+     * frame-dropping stall pass for a normal slow frame.  Lifetime
+     * totals, not per-interval: these are rare events. */
+    if (gpu_emit_stall_events)
+        printf("[perf-emit] ring stalls=%u dropped_lanes=%u\n",
+               gpu_emit_stall_events, gpu_emit_dropped_lanes);
 }
 
 static inline uint32_t perf_dt_us(uint32_t t0)
@@ -848,6 +946,46 @@ void d3d_gpu_perf_report_frame(uint32_t frame_period_us,
     gpu_perf_last_report_ms = now_ms;
 }
 
+/* Verify CMD_DRAW_COLUMN_LIST (0x4C) end-to-end before trusting the
+ * caps bit: a bitstream that advertises OF_HW_GPU_COLUMN_LIST but
+ * predates the decode path drains the command as a no-op, which this
+ * catches (the probe pixel stays 0).  Same probe as the Doom port's
+ * r_gpu.c.  Runs once at init, before BUILD sets a real framebuffer —
+ * every draw path gates on fb_base, so the probe's SET_FB state can't
+ * leak into a frame. */
+static uint8_t gpu_probe_fb[64] __attribute__((aligned(64)));
+static uint8_t gpu_probe_tex[64] __attribute__((aligned(64)));
+
+static int d3d_gpu_probe_column_list(void)
+{
+    of_gpu_column_list_group_t group;
+
+    memset(gpu_probe_fb, 0, sizeof(gpu_probe_fb));
+    memset(gpu_probe_tex, 0, sizeof(gpu_probe_tex));
+    gpu_probe_tex[0] = 0xa5;
+
+    of_cache_flush_range(gpu_probe_fb, sizeof(gpu_probe_fb));
+    of_cache_flush_range(gpu_probe_tex, sizeof(gpu_probe_tex));
+    GPU_TEX_FLUSH = 1;
+
+    of_gpu_set_framebuffer((uint32_t)(uintptr_t)gpu_probe_fb, 8);
+
+    memset(&group, 0, sizeof(group));
+    group.lane_count = 1;
+    group.tex_width = 1;
+    group.fb_step = 1;
+    group.fb_addr[0] = (uint32_t)(uintptr_t)gpu_probe_fb;
+    group.tex_addr[0] = (uint32_t)(uintptr_t)gpu_probe_tex;
+    group.count[0] = 1;
+    group.colormap_id[0] = 0;
+
+    of_gpu_draw_column_list(&group);
+    of_gpu_finish();
+    of_cache_inval_range(gpu_probe_fb, sizeof(gpu_probe_fb));
+
+    return gpu_probe_fb[0] == 0xa5;
+}
+
 void d3d_gpu_init(void)
 {
     perf_reset_interval();
@@ -882,6 +1020,15 @@ void d3d_gpu_init(void)
     printf("[d3d_gpu] GPU init ok (base=0x%08x features=0x%08x)\n",
            (unsigned)caps->gpu_base, (unsigned)caps->hw_features);
 
+    /* Wall/sprite columns ride CMD_DRAW_COLUMN_LIST (0x4C) when the
+     * bitstream has it; fallback is the 0x48 affine span-group path,
+     * which stays selectable via d3d_gpu_force_affine_columns. */
+    gpu_use_column_list = 0;
+    if (of_has_feature(OF_HW_GPU_COLUMN_LIST) && d3d_gpu_probe_column_list())
+        gpu_use_column_list = 1;
+    printf("[d3d_gpu] column list (0x4C): %s\n",
+           gpu_use_column_list ? "enabled" : "unavailable, using 0x48");
+
     if (pending_transluc_table && pending_transluc_size == 65536)
         d3d_gpu_upload_transluc(pending_transluc_table, pending_transluc_size);
 }
@@ -893,6 +1040,20 @@ void d3d_gpu_init(void)
  * slots; the SDK lowers these groups to GPU_CMD_DRAW_PARAM_SPAN_LIST. */
 static of_gpu_affine_span_group_t affine_batch;
 static int affine_batch_count;
+
+/* CMD_DRAW_COLUMN_LIST (0x4C) batch: 5-word lane records for vertical
+ * 1-pixel-wide columns — drops the always-zero s/sstep words the 0x48
+ * affine lane form carries, ~28% less command traffic on BUILD's
+ * dominant draw type (wall + masked/sprite columns).  Pixels are
+ * byte-identical to the affine group with s=0/sstep=0 by hardware
+ * contract, so SKIP_ZERO color-key and TRANSLUC blending behave
+ * identically.
+ *
+ * INVARIANT (same as the Doom port's r_gpu.c): at most one of
+ * affine_batch / column_batch is non-empty at any time, so painter's
+ * order between spans and columns is preserved. */
+static of_gpu_column_list_group_t column_batch;
+static int column_batch_count;
 
 static inline int d3d_gpu_affine_batch_compatible(uint8_t flags,
                                                   int32_t fb_step,
@@ -909,13 +1070,27 @@ static inline int d3d_gpu_affine_batch_compatible(uint8_t flags,
            affine_batch.tex_h_mask == tex_h_mask;
 }
 
-static void d3d_gpu_flush_batch(void)
+static void d3d_gpu_flush_affine_batch(void)
 {
     if (affine_batch_count <= 0)
         return;
 
     SPIN_TAG(5);
     affine_batch.lane_count = (uint8_t)affine_batch_count;
+
+    /* Probe before committing — see the gpu_emit_stalled notes above. */
+    if (gpu_emit_stalled ||
+        !d3d_gpu_reserve_or_drop(
+            d3d_gpu_batch_bytes((uint32_t)affine_batch_count,
+                                OF_GPU_AFFINE_SPAN_GROUP_MAX_NATIVE_LANES,
+                                OF_GPU_AFFINE_SPAN_GROUP_LANE_WORDS,
+                                OF_GPU_PARAM_DIRECT_AFFINE_WORDS(0)))) {
+        gpu_emit_dropped_lanes += (uint32_t)affine_batch_count;
+        affine_batch_count = 0;
+        SPIN_TAG(0);
+        return;
+    }
+
     if (d3d_gpu_perf_enable) {
         gpu_perf.flushes++;
         gpu_perf.batches++;
@@ -932,7 +1107,59 @@ static void d3d_gpu_flush_batch(void)
     }
 
     affine_batch_count = 0;
+    /* Advisory: publishes only past the SDK's lazy-kick threshold, so
+     * the GPU starts chewing on staged work mid-frame instead of
+     * idling until the staging buffer fills or a sync point hits. */
+    of_gpu_kick();
     SPIN_TAG(0);
+}
+
+static void d3d_gpu_flush_column_batch(void)
+{
+    if (column_batch_count <= 0)
+        return;
+
+    SPIN_TAG(5);
+    column_batch.lane_count = (uint8_t)column_batch_count;
+
+    if (gpu_emit_stalled ||
+        !d3d_gpu_reserve_or_drop(
+            d3d_gpu_batch_bytes((uint32_t)column_batch_count,
+                                OF_GPU_COLUMN_LIST_MAX_NATIVE_LANES,
+                                OF_GPU_COLUMN_LIST_LANE_WORDS,
+                                OF_GPU_COLUMN_LIST_WORDS(0)))) {
+        gpu_emit_dropped_lanes += (uint32_t)column_batch_count;
+        column_batch_count = 0;
+        SPIN_TAG(0);
+        return;
+    }
+
+    if (d3d_gpu_perf_enable) {
+        gpu_perf.flushes++;
+        gpu_perf.batches++;
+        if ((uint32_t)column_batch_count > gpu_perf.max_batch)
+            gpu_perf.max_batch = (uint32_t)column_batch_count;
+    }
+
+    uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
+    of_gpu_draw_column_list(&column_batch);
+    if (d3d_gpu_perf_enable) {
+        uint32_t dt = perf_dt_us(t0);
+        perf_add_time(&gpu_perf.batch_submit_us,
+                      &gpu_perf.max_batch_submit_us, dt);
+    }
+
+    column_batch_count = 0;
+    of_gpu_kick();
+    SPIN_TAG(0);
+}
+
+/* Flush ALL staged draw batches.  The queue-side invariant keeps at
+ * most one of the two non-empty, so the call order is immaterial. */
+static void d3d_gpu_flush_batch(void)
+{
+    d3d_gpu_flush_affine_batch();
+    d3d_gpu_flush_column_batch();
 }
 
 static inline void d3d_gpu_barrier_before_fb_read(void)
@@ -946,8 +1173,13 @@ static inline void d3d_gpu_barrier_before_fb_read(void)
      * pixels.  Insert a GPU-side fence before framebuffer readback spans.
      */
     d3d_gpu_flush_batch();
-    of_gpu_fence();
-    of_gpu_kick();
+    /* 2-word fence, same non-fatal rule as the draw batches: with the
+     * ring wedged there is nothing staged worth fencing anyway, since
+     * the flush above just dropped it. */
+    if (d3d_gpu_reserve_or_drop(2u * 4u)) {
+        of_gpu_fence();
+        of_gpu_kick();
+    }
     gpu_fb_read_barrier_needed = 0;
 }
 
@@ -997,8 +1229,22 @@ uint32_t d3d_gpu_flip_to(int idx) {
     if (!d3d_gpu_present) return 0;
     SPIN_TAG(7);
     d3d_gpu_clean_cpu_fb_before_gpu();
-    uint32_t token = of_gpu_flip_to(idx);
-    of_gpu_kick();
+
+    /* CMD_FLIP is 3 words, but a full ring traps on any emit at all.
+     * Token 0 is the documented "nothing to wait for" value — the same
+     * one the init path passes — so of_video_acquire_next() will not
+     * block on a fence that is never going to be published. */
+    uint32_t token = 0;
+    if (d3d_gpu_reserve_or_drop(3u * 4u)) {
+        token = of_gpu_flip_to(idx);
+        of_gpu_kick();
+    }
+
+    /* Frame boundary: drop the latch so the next frame re-probes once
+     * from scratch.  A GPU that resumed while we were skipping work
+     * recovers here without any explicit "menu closed" notification. */
+    gpu_emit_stalled = 0;
+
     SPIN_TAG(0);
     return token;
 }
@@ -1116,6 +1362,57 @@ static inline void perf_note_span_values(int path, uint16_t count,
     perf_note_path_span_values(path, count);
 }
 
+static inline int d3d_gpu_column_batch_compatible(uint8_t flags,
+                                                  int32_t fb_step,
+                                                  uint16_t tex_width,
+                                                  uint16_t tex_w_mask,
+                                                  uint16_t tex_h_mask)
+{
+    return column_batch_count > 0 &&
+           column_batch_count < (int)OF_GPU_COLUMN_LIST_MAX_LANES &&
+           column_batch.flags == flags &&
+           column_batch.fb_step == fb_step &&
+           column_batch.tex_width == tex_width &&
+           column_batch.tex_w_mask == tex_w_mask &&
+           column_batch.tex_h_mask == tex_h_mask;
+}
+
+static inline void d3d_gpu_queue_column(uint32_t fb_addr, uint32_t tex_addr,
+                                        int32_t t, int32_t tstep,
+                                        uint16_t count, uint8_t light,
+                                        uint8_t flags, uint8_t colormap_id,
+                                        int32_t fb_step, uint16_t tex_width,
+                                        uint16_t tex_w_mask,
+                                        uint16_t tex_h_mask)
+{
+    /* Painter's order: staged affine spans must land before this column. */
+    if (affine_batch_count != 0)
+        d3d_gpu_flush_affine_batch();
+
+    if (!d3d_gpu_column_batch_compatible(flags, fb_step, tex_width,
+                                         tex_w_mask, tex_h_mask)) {
+        d3d_gpu_flush_column_batch();
+        memset(&column_batch, 0, sizeof(column_batch));
+        column_batch.flags = flags;
+        column_batch.tex_width = tex_width;
+        column_batch.tex_w_mask = tex_w_mask;
+        column_batch.tex_h_mask = tex_h_mask;
+        column_batch.fb_step = fb_step;
+    }
+
+    int lane = column_batch_count++;
+    column_batch.fb_addr[lane] = fb_addr;
+    column_batch.tex_addr[lane] = tex_addr;
+    column_batch.count[lane] = count;
+    column_batch.t[lane] = t;
+    column_batch.tstep[lane] = tstep;
+    column_batch.light[lane] = (uint8_t)(light & 0x3F);
+    column_batch.colormap_id[lane] = (uint8_t)(colormap_id & 0x0F);
+
+    if (column_batch_count == (int)OF_GPU_COLUMN_LIST_MAX_LANES)
+        d3d_gpu_flush_column_batch();
+}
+
 static inline void d3d_gpu_queue_affine_span(uint32_t fb_addr,
                                              uint32_t tex_addr,
                                              int32_t s, int32_t t,
@@ -1128,6 +1425,21 @@ static inline void d3d_gpu_queue_affine_span(uint32_t fb_addr,
                                              uint16_t tex_w_mask,
                                              uint16_t tex_h_mask)
 {
+    /* Vertical columns (s and sstep both 0 — every vline/mvline/vline4/
+     * tvline lane) ride the 5-word 0x4C lane form when the bitstream
+     * has it; everything else stays on the 7-word 0x48 affine form. */
+    if (gpu_use_column_list && !d3d_gpu_force_affine_columns &&
+        s == 0 && sstep == 0) {
+        d3d_gpu_queue_column(fb_addr, tex_addr, t, tstep, count, light,
+                             flags, colormap_id, fb_step,
+                             tex_width, tex_w_mask, tex_h_mask);
+        return;
+    }
+
+    /* Painter's order: staged columns must land before this span. */
+    if (column_batch_count != 0)
+        d3d_gpu_flush_column_batch();
+
     if (!d3d_gpu_affine_batch_compatible(flags, fb_step,
                                          tex_width, tex_w_mask,
                                          tex_h_mask)) {
@@ -1392,11 +1704,15 @@ void d3d_gpu_clear_rect_fb(uint8_t *dest, uint16_t w, uint16_t h, uint8_t color)
      * clear.  This matters because BUILD's setviewtotile flips
      * bytesperline mid-frame between screen stride (320) and tile
      * stride (e.g. 160 in low-detail). */
-    of_gpu_clear_rect_strided((uint32_t)(uintptr_t)dest,
-                               w, h,
-                               (uint16_t)bytesperline,
-                               color);
-    gpu_fb_read_barrier_needed = 1;
+    /* 4-word CLEAR_RECT — guarded like the draw batches so a frozen
+     * ring drops the clear instead of trapping. */
+    if (d3d_gpu_reserve_or_drop(4u * 4u)) {
+        of_gpu_clear_rect_strided((uint32_t)(uintptr_t)dest,
+                                   w, h,
+                                   (uint16_t)bytesperline,
+                                   color);
+        gpu_fb_read_barrier_needed = 1;
+    }
     if (d3d_gpu_perf_enable) {
         uint32_t dt = perf_dt_us(t0);
         perf_add_time(&gpu_perf.clear_emit_us,

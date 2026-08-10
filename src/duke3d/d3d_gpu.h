@@ -35,6 +35,14 @@ extern int d3d_gpu_use_spans;
  * user-facing renderer setting. */
 extern int d3d_gpu_force_cpu_spans;
 
+/* A/B verification toggle for the CMD_DRAW_COLUMN_LIST (0x4C) column
+ * path: set to 1 to force column-eligible draws (wall/sprite vlines,
+ * s=0/sstep=0) back onto the 0x48 affine span-group path.  Both paths
+ * produce byte-identical pixels by hardware contract; flippable at
+ * runtime.  No effect on bitstreams without OF_HW_GPU_COLUMN_LIST,
+ * where the affine path is always used. */
+extern int d3d_gpu_force_affine_columns;
+
 /* Fixed command policy for the current openfpgaOS GPU:
  * BUILD computes spans on the CPU and Duke submits SDK affine span groups
  * with explicit per-lane colormap ids.  The SDK lowers those groups to the
