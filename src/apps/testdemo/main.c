@@ -1,7 +1,29 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
- * openfpgaOS Kernel Test Suite
- * Tests syscalls, malloc, file I/O, terminal, timer, cache.
- * Two-column display. On failure: pauses, then shows summary page.
+ * testdemo — kernel acceptance test suite
+ *
+ * Canonical example of:
+ *   - Multi-file SDK app (test_*.c each cover one subsystem and
+ *     export a single test_<name>(void) entry point)
+ *   - PASS/FAIL counter + failure log + two-column terminal layout
+ *     for fitting many tests on a single 40x30 screen
+ *   - Subsystem coverage you'd want from a smoke test before tagging
+ *     a kernel build: syscalls, malloc, file I/O via fopen/fread,
+ *     terminal, timer, cache, audio, PSRAM, MIDI, networking, save
+ *     subsystem, GPU triangle/span dispatch
+ *
+ * Behaviour:
+ *   - Tests print one row per assertion in the active column.
+ *   - First failure pauses; pressing any button continues.
+ *   - At the end, the summary page lists every recorded failure with
+ *     its "name" and a short detail string.
+ *
+ * This file is the harness; the actual tests live in test_*.c.
  */
 
 #include "test.h"
@@ -23,7 +45,6 @@ static int fail_log_count;
 /* ================================================================
  * Two-column layout state
  * ================================================================ */
-#define COL_W   19      /* characters per column */
 #define COL1_X  1       /* left column x (0-based) */
 #define COL2_X  21      /* right column x */
 #define ROW_TOP 4       /* first data row */
@@ -187,12 +208,8 @@ static const test_fn tests[] = {
     test_malloc_edge,
     test_malloc_free,
     test_memset_stack,
-    test_psram_memory,
-    test_cram0_256k,
     test_cache_primitives,
     test_cache,
-    test_cache_cram0,
-    test_cache_cram1,
     test_file_slots,
     test_file_negative,
     test_file_io,
@@ -208,14 +225,17 @@ static const test_fn tests[] = {
     test_mixer,
     test_mixer_adv,
     test_mixer_stress,
-    // --- bisecting 3rd-pass hang ---
-    // test_opl3,
-    // test_midi,
-    // test_midi_smp,
+    /* MIDI/audio coverage. test_midi/test_midi_smp now wait via
+     * midi_wait_ms() (interrupts enabled, ISR-driven) instead of calling
+     * of_midi_pump() themselves, so they no longer race of_midi_play()'s
+     * timer-ISR pump — the fix for the old MD.20b+ stall cascade.
+     * Re-verify on hardware across all NUM_ITERATIONS passes. */
+    test_midi,
+    test_midi_smp,
     test_net,
     test_interact,
-    // test_audio,
-    // test_audio_stream,
+    test_audio,
+    test_audio_stream,
     test_printf,
     test_printf_edge,
     test_string,

@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_syscall_numbers.h -- openfpgaOS SBI Extension/Function IDs
  *
@@ -64,8 +70,7 @@ extern "C" {
 #define OF_EID_ANALOGIZER   (OF_EID_BASE_VALUE + 0x04)
 #define OF_EID_NET          (OF_EID_BASE_VALUE + 0x05)
 #define OF_EID_TIMER        (OF_EID_BASE_VALUE + 0x06)
-#define OF_EID_TILE         (OF_EID_BASE_VALUE + 0x07)
-#define OF_EID_SPRITE       (OF_EID_BASE_VALUE + 0x08)
+/* 0x07/0x08 retired (tile/sprite engine) */
 #define OF_EID_MEMORY       (OF_EID_BASE_VALUE + 0x09)
 #define OF_EID_MIXER        (OF_EID_BASE_VALUE + 0x0A)
 #define OF_EID_CODEC        (OF_EID_BASE_VALUE + 0x0B)
@@ -85,6 +90,12 @@ extern "C" {
 /* -- OF_EID_BASE -- */
 enum of_base_fid {
     OF_BASE_FID_GET_VERSION = 0,
+    OF_BASE_FID_RELAUNCH    = 1,  /* (instance, elf): swap to another app in-OS;
+                                   * does NOT return on success.  MiSTer only. */
+    OF_BASE_FID_SET_MENU    = 2,  /* (instance, elf): register the launcher to
+                                   * re-enter when an app exit()s. */
+    OF_BASE_FID_LIST_INSTANCES = 3, /* (names, stride, max): enumerate game
+                                   * instances under /games; returns count. */
 };
 
 /* -- OF_EID_VIDEO -- */
@@ -106,6 +117,8 @@ enum of_video_fid {
     OF_VIDEO_FID_GET_MODE            = 14,
     OF_VIDEO_FID_GET_MODE_COUNT      = 15,
     OF_VIDEO_FID_GET_MODE_INFO       = 16,
+    OF_VIDEO_FID_GET_CAPS            = 17,
+    OF_VIDEO_FID_CHECK_MODE          = 18,
 };
 
 /* -- OF_EID_AUDIO -- */
@@ -123,6 +136,7 @@ enum of_input_fid {
     OF_INPUT_FID_POLL_P0      = 3,
     OF_INPUT_FID_GET_KEYBOARD_STATE = 4,
     OF_INPUT_FID_READ_MOUSE_STATE   = 5,
+    OF_INPUT_FID_IS_DOCKED          = 6,
 };
 
 /* -- OF_EID_ANALOGIZER -- */
@@ -153,25 +167,6 @@ enum of_timer_fid {
     OF_TIMER_FID_GET_US       = 2,
     OF_TIMER_FID_GET_MS       = 3,
     OF_TIMER_FID_DELAY_US     = 4,
-};
-
-/* -- OF_EID_TILE -- */
-enum of_tile_fid {
-    OF_TILE_FID_ENABLE   = 0,
-    OF_TILE_FID_SCROLL   = 1,
-    OF_TILE_FID_SET      = 2,
-    OF_TILE_FID_LOAD_MAP = 3,
-    OF_TILE_FID_LOAD_CHR = 4,
-};
-
-/* -- OF_EID_SPRITE -- */
-enum of_sprite_fid {
-    OF_SPRITE_FID_ENABLE   = 0,
-    OF_SPRITE_FID_SET      = 1,
-    OF_SPRITE_FID_MOVE     = 2,
-    OF_SPRITE_FID_LOAD_CHR = 3,
-    OF_SPRITE_FID_HIDE     = 4,
-    OF_SPRITE_FID_HIDE_ALL = 5,
 };
 
 /* -- OF_EID_MEMORY -- */

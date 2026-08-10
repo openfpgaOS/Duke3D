@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_services.h -- openfpgaOS OS Services Table
  *
@@ -23,7 +29,7 @@ extern "C" {
 #include <stddef.h>
 
 #define OF_SVC_MAGIC    0x4F535643  /* 'OSVC' */
-#define OF_SVC_VERSION  1
+#define OF_SVC_VERSION  2   /* v2: retired AWE coprocessor slots removed */
 
 /* Forward declare input state struct */
 struct of_input_state;
@@ -54,10 +60,21 @@ typedef struct of_video_mode {
 } of_video_mode_t;
 #endif
 
-/* Forward declare AWE per-voice config -- full definition in of_awe.h.
- * Kept opaque here so this header doesn't pull the AWE-specific types
- * into every TU that just wants the services table. */
-struct awe_voice_t;
+#ifndef OF_VIDEO_CAPS_T_DEFINED
+#define OF_VIDEO_CAPS_T_DEFINED
+typedef struct of_video_caps {
+    uint16_t max_width;
+    uint16_t max_height;
+    uint16_t max_stride;
+    uint16_t physical_width;
+    uint16_t physical_height;
+    uint16_t default_width;
+    uint16_t default_height;
+    uint16_t default_stride;
+    uint32_t max_frame_bytes;
+    uint32_t color_mode_mask;
+} of_video_caps_t;
+#endif
 
 struct of_services_table {
     uint32_t magic;
@@ -155,7 +172,6 @@ struct of_services_table {
     void      (*mixer_set_group)(int voice, int group);
     void      (*mixer_set_group_volume)(int group, int volume);
     void      (*mixer_set_master_volume)(int volume);
-    void      (*mixer_set_filter)(int voice, int cutoff_q016, int q, int enable);
     int       (*audio_stream_open)(int sample_rate);
     int       (*audio_stream_write)(const int16_t *samples, int count);
     int       (*audio_stream_ready)(void);
@@ -172,53 +188,10 @@ struct of_services_table {
     /* -- SoundFont preload (append-only, ABI-stable) --
      *    The kernel auto-loads the first .ofsf file it finds in a data
      *    slot during boot. Apps should check smp_bank_preload_base and,
-     *    when non-NULL, skip of_smp_bank_load() / of_mixer_alloc_samples
-     *    and reuse the preloaded CRAM1 buffer directly. Older firmware
-     *    leaves these as NULL/0. */
+     *    when non-NULL, skip of_smp_bank_load() and reuse the preloaded
+     *    SDRAM buffer directly. Older firmware leaves these as NULL/0. */
     const void *smp_bank_preload_base;
     uint32_t    smp_bank_preload_size;
-
-    /* -- AWE coprocessor (RETIRED — slots kept for ABI stability) --
-     *    The AWE fabric coprocessor was removed; all of these slots are
-     *    wired to no-op stubs in services_table.c so SDK apps built
-     *    against the old ABI still link.  They silently do nothing.
-     *    Do NOT call these from new code; use the mixer + smp_voice
-     *    paths instead.  See of_awe.h for matching app-side stubs. */
-    void      (*awe_voice_load)(int voice, const struct awe_voice_t *v);
-    void      (*awe_voice_trigger)(int voice);
-    void      (*awe_voice_release)(int voice);
-    void      (*awe_voice_stop)(int voice);
-    void      (*awe_channel_set_volume)(int ch, int vol_0_127);
-    void      (*awe_channel_set_expression)(int ch, int expr_0_127);
-    void      (*awe_channel_set_pan)(int ch, int pan_0_127);
-    void      (*awe_channel_set_bend)(int ch, int bend_signed_8192);
-    void      (*awe_channel_set_mod)(int ch, int mod_0_127);
-    void      (*awe_channel_set_sustain)(int ch, int on_off);
-    void      (*awe_channel_set_brightness)(int ch, int br_0_127);
-    void      (*awe_channel_set_resonance)(int ch, int q_0_127);
-    void      (*awe_channel_set_reverb_send)(int ch, int send_0_255);
-    void      (*awe_channel_set_chorus_send)(int ch, int send_0_255);
-    void      (*awe_set_master_volume)(int vol_0_255);
-    void      (*awe_set_bend_range)(int cents);
-    uint64_t  (*awe_active_mask)(void);
-
-    /* Retired — returns 0. */
-    uint32_t  (*awe_tick_count)(void);
-
-    /* Retired — no-op. */
-    void      (*awe_set_hw_envelope)(int enabled);
-
-    /* Retired — no-op. */
-    void      (*awe_set_reverb_level)(int level);
-    void      (*awe_set_reverb_feedback)(int feedback);
-
-    /* Retired — no-op. */
-    void      (*awe_set_chorus_level)(int level);
-    void      (*awe_set_chorus_rate)(int rate);
-    void      (*awe_set_chorus_depth)(int depth);
-
-    /* Retired — no-op. */
-    void      (*awe_ramp1_trigger)(int voice, int stage, uint32_t rate);
 
     /* -- Mixer group-aware allocation (append-only, ABI-stable) --
      *    Atomic alloc-and-tag entry; lets callers that know which
@@ -300,10 +273,6 @@ struct of_services_table {
                                        int vol_l,
                                        int vol_r);
     void      (*mixer_set_vol_rate_h)(uint64_t handle, int rate);
-    void      (*mixer_set_filter_h)(uint64_t handle,
-                                    int cutoff_q016,
-                                    int q,
-                                    int enable);
     uint32_t  (*mixer_poll_ended_h)(uint64_t *out_handles,
                                     uint32_t max_handles);
 
@@ -327,6 +296,38 @@ struct of_services_table {
     void      (*video_get_mode)(of_video_mode_t *out);
     int       (*video_get_mode_count)(void);
     int       (*video_get_mode_info)(int index, of_video_mode_t *out);
+    void      (*video_get_caps)(of_video_caps_t *out);
+    int       (*video_check_mode)(const of_video_mode_t *mode,
+                                  of_video_mode_t *normalized);
+
+    /* -- OS/app configuration (append-only) --
+     * Parsed from os.ini at boot. Section/key lookup is
+     * case-insensitive; values preserve case and internal spaces. */
+    int       (*config_get)(const char *section, const char *key,
+                            char *out, uint32_t out_len);
+    int       (*config_get_int)(const char *section, const char *key,
+                                int default_value);
+    int       (*config_get_bool)(const char *section, const char *key,
+                                 int default_value);
+    int       (*config_next)(const char *section, uint32_t *cursor,
+                             char *key_out, uint32_t key_len,
+                             char *value_out, uint32_t value_len);
+
+    /* -- File I/O idle hook (append-only) --
+     * Hook invoked repeatedly from the blocking file-read DMA wait
+     * (file_wait_complete) so the app can keep latency-critical work running
+     * while a synchronous SD read is in flight -- e.g. feeding the audio ring
+     * from an already-decoded buffer so music does not stall during SD access.
+     * The hook MUST NOT issue a blocking file read (nested invocation is
+     * suppressed by the kernel). Pass NULL to clear. */
+    void      (*file_set_idle_hook)(void (*hook)(void));
+
+    /* -- Dock state (append-only) --
+     * Nonzero while the handheld sits in its dock (external display,
+     * detached controllers).  Live state, not a boot-time latch --
+     * dock/undock happens at runtime, so re-check across frames.
+     * Always 1 on console targets (MiSTer). */
+    int       (*input_is_docked)(void);
 };
 
 #ifndef OF_PC
@@ -337,6 +338,13 @@ struct of_services_table {
 extern const struct of_services_table *_of_svc_ptr;
 
 #define OF_SVC (_of_svc_ptr)
+
+#else /* OF_PC — no OS service table on the desktop.  OF_SVC is a null
+       * pointer of the right type so `if (OF_SVC && OF_SVC->...)` checks
+       * typecheck and short-circuit (the soft renderer / SDL video path
+       * runs instead of the GPU service path). */
+
+#define OF_SVC ((const struct of_services_table *)0)
 
 #endif /* OF_PC */
 

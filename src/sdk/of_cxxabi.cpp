@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_cxxabi.cpp -- Minimal C++ ABI shim for openfpgaOS apps.
  *
@@ -21,18 +27,76 @@
  *   - RTTI / dynamic_cast (-fno-rtti)
  *
  * For std::cout-style I/O, use printf from <stdio.h> instead.
+ *
+ * The whole file is HW-only: on the SDL2 desktop build (OF_PC) the
+ * system libstdc++ already provides operator new/delete, the __cxa_*
+ * personality, and the EH-frame symbols — duplicating them here would
+ * break the link.  Collapse to an empty translation unit on OF_PC.
  */
 
+#ifndef OF_PC
+
+#include <stdint.h>     /* uintptr_t */
+#include <stdio.h>      /* musl: printf */
 #include <stdlib.h>     /* musl: malloc, free, abort */
+#include <unistd.h>     /* musl: sbrk */
+
+#include "of_caps.h"
 
 extern "C" {
 
 /* ── operator new / delete ──────────────────────────────────────── */
 
+extern char __EH_FRAME_BEGIN__[];
+extern char __FRAME_END__[];
+void __register_frame_info(const void *, void *) __attribute__((weak));
+void __deregister_frame_info(const void *) __attribute__((weak));
+
+static void *__cxa_eh_frame_object[16];
+static int __cxa_eh_frame_registered = 0;
+
+__attribute__((constructor(101)))
+static void __cxa_register_eh_frames(void) {
+    if (__register_frame_info && &__EH_FRAME_BEGIN__[0] != &__FRAME_END__[0]) {
+        __register_frame_info(__EH_FRAME_BEGIN__, __cxa_eh_frame_object);
+        __cxa_eh_frame_registered = 1;
+    }
+}
+
+__attribute__((destructor(101)))
+static void __cxa_deregister_eh_frames(void) {
+    if (__cxa_eh_frame_registered && __deregister_frame_info) {
+        __deregister_frame_info(__EH_FRAME_BEGIN__);
+        __cxa_eh_frame_registered = 0;
+    }
+}
+
+static void __cxa_print_heap_state(void) {
+    const struct of_capabilities *caps = of_get_caps();
+    void *heap_break = sbrk(0);
+
+    if (caps && caps->magic == OF_CAPS_MAGIC) {
+        uintptr_t heap_end = (uintptr_t)caps->heap_base + caps->heap_size;
+        printf("operator new: heap base=%08lx size=%lu end=%08lx brk=%08lx\n",
+               (unsigned long)caps->heap_base,
+               (unsigned long)caps->heap_size,
+               (unsigned long)heap_end,
+               (unsigned long)(uintptr_t)heap_break);
+    } else {
+        printf("operator new: heap caps unavailable (%08lx), brk=%08lx\n",
+               (unsigned long)(uintptr_t)caps,
+               (unsigned long)(uintptr_t)heap_break);
+    }
+}
+
 void *__cxa_allocate(unsigned int size) {
     void *p = malloc(size);
-    if (!p) abort();    /* match the C++ standard's "throw bad_alloc"
+    if (!p) {
+        printf("operator new: out of memory allocating %u bytes\n", size);
+        __cxa_print_heap_state();
+        abort();        /* match the C++ standard's "throw bad_alloc"
                          * behavior, but without exceptions enabled */
+    }
     return p;
 }
 
@@ -105,3 +169,5 @@ void  operator delete(void *p) noexcept      { free(p); }
 void  operator delete[](void *p) noexcept    { free(p); }
 void  operator delete(void *p, size_t) noexcept   { free(p); }
 void  operator delete[](void *p, size_t) noexcept { free(p); }
+
+#endif /* !OF_PC */

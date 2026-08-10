@@ -1,3 +1,9 @@
+/*----------------------------------------------------------------------------*/
+/* SPDX-License-Identifier: Apache-2.0 */
+/* SPDX-FileType: SOURCE */
+/* SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com> */
+/*----------------------------------------------------------------------------*/
+
 /*
  * openfpgaOS Application Linker Script
  *
@@ -11,7 +17,7 @@
  *
  * BRAM hot path: mark functions with OF_FASTTEXT (or OF_FASTDATA /
  * OF_FASTRODATA) -- see api/of_fastram.h. Marked symbols land in BRAM
- * (~23 KB, zero wait state). The OS ELF loader detects BRAM-targeted
+ * (14 KB, zero wait state -- APP_BRAM below). The OS ELF loader detects BRAM-targeted
  * PT_LOAD segments and copies them at load time. Apps that don't use
  * the macros are unaffected -- the BRAM section stays empty and no
  * extra PT_LOAD is generated.
@@ -21,7 +27,13 @@ ENTRY(_start)
 
 MEMORY {
     APP_BRAM (rwx) : ORIGIN = 0x00004000, LENGTH = 0x3800
-    SDRAM    (rwx) : ORIGIN = 0x10400000, LENGTH = 48M
+    /* Ends at 0x13A00000 = OF_TARGET_APP_STATIC_END (pocket): below the
+     * 512 KB OS runtime stack, 4 MB file cache, 512 KB audio stream
+     * ring, and 512 KB app stack.  MUST equal OF_TARGET_APP_STATIC_END
+     * in os/targets/<t>/target_platform.h — the loader rejects (-7,
+     * seg_in_app_vmap) any PT_LOAD ending above it, so a larger window
+     * here would link fine and fail at load. */
+    SDRAM    (rwx) : ORIGIN = 0x10400000, LENGTH = 0x03600000
 }
 
 SECTIONS {
@@ -32,6 +44,16 @@ SECTIONS {
         *(.text*)
         *(.rodata*)
         *(.srodata*)
+        . = ALIGN(4);
+    } > SDRAM
+
+    .eh_frame : {
+        . = ALIGN(4);
+        PROVIDE(__EH_FRAME_BEGIN__ = .);
+        KEEP(*(.eh_frame))
+        KEEP(*(.eh_frame.*))
+        LONG(0);
+        PROVIDE(__FRAME_END__ = .);
         . = ALIGN(4);
     } > SDRAM
 
@@ -93,20 +115,30 @@ SECTIONS {
     } > SDRAM
 
     /* BRAM hot code: VMA in BRAM, LMA stored in ELF after SDRAM sections.
-     * Empty for apps that don't use OF_FASTTEXT -- no PT_LOAD generated. */
-    .app_fasttext : {
+     * Empty for apps that don't use OF_FASTTEXT -- no PT_LOAD generated.
+     *
+     * SUBALIGN(8): the SDK compiles everything with -falign-functions=64
+     * so SDRAM-resident code starts on I$-line boundaries — but APP_BRAM
+     * is an UNCACHED region (PMA main=0; fetches bypass the I$ entirely),
+     * so 64-byte alignment here is pure padding: with -ffunction-sections
+     * every fasttext function is its own 64-aligned input section and the
+     * region was losing hundreds of bytes to inter-function gaps (Duke3D
+     * overflowed APP_BRAM by 80 bytes on nothing but padding).  Force
+     * input-section alignment down to 8 (safe for RVC code and any
+     * 8-byte-aligned rodata/data; placement-only, zero perf effect in an
+     * uncached region). */
+    .app_fasttext : SUBALIGN(8) {
         *(.app_fasttext*)
         *(.app_fastrodata*)
     } > APP_BRAM AT> SDRAM
 
-    .app_fastdata : {
+    .app_fastdata : SUBALIGN(8) {
         *(.app_fastdata*)
     } > APP_BRAM AT> SDRAM
 
     /DISCARD/ : {
         *(.note.*)
         *(.comment)
-        *(.eh_frame*)
         *(.riscv.attributes)
     }
 }

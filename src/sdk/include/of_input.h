@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_input.h -- Input subsystem API for openfpgaOS
  *
@@ -95,6 +101,16 @@ static inline void of_input_mouse_state(of_mouse_state_t *state) {
     }
 }
 
+/* Nonzero while the handheld sits in its dock (external display,
+ * detached controllers).  Live state -- re-check across frames.
+ * Returns 0 on firmware that predates the service (and on PC). */
+static inline int of_input_is_docked(void) {
+    if (OF_SVC->count > OF_INPUT_SVC_FIELD_INDEX(input_is_docked) &&
+        OF_SVC->input_is_docked)
+        return OF_SVC->input_is_docked();
+    return 0;
+}
+
 static inline int of_keyboard_key(const of_keyboard_state_t *state,
                                   uint8_t usage) {
     return state &&
@@ -120,6 +136,7 @@ static inline void of_input_set_deadzone(int16_t deadzone) {
 #else /* OF_PC */
 
 void     of_input_poll(void);
+void     of_input_poll_p0(void);
 int      of_btn(uint32_t mask);
 int      of_btn_pressed(uint32_t mask);
 int      of_btn_released(uint32_t mask);
@@ -129,6 +146,7 @@ int      of_btn_released_p2(uint32_t mask);
 uint32_t of_input_state(int player, of_input_state_t *state);
 void     of_input_keyboard_state(of_keyboard_state_t *state);
 void     of_input_mouse_state(of_mouse_state_t *state);
+int      of_input_is_docked(void);
 void     of_input_set_deadzone(int16_t deadzone);
 
 #endif /* OF_PC */

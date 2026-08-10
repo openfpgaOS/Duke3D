@@ -1,14 +1,19 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_mixer.h -- PCM Mixer API for openfpgaOS
  *
- * 32-voice CPU-side software mixer.  Runs from the 1 kHz timer ISR,
- * produces 48 stereo samples per block, and pushes them to the
- * audio_output dcfifo.  Sample-based MIDI synthesis (of_midi /
- * of_smp_voice) drives this same mixer.
+ * 32-voice hardware PCM mixer.  Samples live in normal SDRAM buffers;
+ * the OS flushes cached buffers before handing their absolute SDRAM
+ * address to the mixer DMA path.
  *
  * Usage:
  *   1. Call of_mixer_init()
- *   2. Allocate sample memory: buf = of_mixer_alloc_samples(size)
+ *   2. Allocate sample memory: buf = malloc(size)
  *   3. Load 16-bit signed mono PCM data into buf
  *   4. Play: of_mixer_play(buf, sample_count, sample_rate, 0, volume)
  *   5. Optionally set loop, rate, stereo volume, bidi, position
@@ -39,6 +44,15 @@ typedef uint64_t of_mixer_handle_t;
  * Use at init time to build a note-rate lookup table. */
 #define OF_MIXER_RATE_FP16(hz) \
     ((uint32_t)(((uint64_t)(hz) << 16) / OF_MIXER_OUTPUT_RATE))
+
+/* Volume groups (constants, shared by both branches — the PC stub backend
+ * uses them too so apps can compile against the same group symbols).
+ * Groups: OF_MIXER_GROUP_SFX (0), OF_MIXER_GROUP_MUSIC (1),
+ *         OF_MIXER_GROUP_VOICE (2), OF_MIXER_GROUP_AUX (3). */
+#define OF_MIXER_GROUP_SFX   0
+#define OF_MIXER_GROUP_MUSIC 1
+#define OF_MIXER_GROUP_VOICE 2
+#define OF_MIXER_GROUP_AUX   3
 
 #ifndef OF_PC
 
@@ -266,6 +280,9 @@ static inline uint32_t of_mixer_poll_ended_h(of_mixer_handle_t *out_handles,
     return 0;
 }
 
+/* DEPRECATED legacy allocator.  New code MUST use malloc/free — the mixer
+ * can DMA from any SDRAM buffer.  These remain only for older apps that use
+ * of_mixer_free_samples() as a bulk reset; do not use in new code. */
 static inline void *of_mixer_alloc_samples(size_t size) {
     return OF_SVC->mixer_alloc_samples((uint32_t)size);
 }
@@ -281,14 +298,7 @@ static inline void of_mixer_set_end_callback(void (*cb)(uint32_t ended_mask)) {
     OF_SVC->mixer_set_end_callback(cb);
 }
 
-/* Volume groups: assign voices to groups, control group and master volume.
- * Groups: OF_MIXER_GROUP_SFX (0), OF_MIXER_GROUP_MUSIC (1),
- *         OF_MIXER_GROUP_VOICE (2), OF_MIXER_GROUP_AUX (3). */
-#define OF_MIXER_GROUP_SFX   0
-#define OF_MIXER_GROUP_MUSIC 1
-#define OF_MIXER_GROUP_VOICE 2
-#define OF_MIXER_GROUP_AUX   3
-
+/* Volume group constants live above the OF_PC fence — see top of file. */
 static inline void of_mixer_set_group(int voice, int group) {
     OF_SVC->mixer_set_group(voice, group);
 }
@@ -301,17 +311,11 @@ static inline void of_mixer_set_master_volume(int volume) {
     OF_SVC->mixer_set_master_volume(volume);
 }
 
-/* Retired per-voice filter surface.  The current mixer has no SVF, so this
- * is a compatibility no-op kept for older apps. */
-static inline void of_mixer_set_filter(int voice, int cutoff_q016, int q, int enable) {
-    OF_SVC->mixer_set_filter(voice, cutoff_q016, q, enable);
-}
-
-static inline void of_mixer_set_filter_h(of_mixer_handle_t handle,
-                                         int cutoff_q016, int q, int enable) {
-    if (OF_SVC_HAS_FIELD(mixer_set_filter_h) && OF_SVC->mixer_set_filter_h)
-        OF_SVC->mixer_set_filter_h(handle, cutoff_q016, q, enable);
-}
+/* The retired per-voice SVF filter API (of_mixer_set_filter/_h) was removed:
+ * the mixer HW has no state-variable filter, so the calls were pure no-ops
+ * with no callers.  The of_services_table mixer_set_filter / mixer_set_filter_h
+ * slots were deleted too, so this is a services-ABI revision — all app
+ * binaries must be rebuilt against this header. */
 
 /* Group-aware atomic alloc-and-tag.  MUSIC scans low→high, SFX (and
  * untagged/other groups) scans high→low so the two groups land at
@@ -430,9 +434,6 @@ static inline void of_mixer_set_group_volume(int group, int volume) {
 static inline void of_mixer_set_master_volume(int volume) {
     (void)volume;
 }
-static inline void of_mixer_set_filter(int voice, int cutoff_q016, int q, int enable) {
-    (void)voice; (void)cutoff_q016; (void)q; (void)enable;
-}
 static inline void of_mixer_retrigger(int voice, const uint8_t *pcm_s16,
                                       uint32_t sample_count, uint32_t sample_rate,
                                       int volume) {
@@ -523,10 +524,6 @@ static inline void of_mixer_set_voice_raw_h(of_mixer_handle_t handle,
 }
 static inline void of_mixer_set_volume_ramp_h(of_mixer_handle_t handle, int rate) {
     (void)handle; (void)rate;
-}
-static inline void of_mixer_set_filter_h(of_mixer_handle_t handle,
-                                         int cutoff_q016, int q, int enable) {
-    (void)handle; (void)cutoff_q016; (void)q; (void)enable;
 }
 static inline uint32_t of_mixer_poll_ended_h(of_mixer_handle_t *out_handles,
                                              uint32_t max_handles) {

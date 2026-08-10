@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_caps.h -- openfpgaOS Capability Descriptors
  *
@@ -5,7 +11,7 @@
  * launching the application. Apps read it to discover the platform,
  * available hardware, memory layout, and OS services.
  *
- * This replaces hardcoded addresses (framebuffer base, sample pool,
+ * This replaces hardcoded addresses (framebuffer base, audio reserve,
  * GPU MMIO window, ...) and enables the same app binary to run on
  * different targets (Pocket, MiSTer) and core variants (full, lite, 3d).
  *
@@ -24,7 +30,16 @@ extern "C" {
 #include <stdint.h>
 
 #define OF_CAPS_MAGIC   0x43415053  /* 'CAPS' */
-#define OF_CAPS_VERSION 2
+#define OF_CAPS_VERSION 4
+
+/* OS software-feature flags (of_capabilities.os_features, caps v4+).
+ * These describe FIRMWARE behavior, not hardware -- apps gate on
+ * caps->version >= 4 before reading the field. */
+#define OF_OS_FEAT_MOUSE_COUNTS (1u << 0)  /* of_mouse_state dx/dy are decoded
+                                            * mouse counts.  Absent (v3 OS): the
+                                            * Pocket dock's packed int8 sample
+                                            * pairs {a<<8|b} pass through raw and
+                                            * the app must decode. */
 /* The of_capabilities pointer is delivered to apps via the AT_OF_CAPS
  * auxv tag set up by the kernel ELF loader (see of_app_abi.h). Apps
  * never need to know where the struct lives -- they just call
@@ -37,25 +52,166 @@ extern "C" {
 
 /* Hardware feature flags — must match RTL HW_FEATURES bit layout in
  * src/fpga/common/axi_periph_slave.v and src/firmware/os/hal/regs.h. */
-#define OF_HW_MIXER         (1 << 0)    /* Audio FIFO + CPU-side software mixer */
+#define OF_HW_MIXER         (1 << 0)    /* A 32-voice mixer is AVAILABLE (apps call
+                                         * of_mixer_*).  SET on every variant —
+                                         * including OS30, where it is backed by
+                                         * the CPU software mixer (hal/sw_mixer.c).
+                                         * Apps must NOT use this bit to infer a
+                                         * HW backend; it only means "mixer present". */
+#define OF_HW_MIXER_HW      (1 << 1)    /* The mixer is HARDWARE-accelerated (the RTL
+                                         * audio_mixer engine via MMIO).  SET when the
+                                         * HW mixer is present (OS25/MiSTer + default
+                                         * Pocket), CLEAR under EXCLUDE_MIXER (OS30),
+                                         * where the OS renders voices on the CPU.
+                                         * The OS uses this to pick the mixer backend
+                                         * at boot; apps generally don't need it. */
 #define OF_HW_NET           (1 << 2)    /* Networking (link cable / serial / wifi) */
 #define OF_HW_ANALOGIZER    (1 << 3)    /* Analog video output */
 #define OF_HW_GPU_SPAN      (1 << 4)    /* GPU span renderer (always set) */
+/* bit 5 reserved (free) */
 #define OF_HW_MIDI          (1 << 6)    /* MIDI playback (sample-based synth) */
 #define OF_HW_WIFI          (1 << 7)    /* Wireless networking */
 #define OF_HW_FPU           (1 << 8)    /* Hardware FPU (RISC-V F extension) */
 #define OF_HW_SAVE_SLOTS    (1 << 9)    /* Persistent save storage */
-#define OF_HW_GPU_VCOLOR    (1 << 10)   /* GPU vertex color interpolation */
-#define OF_HW_GPU_BILINEAR  (1 << 11)   /* GPU bilinear texture filter */
-#define OF_HW_GPU_ALPHA     (1 << 12)   /* GPU alpha / additive blending */
+#define OF_HW_GPU_VCOLOR    (1 << 10)   /* Truecolor RGB565 / direct-color fragment
+                                         * path.  Tracks INCLUDE_DIRECT_COLOR in
+                                         * the RTL; "VCOLOR" is the legacy name. */
+#define OF_HW_GPU_TRUECOLOR OF_HW_GPU_VCOLOR  /* canonical alias for bit 10 */
+#define OF_HW_GPU_BILINEAR  (1 << 11)   /* GPU bilinear texture filter — RESERVED:
+                                         * defined but never advertised by
+                                         * axi_periph_slave (no live HW). */
+#define OF_HW_GPU_ALPHA     (1 << 12)   /* GPU alpha / additive blending.  The build
+                                         * gate is INCLUDE_TRANSLUC (no caps bit yet);
+                                         * this bit is not yet advertised. */
 #define OF_HW_GPU_PERSP     (1 << 13)   /* GPU perspective-correct spans */
 #define OF_HW_GPU_FRAGPIPE  (1 << 14)   /* GPU 1-px/cycle fragment pipeline */
 #define OF_HW_GPU_PARAM_SPAN_LIST (1 << 15) /* GPU parametric span-list command */
 #define OF_HW_GPU_PARAM_SPAN_Z    (1 << 16) /* Param-span Quake-compatible z writes */
 #define OF_HW_GPU_PARAM_SPAN_ZTEST (1 << 17) /* Param-span Quake-compatible z test/write */
 #define OF_HW_GPU_PARAM_SPAN_Q29_SCALE (1 << 18) /* Param-span Q29 dynamic scale */
+#define OF_HW_GPU_PARAM_TRI (1 << 19)   /* Param-tri HW edge walker (DRAW_PARAM_TRI) */
+#define OF_HW_GPU_VERT_TRI  (1 << 20)   /* HW plane derivation (DRAW_VERT_TRI 0x4B
+                                         * on the 0x4A sticky state; 0x4A itself
+                                         * decodes on every variant) */
+#define OF_HW_GPU_COLUMN_LIST (1 << 21) /* CMD_DRAW_COLUMN_LIST (0x4C): 5-word
+                                         * lane records for vertical 1-wide
+                                         * textured columns (drops the always-0
+                                         * s/sstep words; ~28% less command
+                                         * traffic for column renderers —
+                                         * Doom/Wolf3D/Duke3D walls + sprites).
+                                         * Gated by axi_periph_slave's
+                                         * HAS_COLUMN_LIST: SET on OS25/MiSTer,
+                                         * CLEAR on Pocket OS30 (lean Quake2
+                                         * GPU — the 0x4C decode reuses the
+                                         * compact-span lane bank, which OS30
+                                         * also drops; a 0x4C there drains as a
+                                         * no-op).  Where set, byte-identical
+                                         * to a 0x48 direct-affine column. */
+#define OF_HW_GPU_PARAM_TRI_RECS (1 << 22) /* CMD_DRAW_PARAM_TRI_RECS (0x4D):
+                                         * records-only 0x49 variant — 16-word
+                                         * payload of per-triangle attr/light
+                                         * planes + q29 + vertices, reusing the
+                                         * 0x4A sticky surface/control/clamp/z/
+                                         * clip state (re-arm 0x4A after any
+                                         * 0x48/0x49/0x4C, which overwrites the
+                                         * shared staging).  Drops ~21 constant
+                                         * header words per triangle vs full
+                                         * 0x49.  The Quake2 world-pass header-
+                                         * dedup opcode: SET on OS30/MiSTer,
+                                         * CLEAR on OS25 (ALM budget — the 0x4A
+                                         * sticky decode stays everywhere, but
+                                         * OS25 prunes the 0x4D arms). */
+#define OF_HW_GPU_SPAN_GROUP (1 << 23)  /* 0x48 compact-direct lane form: 4-word
+                                         * header + 7-word lane records, 11-32
+                                         * word payloads — what the
+                                         * of_gpu_draw_affine_span_group
+                                         * emitters produce.  SET on OS25/
+                                         * MiSTer, CLEAR on Pocket OS30 (lean
+                                         * Quake2 GPU), where a compact-sized
+                                         * 0x48 drains as a no-op and the SDK
+                                         * emitter refuses instead.  The
+                                         * long-form record-style 0x48 (31-word
+                                         * header + records, >=33 words —
+                                         * of_gpu_draw_param_span_list and the
+                                         * persp span group) decodes on EVERY
+                                         * variant and is NOT gated by this
+                                         * bit. */
 
-#define OF_EMIT_CAP_PARAM_SPAN_Q29_SCALE OF_HW_GPU_PARAM_SPAN_Q29_SCALE
+#define OF_HW_SAVE_DT_WORD  (1 << 24)   /* Entry-resolved nonvolatile size
+                                         * commits: the SAVE_DT_WORD register
+                                         * (sysreg 0xC8) takes a raw datatable
+                                         * WORD address (entry*2+1) so size
+                                         * commits land on the entry whose id
+                                         * word matches the data slot, instead
+                                         * of the legacy fixed "entry 8 =
+                                         * pre-save, 9-18 = saves" mapping
+                                         * (only valid when every declared
+                                         * slot loaded a file -- the Pocket
+                                         * compacts the table to loaded
+                                         * slots).  OS-internal; the OS
+                                         * probes this bit and falls back to
+                                         * SAVE_DT_SLOT on old bitstreams. */
+#define OF_HW_GPU_FAST_TEX  (1 << 25)   /* Dedicated fast texture memory
+                                         * present.  The OS resolves
+                                         * caps->tex_fast_size from this bit;
+                                         * apps just read tex_fast_size (or use
+                                         * of_texture.h, which falls back to
+                                         * SDRAM when it is 0).  NO current
+                                         * variant defines INCLUDE_TEX_MEM (the
+                                         * CRAM1 texture store was reverted), so
+                                         * this bit is CLEAR on os25/os30/mister;
+                                         * the INCLUDE_TEX_MEM module exists for a
+                                         * future texture-bound core. */
+#define OF_HW_GPU_SPAN_CONT (1 << 28)   /* Records-only continuation of a
+                                         * long-form 0x48 param span list
+                                         * (GPU_CMD_PARAM_SPAN_CONT 0x58):
+                                         * the 29-word surface header
+                                         * persists in the GPU staging, so
+                                         * repeat emissions send count +
+                                         * shift + records only.  The SDK
+                                         * emitter self-gates on this bit
+                                         * and keeps a header cache that is
+                                         * invalidated by every staging-
+                                         * overwriting emit (compact 0x48,
+                                         * 0x4C, 0x49, 0x4A) — mirroring
+                                         * the RTL residency contract. */
+#define OF_HW_GPU_XFORM_RGB (1 << 26)   /* GPU matrix transform front-end,
+                                         * truecolor: 0x50 sticky matrix,
+                                         * 0x52 xform_tri_rgb, 0x53 load_verts
+                                         * (matrix form), 0x54 draw_indexed_tri.
+                                         * Implies the matrix MAC.  Lighting
+                                         * (0x55/0x57) is OF_HW_GPU_LIGHT;
+                                         * the clip-space cache load (0x56)
+                                         * is OF_HW_GPU_CLIP_LOAD -- neither
+                                         * is implied by this bit.  Pocket
+                                         * os30 sets it (2026-08-04). */
+#define OF_HW_GPU_CLIP_LOAD (1 << 29)   /* 0x56 LOAD_VERT_CLIP: park a CPU
+                                         * pre-transformed clip-space vert
+                                         * {x,y,w} in the vertex cache; draw
+                                         * with 0x54.  Independent of the
+                                         * matrix MAC and of bit 26 by design
+                                         * (a MAC-less build can set 29 alone).
+                                         * Tracks gpu_core INCLUDE_VTX_CACHE
+                                         * && INCLUDE_XFORM_RGB. */
+#define OF_HW_GPU_LIGHT     (1 << 30)   /* GPU per-vertex lighting: 0x55
+                                         * set_light_state + 0x57 load_vert_lit.
+                                         * Carved out of bit 26 before it ever
+                                         * shipped: os30 excludes the lighting
+                                         * cone (EXCLUDE_GPU_LIGHT) while the
+                                         * rest of the transform front-end is
+                                         * live.  Tracks INCLUDE_GPU_LIGHT. */
+#define OF_HW_GPU_COMBINE   (1 << 27)   /* GPU full texel*C+D color combiner
+                                         * (HILITE/specular class, e.g. the SM64
+                                         * title/Goddard Mario head).  Truecolor
+                                         * only; rides the per-triangle combine
+                                         * bit (0x4A SET_TRI_STATE data[30]).
+                                         * When ABSENT, apps MUST fall back to
+                                         * plain texel*shade (emit plain RGB565,
+                                         * no biased-C/D payload) — else the
+                                         * gated GPU mis-reads C-encoded words.
+                                         * Tracks gpu_core INCLUDE_COMBINE &&
+                                         * INCLUDE_DIRECT_COLOR.  Pocket os30
+                                         * (SM64) CLEARS it (EXCLUDE_COMBINE). */
 
 /* Convenience: all the GPU bits an app might care about for renderer choice. */
 #define OF_HW_GPU_LITE_MASK  (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE)
@@ -74,8 +230,8 @@ struct of_capabilities {
     uint32_t fb_width;          /* Framebuffer width in pixels */
     uint32_t fb_height;         /* Framebuffer height in pixels */
     uint32_t fb_stride;         /* Bytes per row */
-    uint32_t sample_base;       /* Audio sample pool base address */
-    uint32_t sample_size;       /* Audio sample pool size in bytes */
+    uint32_t sample_base;       /* Persistent audio reservation base */
+    uint32_t sample_size;       /* Persistent audio reservation bytes */
 
     /* Hardware features */
     uint32_t hw_features;       /* OF_HW_* bitmask */
@@ -91,15 +247,23 @@ struct of_capabilities {
     /* OS info */
     uint32_t os_version;        /* Packed: major.minor.patch */
     uint32_t cpu_freq_hz;       /* CPU clock frequency */
-    uint32_t services_table;    /* Address of OS services table (0 = none).
-                                 * Legacy: new apps get the same pointer
-                                 * via the AT_OF_SVC auxv tag. */
 
     /* Memory bases for inline accessors that need to translate
      * pointers without hardcoding target addresses. Added in v2. */
     uint32_t sdram_base;            /* CPU base of cached SDRAM */
     uint32_t sdram_uncached_base;   /* CPU base of D-cache-bypass alias */
     uint32_t gpu_base;              /* GPU MMIO window base (0 = no GPU) */
+
+    /* v3: dedicated fast texture memory (a target-specific sync-burst chip).
+     * Bytes available, 0 = none (textures stay in SDRAM, e.g. MiSTer).
+     * Addressed by GPU byte offset [0, tex_fast_size); upload via the GPU's
+     * fast-texture upload regs.  The of_texture.h API hides this entirely. */
+    uint32_t tex_fast_size;
+
+    /* v4: OS software-feature flags (OF_OS_FEAT_*).  Firmware behavior
+     * contracts the app adapts to at runtime -- the loose-coupling
+     * alternative to lockstep app/os deploys. */
+    uint32_t os_features;
 };
 
 #ifndef OF_PC

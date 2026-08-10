@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 /*
  * of_sdl2.c -- SDL2 backend for openfpgaOS Application API
  *
@@ -26,11 +32,17 @@
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
 static SDL_Texture  *g_texture;
+static int           g_texture_w;
+static int           g_texture_h;
 
-/* Double-buffered 320x240 framebuffers, sized for the largest color mode. */
-static uint8_t  g_fb[2][OF_FB_SIZE_16BPP];
+/* Double-buffered framebuffers sized for the largest supported app mode. */
+static uint8_t  g_fb[2][OF_VIDEO_MAX_FRAME_BYTES];
 static int      g_draw_buf;    /* index of current draw buffer */
 static int      g_color_mode;
+static of_video_mode_t g_mode = {
+    OF_SCREEN_W, OF_SCREEN_H, OF_SCREEN_W, OF_VIDEO_MODE_8BIT, 0
+};
+static size_t   g_frame_bytes = OF_FB_SIZE_8BIT;
 static uint32_t g_present_count;
 static uint64_t g_last_present_us;
 
@@ -38,34 +50,29 @@ static uint64_t g_last_present_us;
 static uint32_t g_palette[256];
 
 /* Composited ARGB output (uploaded to texture) */
-static uint32_t g_pixels[OF_SCREEN_W * OF_SCREEN_H];
+static uint32_t g_pixels[OF_VIDEO_MAX_WIDTH * OF_VIDEO_MAX_HEIGHT];
 
-/* ---- Tile engine state ---- */
-static int      g_tile_enabled;
-static int      g_tile_priority;  /* 0=behind FB, 1=over FB */
-static int      g_tile_scroll_x;
-static int      g_tile_scroll_y;
-static uint16_t g_tilemap[64 * 32];          /* 64 cols x 32 rows */
-static uint32_t g_tile_chr[256 * 8];         /* 256 tiles x 8 rows x 32-bit */
-
-/* ---- Sprite engine state ---- */
-#define MAX_SPRITES 64
-
-typedef struct {
-    int16_t  x, y;
-    uint8_t  tile_id;
-    uint8_t  palette;
-    uint8_t  hflip, vflip;
-    uint8_t  enabled;
-} sprite_t;
-
-static int      g_sprite_enabled;
-static sprite_t g_sprites[MAX_SPRITES];
-static uint32_t g_sprite_chr[256 * 8];       /* same format as tile chr */
+static const of_video_mode_t g_video_modes[] = {
+    {256, 224, 0, OF_VIDEO_MODE_8BIT, 0},
+    {256, 240, 0, OF_VIDEO_MODE_8BIT, 0},
+    {320, 200, 0, OF_VIDEO_MODE_8BIT, 0},
+    {320, 224, 0, OF_VIDEO_MODE_8BIT, 0},
+    {320, 240, 0, OF_VIDEO_MODE_8BIT, 0},
+    {320, 256, 0, OF_VIDEO_MODE_8BIT, 0},
+    {320, 288, 0, OF_VIDEO_MODE_8BIT, 0},
+    {400, 300, 0, OF_VIDEO_MODE_8BIT, 0},
+    {512, 384, 0, OF_VIDEO_MODE_8BIT, 0},
+    {640, 360, 0, OF_VIDEO_MODE_8BIT, 0},
+    {640, 400, 0, OF_VIDEO_MODE_8BIT, 0},
+    {640, 480, 0, OF_VIDEO_MODE_8BIT, 0},
+    {800, 600, 0, OF_VIDEO_MODE_8BIT, 0},
+};
 
 /* ---- Input state ---- */
 static of_input_state_t g_input[2];
 static uint32_t g_prev_buttons[2];
+static uint16_t g_prev_mouse_buttons;
+static uint16_t g_mouse_report_counter;
 
 /* ---- Audio state ---- */
 static SDL_AudioDeviceID g_audio_dev;
@@ -78,18 +85,25 @@ static SDL_mutex *g_audio_mutex;
 /* ---- Timer ---- */
 static uint64_t g_start_us;
 
+/* Fields are listed in declaration order so the initialiser is valid in
+ * both C99 (which allows arbitrary designator order) and C++ (which
+ * requires declaration order — cxxdemo links of_sdl2.c through c++). */
 static const struct of_capabilities g_caps = {
-    .magic = OF_CAPS_MAGIC,
-    .version = OF_CAPS_VERSION,
-    .fb_width = OF_SCREEN_W,
-    .fb_height = OF_SCREEN_H,
-    .fb_stride = OF_SCREEN_W,
-    .fb_size = OF_FB_SIZE_8BIT,
+    .magic       = OF_CAPS_MAGIC,
+    .version     = OF_CAPS_VERSION,
+    .fb_size     = OF_FB_SIZE_8BIT,
+    .fb_width    = OF_SCREEN_W,
+    .fb_height   = OF_SCREEN_H,
+    .fb_stride   = OF_SCREEN_W,
     .hw_features = OF_HW_MIXER | OF_HW_SAVE_SLOTS,
     .mixer_voices = OF_MIXER_MAX_VOICES,
-    .mixer_rate = OF_AUDIO_RATE,
+    .mixer_rate  = OF_AUDIO_RATE,
     .platform_id = OF_PLATFORM_SIM,
     .cpu_freq_hz = 100000000u,
+    /* SDL_GetRelativeMouseState delivers real decoded counts, same as
+     * the v4 device OS -- without this flag a v4-aware app would run
+     * its raw-pair fallback decode on them and mangle every delta. */
+    .os_features = OF_OS_FEAT_MOUSE_COUNTS,
 };
 
 static uint64_t get_us(void) {
@@ -110,58 +124,75 @@ int of_has_feature(uint32_t feature) {
  * Video
  * ====================================================================== */
 
-/* Render tile layer into a scanline buffer (palette indices) */
-static void render_tile_scanline(uint8_t *line, int y) {
-    int sy = (y + g_tile_scroll_y) & 0xFF;  /* 256 pixel wrap (32 tiles * 8) */
-    int tile_row = sy >> 3;
-    int fine_y   = sy & 7;
-
-    for (int x = 0; x < OF_SCREEN_W; x++) {
-        int sx = (x + g_tile_scroll_x) & 0x1FF;  /* 512 pixel wrap (64 * 8) */
-        int tile_col = sx >> 3;
-        int fine_x   = sx & 7;
-
-        uint16_t entry = g_tilemap[tile_row * 64 + tile_col];
-        int tile_id = entry & 0xFF;
-        int pal     = (entry >> 10) & 0xF;
-        int hflip   = (entry >> 14) & 1;
-        int vflip   = (entry >> 15) & 1;
-
-        int row = vflip ? (7 - fine_y) : fine_y;
-        int col = hflip ? (7 - fine_x) : fine_x;
-
-        uint32_t chr_word = g_tile_chr[tile_id * 8 + row];
-        int nibble = (chr_word >> (col * 4)) & 0xF;
-
-        line[x] = nibble ? ((pal << 4) | nibble) : 0;
+static uint32_t video_line_bytes(uint16_t width, uint8_t color_mode) {
+    switch (color_mode) {
+    case OF_VIDEO_MODE_4BIT:
+        return ((uint32_t)width + 1u) >> 1;
+    case OF_VIDEO_MODE_2BIT:
+        return ((uint32_t)width + 3u) >> 2;
+    case OF_VIDEO_MODE_RGB565:
+    case OF_VIDEO_MODE_RGB555:
+    case OF_VIDEO_MODE_RGBA5551:
+        return (uint32_t)width * 2u;
+    default:
+        return width;
     }
 }
 
-/* Render all sprites into a scanline buffer (palette indices) */
-static void render_sprite_scanline(uint8_t *line, int y) {
-    memset(line, 0, OF_SCREEN_W);
+static int normalize_mode(const of_video_mode_t *in, of_video_mode_t *out,
+                          size_t *frame_bytes_out) {
+    if (!in || in->width == 0 || in->height == 0)
+        return -1;
+    if (in->width > OF_VIDEO_MAX_WIDTH || in->height > OF_VIDEO_MAX_HEIGHT)
+        return -1;
+    if (in->color_mode > OF_VIDEO_MODE_RGBA5551)
+        return -1;
 
-    /* Back to front for correct priority (sprite 0 = highest) */
-    for (int i = MAX_SPRITES - 1; i >= 0; i--) {
-        sprite_t *s = &g_sprites[i];
-        if (!s->enabled) continue;
+    uint32_t line = (video_line_bytes(in->width, in->color_mode) + 1u) & ~1u;
+    uint32_t stride = in->stride ? ((uint32_t)in->stride + 1u) & ~1u : line;
+    if (stride < line || stride > OF_VIDEO_MAX_STRIDE)
+        return -1;
 
-        int sy = y - s->y;
-        if (sy < 0 || sy >= 8) continue;
+    uint32_t frame_bytes = stride * (uint32_t)in->height;
+    if (frame_bytes == 0 || frame_bytes > OF_VIDEO_MAX_FRAME_BYTES)
+        return -1;
 
-        int row = s->vflip ? (7 - sy) : sy;
-        uint32_t chr_word = g_sprite_chr[s->tile_id * 8 + row];
+    if (out) {
+        *out = *in;
+        out->stride = (uint16_t)stride;
+        out->reserved = 0;
+    }
+    if (frame_bytes_out)
+        *frame_bytes_out = frame_bytes;
+    return 0;
+}
 
-        for (int px = 0; px < 8; px++) {
-            int col = s->hflip ? (7 - px) : px;
-            int nibble = (chr_word >> (col * 4)) & 0xF;
-            if (nibble == 0) continue;
+static int window_scale_for_mode(int w, int h) {
+    if (w <= 400 && h <= 300)
+        return 3;
+    if (w <= 640 && h <= 480)
+        return 2;
+    return 1;
+}
 
-            int screen_x = s->x + px;
-            if (screen_x < 0 || screen_x >= OF_SCREEN_W) continue;
+static void ensure_texture_for_mode(void) {
+    if (!g_renderer)
+        return;
+    if (g_texture && g_texture_w == g_mode.width && g_texture_h == g_mode.height)
+        return;
 
-            line[screen_x] = (s->palette << 4) | nibble;
-        }
+    if (g_texture)
+        SDL_DestroyTexture(g_texture);
+    g_texture = SDL_CreateTexture(g_renderer,
+        SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+        g_mode.width, g_mode.height);
+    g_texture_w = g_mode.width;
+    g_texture_h = g_mode.height;
+    SDL_RenderSetLogicalSize(g_renderer, g_mode.width, g_mode.height);
+
+    if (g_window) {
+        int scale = window_scale_for_mode(g_mode.width, g_mode.height);
+        SDL_SetWindowSize(g_window, g_mode.width * scale, g_mode.height * scale);
     }
 }
 
@@ -199,61 +230,50 @@ static uint32_t rgba5551_to_argb(uint16_t v) {
 static uint8_t framebuffer_index_at(const uint8_t *fb, int x, int y) {
     switch (g_color_mode) {
     case OF_VIDEO_MODE_4BIT: {
-        uint8_t packed = fb[y * (OF_SCREEN_W / 2) + (x >> 1)];
+        uint8_t packed = fb[(uint32_t)y * g_mode.stride + (x >> 1)];
         return (x & 1) ? (packed >> 4) : (packed & 0x0F);
     }
     case OF_VIDEO_MODE_2BIT: {
-        uint8_t packed = fb[y * (OF_SCREEN_W / 4) + (x >> 2)];
+        uint8_t packed = fb[(uint32_t)y * g_mode.stride + (x >> 2)];
         return (packed >> ((x & 3) * 2)) & 0x03;
     }
     default:
-        return fb[y * OF_SCREEN_W + x];
+        return fb[(uint32_t)y * g_mode.stride + x];
     }
 }
 
-/* Composite all layers and upload to texture */
+/* Composite the framebuffer and upload to texture */
 static void composite_and_present(void) {
     int disp = g_draw_buf ^ 1;  /* display buffer is the one we just flipped from */
     const uint8_t *fb = g_fb[disp];
     const uint16_t *fb16 = (const uint16_t *)fb;
-    uint8_t tile_line[OF_SCREEN_W];
-    uint8_t sprite_line[OF_SCREEN_W];
+    int w = (int)g_mode.width;
+    int h = (int)g_mode.height;
+    int stride = (int)g_mode.stride;
 
-    for (int y = 0; y < OF_SCREEN_H; y++) {
-        if (g_tile_enabled)
-            render_tile_scanline(tile_line, y);
-        if (g_sprite_enabled)
-            render_sprite_scanline(sprite_line, y);
+    ensure_texture_for_mode();
 
-        for (int x = 0; x < OF_SCREEN_W; x++) {
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
             uint32_t color = 0xFF000000;  /* opaque black */
 
             if (g_color_mode == OF_VIDEO_MODE_RGB565) {
-                color = rgb565_to_argb(fb16[y * OF_SCREEN_W + x]);
+                color = rgb565_to_argb(fb16[(uint32_t)y * (stride >> 1) + x]);
             } else if (g_color_mode == OF_VIDEO_MODE_RGB555) {
-                color = rgb555_to_argb(fb16[y * OF_SCREEN_W + x]);
+                color = rgb555_to_argb(fb16[(uint32_t)y * (stride >> 1) + x]);
             } else if (g_color_mode == OF_VIDEO_MODE_RGBA5551) {
-                color = rgba5551_to_argb(fb16[y * OF_SCREEN_W + x]);
+                color = rgba5551_to_argb(fb16[(uint32_t)y * (stride >> 1) + x]);
             } else {
                 uint8_t fb_idx = framebuffer_index_at(fb, x, y);
                 if (fb_idx && g_palette[fb_idx])
                     color = g_palette[fb_idx] | 0xFF000000;
             }
 
-            /* Compositing: sprite > tile(hi) > FB > tile(lo) > black */
-            if (g_sprite_enabled && sprite_line[x]) {
-                color = g_palette[sprite_line[x]] | 0xFF000000;
-            } else if (g_tile_enabled && g_tile_priority && tile_line[x]) {
-                color = g_palette[tile_line[x]] | 0xFF000000;
-            } else if (g_tile_enabled && !g_tile_priority && tile_line[x]) {
-                color = g_palette[tile_line[x]] | 0xFF000000;
-            }
-
-            g_pixels[y * OF_SCREEN_W + x] = color;
+            g_pixels[(uint32_t)y * w + x] = color;
         }
     }
 
-    SDL_UpdateTexture(g_texture, NULL, g_pixels, OF_SCREEN_W * 4);
+    SDL_UpdateTexture(g_texture, NULL, g_pixels, w * 4);
     SDL_RenderClear(g_renderer);
     SDL_RenderCopy(g_renderer, g_texture, NULL, NULL);
     SDL_RenderPresent(g_renderer);
@@ -275,13 +295,16 @@ void of_video_init(void) {
             SDL_WINDOW_RESIZABLE);
         g_renderer = SDL_CreateRenderer(g_window, -1,
             SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-        SDL_RenderSetLogicalSize(g_renderer, OF_SCREEN_W, OF_SCREEN_H);
-        g_texture = SDL_CreateTexture(g_renderer,
-            SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-            OF_SCREEN_W, OF_SCREEN_H);
     }
 
-    memset(g_fb, 0, sizeof(g_fb));
+    of_video_mode_t default_mode = {
+        OF_SCREEN_W, OF_SCREEN_H, 0, OF_VIDEO_MODE_8BIT, 0
+    };
+    normalize_mode(&default_mode, &g_mode, &g_frame_bytes);
+    ensure_texture_for_mode();
+
+    memset(g_fb[0], 0, g_frame_bytes);
+    memset(g_fb[1], 0, g_frame_bytes);
     g_draw_buf = 0;
     g_color_mode = OF_VIDEO_MODE_8BIT;
     memset(g_palette, 0, sizeof(g_palette));
@@ -312,15 +335,52 @@ uint8_t *of_video_buffer_addr(int idx) {
     return g_fb[idx & 1];
 }
 
+int of_video_set_mode(const of_video_mode_t *mode) {
+    of_video_mode_t normalized;
+    size_t frame_bytes;
+    if (normalize_mode(mode, &normalized, &frame_bytes) < 0)
+        return -1;
+
+    if (!g_window)
+        of_video_init();
+
+    g_mode = normalized;
+    g_color_mode = normalized.color_mode;
+    g_frame_bytes = frame_bytes;
+    g_draw_buf = 0;
+    memset(g_fb[0], 0, g_frame_bytes);
+    memset(g_fb[1], 0, g_frame_bytes);
+    ensure_texture_for_mode();
+    return 0;
+}
+
+void of_video_get_mode(of_video_mode_t *out) {
+    if (out)
+        *out = g_mode;
+}
+
+int of_video_get_mode_count(void) {
+    return (int)(sizeof(g_video_modes) / sizeof(g_video_modes[0]));
+}
+
+int of_video_get_mode_info(int index, of_video_mode_t *out) {
+    if (!out || index < 0 || index >= of_video_get_mode_count())
+        return -1;
+    return normalize_mode(&g_video_modes[index], out, NULL);
+}
+
+void of_video_get_caps(of_video_caps_t *out) {
+    __of_video_default_caps(out);
+}
+
+int of_video_check_mode(const of_video_mode_t *mode,
+                        of_video_mode_t *normalized) {
+    return normalize_mode(mode, normalized, NULL);
+}
+
 void of_video_clear(uint8_t color) {
-    size_t size = OF_FB_SIZE_8BIT;
-    if (g_color_mode == OF_VIDEO_MODE_4BIT)
-        size = OF_FB_SIZE_4BIT;
-    else if (g_color_mode == OF_VIDEO_MODE_2BIT)
-        size = OF_FB_SIZE_2BIT;
-    else if (g_color_mode >= OF_VIDEO_MODE_RGB565)
-        size = OF_FB_SIZE_16BPP;
-    memset(g_fb[g_draw_buf], color, size);
+    memset(g_fb[0], color, g_frame_bytes);
+    memset(g_fb[1], color, g_frame_bytes);
 }
 
 void of_video_palette(uint8_t index, uint32_t rgb) {
@@ -343,7 +403,10 @@ void of_video_set_display_mode(int mode) {
 void of_video_set_color_mode(int mode) {
     if (mode < OF_VIDEO_MODE_8BIT || mode > OF_VIDEO_MODE_RGBA5551)
         mode = OF_VIDEO_MODE_8BIT;
-    g_color_mode = mode;
+    of_video_mode_t next = g_mode;
+    next.color_mode = (uint8_t)mode;
+    next.stride = 0;
+    (void)of_video_set_mode(&next);
 }
 
 void of_video_get_timing(of_video_timing_t *out) {
@@ -415,6 +478,10 @@ static uint32_t key_to_btn(SDL_Scancode sc) {
     }
 }
 
+/* Single-player fast-path. On HW this skips the P1 read; on PC the
+ * desktop backend doesn't track P1 at all, so it's just an alias. */
+void of_input_poll_p0(void) { of_input_poll(); }
+
 void of_input_poll(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -484,20 +551,104 @@ uint32_t of_input_state(int player, of_input_state_t *state) {
     return 0;
 }
 
-/* Keyboard/mouse/deadzone stubs — declared as plain externs in
- * of_input.h's OF_PC branch.  The PC backend doesn't expose dock
- * peripherals through SDL, so return empty state and accept the
- * deadzone for API compatibility. */
+/* Keyboard — declared as a plain extern in of_input.h's OF_PC branch.
+ * SDL scancodes ARE USB HID usage IDs (SDL borrowed the HID table
+ * wholesale), so the desktop keyboard maps onto the device contract
+ * with no translation: a bit-scan of SDL's keystate fills keys[], and
+ * SDL_GetModState() unpacks into the HID modifier bitmap (bit i <->
+ * usage 0xE0 + i).  Edges are computed here against the previous call,
+ * which matches how the device HAL derives them per poll.
+ *
+ * This exists so keyboard-driven game code can be exercised on PC.
+ * Device-side the same state comes from the Pocket dock, or on MiSTer
+ * from hps_keyboard.v via input-hub slot 2. */
 void of_input_keyboard_state(of_keyboard_state_t *state) {
-    if (state) memset(state, 0, sizeof(*state));
+    static uint32_t prev_keys[OF_KEYBOARD_WORDS];
+    static uint16_t prev_mods;
+
+    if (!state) return;
+    memset(state, 0, sizeof(*state));
+
+    int nkeys = 0;
+    const Uint8 *ks = SDL_GetKeyboardState(&nkeys);
+    if (!ks) return;
+
+    SDL_Keymod m = SDL_GetModState();
+    uint16_t mods = 0;
+    if (m & KMOD_LCTRL)  mods |= 0x01;
+    if (m & KMOD_LSHIFT) mods |= 0x02;
+    if (m & KMOD_LALT)   mods |= 0x04;
+    if (m & KMOD_LGUI)   mods |= 0x08;
+    if (m & KMOD_RCTRL)  mods |= 0x10;
+    if (m & KMOD_RSHIFT) mods |= 0x20;
+    if (m & KMOD_RALT)   mods |= 0x40;
+    if (m & KMOD_RGUI)   mods |= 0x80;
+
+    unsigned max_usage = (unsigned)nkeys;
+    if (max_usage > OF_KEYBOARD_MAX_USAGE) max_usage = OF_KEYBOARD_MAX_USAGE;
+
+    unsigned nreport = 0;
+    for (unsigned u = 0; u < max_usage; u++) {
+        if (!ks[u]) continue;
+        state->keys[u >> 5] |= 1u << (u & 31);
+        /* report_keys mirrors a HID boot report: held non-modifier keys,
+         * first six only (usages 0xE0..0xE7 are the modifiers). */
+        if (u < 0xE0u && nreport < OF_KEYBOARD_REPORT_KEYS)
+            state->report_keys[nreport++] = (uint8_t)u;
+    }
+
+    state->present = 1;
+    state->modifiers = mods;
+    state->modifiers_pressed  = (uint16_t)(mods & ~prev_mods);
+    state->modifiers_released = (uint16_t)(~mods & prev_mods);
+    prev_mods = mods;
+
+    for (unsigned w = 0; w < OF_KEYBOARD_WORDS; w++) {
+        state->keys_pressed[w]  = state->keys[w] & ~prev_keys[w];
+        state->keys_released[w] = ~state->keys[w] & prev_keys[w];
+        prev_keys[w] = state->keys[w];
+    }
 }
 
+/* Desktop mouse via SDL.  The contract read is CONSUMING: SDL's
+ * relative state already clears per call, and the button edge masks
+ * are computed against the previous read here.  Individual HID reports
+ * aren't visible on PC, so report_counter advances once per read that
+ * observed any change.  OF button order is L=0 R=1 M=2 (SDL numbers
+ * middle 2, right 3). */
 void of_input_mouse_state(of_mouse_state_t *state) {
-    if (state) memset(state, 0, sizeof(*state));
+    if (!state) return;
+    memset(state, 0, sizeof(*state));
+    if (!g_window) return;  /* no window = no pointer focus yet */
+    SDL_PumpEvents();
+    int dx = 0, dy = 0;
+    Uint32 sdl = SDL_GetRelativeMouseState(&dx, &dy);
+    uint16_t btn = 0;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_LEFT))   btn |= 1u << 0;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_RIGHT))  btn |= 1u << 1;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_MIDDLE)) btn |= 1u << 2;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_X1))     btn |= 1u << 3;
+    if (sdl & SDL_BUTTON(SDL_BUTTON_X2))     btn |= 1u << 4;
+    if (dx || dy || btn != g_prev_mouse_buttons)
+        g_mouse_report_counter++;
+    state->present = 1;
+    state->buttons = btn;
+    state->buttons_pressed  = btn & ~g_prev_mouse_buttons;
+    state->buttons_released = ~btn & g_prev_mouse_buttons;
+    state->report_counter = g_mouse_report_counter;
+    state->dx = dx;
+    state->dy = dy;
+    g_prev_mouse_buttons = btn;
 }
 
 void of_input_set_deadzone(int16_t deadzone) {
     (void)deadzone;
+}
+
+int of_input_is_docked(void) {
+    /* No dock notion on the desktop; report handheld so dock-gated
+     * app behavior stays off during PC development. */
+    return 0;
 }
 
 /* ======================================================================
@@ -616,82 +767,6 @@ int of_analogizer_enabled(void)                     { return 0; }
 int of_analogizer_state(of_analogizer_state_t *state) {
     if (state) memset(state, 0, sizeof(*state));
     return 0;
-}
-
-/* ======================================================================
- * Tile Layer
- * ====================================================================== */
-
-void of_tile_enable(int enable, int priority) {
-    g_tile_enabled  = enable;
-    g_tile_priority = priority;
-}
-
-void of_tile_scroll(int x, int y) {
-    g_tile_scroll_x = x;
-    g_tile_scroll_y = y;
-}
-
-void of_tile_set(int col, int row, uint16_t entry) {
-    if ((unsigned)col < 64 && (unsigned)row < 32)
-        g_tilemap[row * 64 + col] = entry;
-}
-
-void of_tile_load_map(const uint16_t *data, int x, int y, int w, int h) {
-    for (int r = 0; r < h; r++)
-        for (int c = 0; c < w; c++)
-            of_tile_set(x + c, y + r, data[r * w + c]);
-}
-
-void of_tile_load_chr(int first_tile, const void *data, int num_tiles) {
-    int words = num_tiles * 8;
-    int offset = first_tile * 8;
-    if (offset + words > 256 * 8) words = 256 * 8 - offset;
-    memcpy(&g_tile_chr[offset], data, words * sizeof(uint32_t));
-}
-
-/* ======================================================================
- * Sprite Engine
- * ====================================================================== */
-
-void of_sprite_enable(int enable) {
-    g_sprite_enabled = enable;
-}
-
-void of_sprite_set(int index, int x, int y, int tile_id, int palette,
-                   int hflip, int vflip, int enable) {
-    if ((unsigned)index >= MAX_SPRITES) return;
-    sprite_t *s = &g_sprites[index];
-    s->x       = (int16_t)x;
-    s->y       = (int16_t)y;
-    s->tile_id = (uint8_t)tile_id;
-    s->palette = (uint8_t)palette;
-    s->hflip   = (uint8_t)hflip;
-    s->vflip   = (uint8_t)vflip;
-    s->enabled = (uint8_t)enable;
-}
-
-void of_sprite_move(int index, int x, int y) {
-    if ((unsigned)index >= MAX_SPRITES) return;
-    g_sprites[index].x = (int16_t)x;
-    g_sprites[index].y = (int16_t)y;
-}
-
-void of_sprite_load_chr(int first_tile, const void *data, int num_tiles) {
-    int words = num_tiles * 8;
-    int offset = first_tile * 8;
-    if (offset + words > 256 * 8) words = 256 * 8 - offset;
-    memcpy(&g_sprite_chr[offset], data, words * sizeof(uint32_t));
-}
-
-void of_sprite_hide(int index) {
-    if ((unsigned)index < MAX_SPRITES)
-        g_sprites[index].enabled = 0;
-}
-
-void of_sprite_hide_all(void) {
-    for (int i = 0; i < MAX_SPRITES; i++)
-        g_sprites[i].enabled = 0;
 }
 
 /* ======================================================================

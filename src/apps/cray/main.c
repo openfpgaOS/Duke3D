@@ -1,14 +1,41 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
 
-#include "of.h"
+/*
+ * cray — software ray tracer
+ *
+ * Canonical example of:
+ *   - A pure-CPU compute workload (no GPU): the whole scene is traced on
+ *     the VexiiRiscv core and drawn straight into the framebuffer, so it
+ *     doubles as a "how fast is the CPU with no HW help" baseline.
+ *   - Using <math.h> from musl's libm (sinf, cosf, sqrt, powf): the SDK
+ *     bundles enough of musl that ported third-party code "just works"
+ *     so long as it doesn't touch threads, locales, dynamic linking or
+ *     filesystem paths beyond the slot:N convention.
+ *   - Progressive refinement into an RGB565 surface (of_video_set_color_mode
+ *     + of_video_surface16 + of_video_flip): each pass halves the pixel
+ *     block size so an image appears immediately and sharpens over time.
+ *
+ * Source is John Tsiombikas's c-ray-1.1 with minimal openfpgaOS glue; the
+ * scene is the built-in default. Render time (ms + ray counts) is logged
+ * to UART.
+ *
+ * Controls: A — exit once the render finishes.
+ */
+
+#include <ctype.h>
+#include <errno.h>
+#include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
-#include <ctype.h>
-#include <errno.h>
-#include <stdint.h>
-#include <time.h>
 #include <unistd.h>
+
+#include "of.h"
 
 struct vec3 {
 	float x, y, z;
@@ -62,13 +89,8 @@ unsigned long get_msec(void);
 
 /* bit-shift ammount for packing each color into a 32bit uint */
 #ifdef LITTLE_ENDIAN
-#define RSHIFT	16
-#define BSHIFT	0
 #else	/* big endian */
-#define RSHIFT	0
-#define BSHIFT	16
 #endif	/* endianess */
-#define GSHIFT	8	/* this is the same in both byte orders */
 
 /* some helpful macros... */
 #define SQ(x)		((x) * (x))
@@ -348,7 +370,6 @@ struct ray get_primary_ray(int x, int y, int sample) {
 struct vec3 get_sample_pos(int x, int y, int sample) {
 	(void)sample;
 	struct vec3 pt;
-	/*float xsz = 2.0, ysz = xres / aspect;*/
 	static float sf = 0.0;
 
 	if(sf == 0.0) {

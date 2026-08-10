@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 #include "test.h"
 
 void test_saves(void) {
@@ -177,55 +183,70 @@ void test_posix_saves(void) {
         fclose(f);
     }
 
-    /* Duke3D pattern: write placeholder header + payload, close, then
-     * reopen r+b to patch data_size and magic. This catches regressions
-     * where the first close persists but the header backfill is lost. */
+    /* Patch-after-close pattern: write placeholder header + payload,
+     * close, then reopen r+b to patch data_size and magic. This catches
+     * regressions where the first close persists but the header backfill
+     * is lost. */
     {
-        enum { DUKE_HEADER = 20, DUKE_PAYLOAD = 48 };
-        const uint32_t duke_magic = 0x444B5356u; /* "DKSV" */
-        const uint32_t duke_size = DUKE_HEADER + DUKE_PAYLOAD;
-        uint8_t header[DUKE_HEADER] = {0};
-        uint8_t payload[DUKE_PAYLOAD];
-        uint8_t check_payload[DUKE_PAYLOAD];
+        enum { PATCH_HEADER = 20, PATCH_PAYLOAD = 48 };
+        const uint32_t patch_magic = 0x50545356u; /* "PTSV" */
+        const uint32_t patch_size = PATCH_HEADER + PATCH_PAYLOAD;
+        uint8_t header[PATCH_HEADER] = {0};
+        uint8_t payload[PATCH_PAYLOAD];
+        uint8_t check_payload[PATCH_PAYLOAD];
+        uint8_t image[PATCH_HEADER + PATCH_PAYLOAD];
         uint32_t got_size = 0;
         uint32_t got_magic = 0;
 
-        for (int i = 0; i < DUKE_PAYLOAD; i++)
+        for (int i = 0; i < PATCH_PAYLOAD; i++)
             payload[i] = (uint8_t)(0x30 + i * 3);
 
         f = fopen("save_9", "wb");
-        ASSERT("duke wb open", f != NULL);
+        ASSERT("patch wb open", f != NULL);
         if (f) {
-            ASSERT("duke hdr reserve",
-                   fwrite(header, 1, DUKE_HEADER, f) == DUKE_HEADER);
-            ASSERT("duke payload",
-                   fwrite(payload, 1, DUKE_PAYLOAD, f) == DUKE_PAYLOAD);
-            ASSERT("duke first close", fclose(f) == 0);
+            ASSERT("patch hdr reserve",
+                   fwrite(header, 1, PATCH_HEADER, f) == PATCH_HEADER);
+            ASSERT("patch payload",
+                   fwrite(payload, 1, PATCH_PAYLOAD, f) == PATCH_PAYLOAD);
+            ASSERT("patch first close", fclose(f) == 0);
         }
 
         f = fopen("save_9", "r+b");
-        ASSERT("duke r+b open", f != NULL);
+        ASSERT("patch r+b open", f != NULL);
         if (f) {
-            ASSERT("duke size seek", fseek(f, 0, SEEK_SET) == 0);
-            ASSERT("duke size write", fwrite(&duke_size, 4, 1, f) == 1);
-            ASSERT("duke magic seek", fseek(f, 16, SEEK_SET) == 0);
-            ASSERT("duke magic write", fwrite(&duke_magic, 4, 1, f) == 1);
-            ASSERT("duke second close", fclose(f) == 0);
+            ASSERT("patch size seek", fseek(f, 0, SEEK_SET) == 0);
+            ASSERT("patch size write", fwrite(&patch_size, 4, 1, f) == 1);
+            ASSERT("patch size flush", fflush(f) == 0);
+            ASSERT("patch magic seek", fseek(f, 16, SEEK_SET) == 0);
+            ASSERT("patch magic write", fwrite(&patch_magic, 4, 1, f) == 1);
+            ASSERT("patch magic flush", fflush(f) == 0);
+            ASSERT("patch second close", fclose(f) == 0);
         }
 
         f = fopen("save_9", "rb");
-        ASSERT("duke rb open", f != NULL);
+        ASSERT("patch rb open", f != NULL);
         if (f) {
-            ASSERT("duke size read", fread(&got_size, 4, 1, f) == 1);
-            ASSERT("duke magic seek2", fseek(f, 16, SEEK_SET) == 0);
-            ASSERT("duke magic read", fread(&got_magic, 4, 1, f) == 1);
-            ASSERT("duke payload seek", fseek(f, DUKE_HEADER, SEEK_SET) == 0);
-            ASSERT("duke payload read",
-                   fread(check_payload, 1, DUKE_PAYLOAD, f) == DUKE_PAYLOAD);
-            ASSERT("duke size match", got_size == duke_size);
-            ASSERT("duke magic match", got_magic == duke_magic);
-            ASSERT("duke payload match",
-                   memcmp(payload, check_payload, DUKE_PAYLOAD) == 0);
+            ASSERT("patch image read",
+                   fread(image, 1, patch_size, f) == patch_size);
+            memcpy(&got_size, image, 4);
+            memcpy(&got_magic, image + 16, 4);
+            memcpy(check_payload, image + PATCH_HEADER, PATCH_PAYLOAD);
+            ASSERT("patch size match", got_size == patch_size);
+            ASSERT("patch magic match", got_magic == patch_magic);
+            int bad = -1;
+            for (int i = 0; i < PATCH_PAYLOAD; i++) {
+                if (payload[i] != check_payload[i]) {
+                    bad = i;
+                    break;
+                }
+            }
+            if (bad < 0) {
+                test_pass("patch payload match");
+            } else {
+                snprintf(__buf, sizeof(__buf), "off %d %02x!=%02x",
+                         bad, payload[bad], check_payload[bad]);
+                test_fail("patch payload match", __buf);
+            }
             fclose(f);
         }
     }

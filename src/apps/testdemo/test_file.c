@@ -1,3 +1,9 @@
+//------------------------------------------------------------------------------
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileType: SOURCE
+// SPDX-FileCopyrightText: (c) 2026, ThinkElastic <Think@Elastic.com>
+//------------------------------------------------------------------------------
+
 #include "test.h"
 #include <time.h>
 
@@ -39,7 +45,7 @@ void test_file_io(void) {
 
     /* Unregistered filenames should return NULL */
     ASSERT("bad name", fopen("nonexistent.xyz", "rb") == NULL);
-    ASSERT("bad .grp", fopen("DUKE3D.GRP", "rb") == NULL);
+    ASSERT("bad .grp", fopen("GAME.GRP", "rb") == NULL);
     ASSERT("bad path", fopen("/data/file.bin", "rb") == NULL);
     ASSERT("empty", fopen("", "rb") == NULL);
 
@@ -158,9 +164,9 @@ void test_file_io(void) {
         }
     }
 
-    /* Sequential read coherency: read multiple chunks into same
-     * buffer (like Duke3D reading GRP entries), verify each
-     * read returns correct data, not stale from previous read */
+    /* Sequential read coherency: read multiple chunks into the same
+     * buffer, verify each read returns correct data, not stale bytes
+     * from the previous read. */
     {
         static uint8_t seq_buf[4096];
 
@@ -226,9 +232,9 @@ void test_file_io(void) {
         ASSERT("dma after write", memcmp(buf_a, buf_b, 4096) == 0);
     }
 
-    /* Direct DMA coherency: simulate Duke3D pattern —
-     * write to buffer, then DMA over it, read back. Tests
-     * that cache flush before/after DMA works correctly. */
+    /* Direct DMA coherency: write to a buffer, then DMA over it and
+     * read back. Tests that cache flush before/after DMA works
+     * correctly. */
     {
         static uint8_t dma_buf[65536];
 
@@ -258,7 +264,7 @@ void test_file_io(void) {
             ASSERT("direct DMA 64K", ok);
         }
 
-        /* Repeated lseek+read pattern (GRP file access) */
+        /* Repeated lseek+read pattern for packed-file access */
         f = fopen("slot:1", "rb");
         if (f) {
             uint8_t a[256], b[256], c[256];
@@ -335,7 +341,7 @@ void test_posix_file_io(void) {
     ASSERT_EQ("read idx", n, 256);
     /* File position should now be 272 */
 
-    /* Step 4: rewind — Duke does this after loading the index */
+    /* Step 4: rewind after loading the index */
     lseek(fd, 0, SEEK_SET);
 
     /* Verify rewind: re-read header must match */
@@ -797,14 +803,16 @@ void test_oversize_read(void) {
         fclose(f);
     }
 
-    /* slot:2 = testdemo.elf (~40KB). Request 256KB — bigger overshoot.
-     * This is closer to the mididemo scenario (5.8KB file, 256KB request). */
-    f = fopen("slot:2", "rb");
-    ASSERT("open slot:2", f != NULL);
+    /* slot:3 = testdemo.elf (~240KB). Request 256KB — bigger overshoot.
+     * This is closer to the mididemo scenario (5.8KB file, 256KB request).
+     * (slot:2 is now os.ini under the APF_VER_1 contract; the ELF moved
+     * to slot:3.) */
+    f = fopen("slot:3", "rb");
+    ASSERT("open slot:3", f != NULL);
     if (f) {
         size_t n = fread(big, 1, 262144, f);
-        ASSERT("slot:2 data", n >= 1024);
-        snprintf(__buf, sizeof(__buf), "slot:2=%d", (int)n);
+        ASSERT("slot:3 data", n >= 1024);
+        snprintf(__buf, sizeof(__buf), "slot:3=%d", (int)n);
         test_pass(__buf);
         fclose(f);
     }
