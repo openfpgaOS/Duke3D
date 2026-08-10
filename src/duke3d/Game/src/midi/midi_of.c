@@ -60,19 +60,15 @@ int MUSIC_Init(int SoundCard, int Address)
 
     if (!midi_initialized) {
         of_midi_init();
-        /* AWE backend OFF, reverb at FPGA reset default (0 = bypass).
+        /* The SDK voice engine is software-only now (the AWE coprocessor
+         * backend was removed), so the old smp_voice_enable_awe_backend(0)
+         * opt-out is gone with it — the SW path this port required is the
+         * only path.
          *
-         * AWE off: the AWE coprocessor's shared voice_state_ram +
-         * multi-writer voice_tbl mux + PITCH_COMPOSE stage collide
-         * with SFX writes to the same mixer voice slots, producing
-         * the "distorted from the first note" symptom.  SW path runs
-         * envelope/LFO/filter at 1 kHz on the CPU and writes mixer
-         * regs from one place — no contention with d3d_sound_play.
-         *
-         * Reverb at 0: dense sustained music sums past the mixer
-         * accumulator headroom and clips hard with non-zero wet.
-         * Keep dry until the mixer learns compression. */
-        smp_voice_enable_awe_backend(0);
+         * Reverb stays at the FPGA reset default (0 = bypass): dense
+         * sustained music sums past the mixer accumulator headroom and
+         * clips hard with non-zero wet.  Keep dry until the mixer learns
+         * compression. */
         midi_initialized = 1;
     }
     return MUSIC_Ok;

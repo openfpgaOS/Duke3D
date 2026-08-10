@@ -8277,8 +8277,10 @@ static int load_duke3d_groupfile(void)
 
 #ifdef OPENFPGA
     /* TODO: fix fopen/open by-name resolution so "duke3d.grp" works
-       without an instance JSON. For now, open the data slot directly. */
-    strcpy(groupfilefullpath, "slot:3");
+       without an instance JSON. For now, open the data slot directly.
+       Game Data (duke3d.grp) moved to data slot 4 under the OS slot
+       remap (slot 2 is now OS Config, slot 3 the app ELF). */
+    strcpy(groupfilefullpath, "slot:4");
 #else
     findGRPToUse(groupfilefullpath);
 #endif

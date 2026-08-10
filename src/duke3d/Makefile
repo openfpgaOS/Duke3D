@@ -64,13 +64,18 @@ SRCS = $(ENGINE_SRCS) $(GAME_SRCS) $(AUDIOLIB_SRCS) $(CONSOLE_SRCS) $(MIDI_SRCS)
 
 # ── SDK paths ────────────────────────────────────────────────────
 APP       = duke3d
+TARGET   ?= pocket
+MISTER_IP ?= mister.local
 SDK_DIR   = ../sdk
 ROOT      = $(realpath $(CURDIR)/../..)
 OBJ_DIR   = $(ROOT)/.obj/$(APP)
 BUILD_DIR = $(OBJ_DIR)
 DIST      = $(ROOT)/dist/Duke3D
-OUT       = $(ROOT)/build/$(APP)
+OUT       = $(ROOT)/build/$(TARGET)/$(APP)
 RUNTIME   = $(ROOT)/runtime
+# Game data files shipped into the per-target deliverable, when present
+# alongside the Makefile (the GRP is usually user-supplied).
+GAME_ASSETS = $(wildcard *.dat *.bin *.cfg)
 
 # ── Extra flags for BUILD engine ─────────────────────────────────
 CFLAGS += -O3
@@ -94,31 +99,24 @@ include $(SDK_DIR)/sdk.mk
 all: $(OBJ_DIR)/app.elf release
 	@$(SIZE) $<
 
-# Assemble SD card image: dist/Duke3D/ + runtime + ELF → build/duke3d/
+# Per-target deliverable: pocket = APF SD tree, mister = disk image.
+# The platform owns the layout (image.sh); this rule names no target.
 release: $(OBJ_DIR)/app.elf
-	@rm -rf $(OUT)
-	@mkdir -p $(dir $(OUT))
-	@cp -r $(DIST) $(OUT)
-	@cp $(RUNTIME)/bitstream.rbf_r $(RUNTIME)/loader.bin $$(ls -d $(OUT)/Cores/*/)/
-	@mkdir -p $$(ls -d $(OUT)/Assets/*/)/common
-	@cp $(RUNTIME)/os.bin $$(ls -d $(OUT)/Assets/*/)/common/
-	@# SoundFont bank — auto-loaded by the kernel and used by of_midi
-	@cp $(RUNTIME)/bank.ofsf $$(ls -d $(OUT)/Assets/*/)/common/
-	@cp $< $$(ls -d $(OUT)/Assets/*/)/common/$(APP).elf
-	@echo "Ready: build/$(APP)/"
+	@$(SDK_DIR)/platforms/$(TARGET)/image.sh "$(APP)" "$(OBJ_DIR)/app.elf" "$(ROOT)" "$(DIST)" $(GAME_ASSETS)
 
 # DEBUG=v / DEBUG=t forwards -v / -t to phdpd via debug.sh.
 DEBUG ?=
 DEBUG_FLAGS = $(if $(DEBUG),-$(DEBUG))
 
 debug: all
-	@$(ROOT)/scripts/debug.sh $(DEBUG_FLAGS) $$(find $(OUT)/Assets -name "$(APP).elf" | head -1)
+	@$(ROOT)/scripts/debug.sh $(DEBUG_FLAGS) "$$(ls -d $(OUT)/Assets/*/common 2>/dev/null)/$(APP).elf"
 
+# MISTER_IP rides the environment so the same call serves every platform.
 copy: all
-	@$(SDK_DIR)/platforms/pocket/copy.sh "$(APP)" "$$(find $(OUT)/Assets -name '$(APP).elf' | head -1)"
+	@MISTER_IP="$(MISTER_IP)" $(SDK_DIR)/platforms/$(TARGET)/copy.sh "$(APP)" "$(OBJ_DIR)/app.elf"
 
 package: all
-	@$(ROOT)/scripts/package.sh Duke3D
+	@$(ROOT)/scripts/package.sh $(APP)
 
 clean: sdk-clean
 	rm -rf $(OUT)

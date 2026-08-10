@@ -62,10 +62,9 @@ void DSL_StopPlayback(void) {}
 unsigned DSL_GetPlaybackRate(void) { return 48000; }
 void DSL_PumpAudio(void) {}
 
-/* SDL stubs — referenced by multivoc.c / menues.c */
-void *SDL_CreateMutex(void) { return (void *)0; }
-void  SDL_DestroyMutex(void *m) { (void)m; }
+/* SDL stubs — referenced by multivoc.c / menues.c.  Only the SDL 1.x
+ * names the SDK's of_sdl2.c does NOT provide; mutex create/destroy and
+ * SDL_SetRelativeMouseMode now come from the SDK compat layer. */
 int   SDL_mutexP(void *m) { (void)m; return 0; }
 int   SDL_mutexV(void *m) { (void)m; return 0; }
 int   SDL_GetRelativeMouseMode(void) { return 1; }
-int   SDL_SetRelativeMouseMode(int m) { (void)m; return 0; }
