@@ -8276,11 +8276,14 @@ static int load_duke3d_groupfile(void)
     groupfilefullpath[0] = '\0';
 
 #ifdef OPENFPGA
-    /* TODO: fix fopen/open by-name resolution so "duke3d.grp" works
-       without an instance JSON. For now, open the data slot directly.
-       Game Data (duke3d.grp) moved to data slot 4 under the OS slot
-       remap (slot 2 is now OS Config, slot 3 the app ELF). */
-    strcpy(groupfilefullpath, "slot:4");
+    /* By NAME, not "slot:4".  Both targets resolve a registered filename:
+       Pocket's data.json binds slot 4 to duke3d.grp and filesystem_init()
+       registers that name at boot, while MiSTer serves it from the mounted
+       volume where slot ids do not exist at all -- there "slot:4" opened
+       SOMETHING and returned zeros, so the engine reported
+       "bad GRP magic in slot:4 (got 00 00 00 00)".  One name works on both.
+       (This retires the by-name TODO that used to live here.) */
+    strcpy(groupfilefullpath, "duke3d.grp");
 #else
     findGRPToUse(groupfilefullpath);
 #endif

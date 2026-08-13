@@ -101,8 +101,12 @@ all: $(OBJ_DIR)/app.elf release
 
 # Per-target deliverable: pocket = APF SD tree, mister = disk image.
 # The platform owns the layout (image.sh); this rule names no target.
+ifeq ($(TARGET),mister)
+release: game-dist        # MiSTer: the per-game bundle IS the release artifact
+else
 release: $(OBJ_DIR)/app.elf
 	@$(SDK_DIR)/platforms/$(TARGET)/image.sh "$(APP)" "$(OBJ_DIR)/app.elf" "$(ROOT)" "$(DIST)" $(GAME_ASSETS)
+endif
 
 # DEBUG=v / DEBUG=t forwards -v / -t to phdpd via debug.sh.
 DEBUG ?=
@@ -122,3 +126,27 @@ clean: sdk-clean
 	rm -rf $(OUT)
 
 .PHONY: all release debug copy package clean
+
+# ── MiSTer per-game locked distribution ──────────────────────────────
+# Mirrors src/doom/Makefile: read-only boot.vhd shell (the data files), a
+# writable saves volume, one .mgl per instance and the loose F-loaded engine.
+GAME        = Duke3D
+GAME_INIS   = $(DIST)/Assets/duke3d/common
+GAME_STAGE  = $(ROOT)/build/mister/$(APP)
+GAME_COMMON = $(ROOT)/build/mister/.$(APP)-common
+GAME_ELF    = duke3d.elf
+GAME_CSV    = $(DIST)/mister/external_files.csv
+
+game-dist: $(OBJ_DIR)/app.elf
+	@rm -rf "$(GAME_STAGE)" "$(GAME_COMMON)"
+	@mkdir -p "$(GAME_STAGE)/$(GAME)/wads" "$(GAME_COMMON)"
+	@cp "$(RUNTIME)/bank.ofsf" "$(GAME_COMMON)/bank.ofsf"
+	@$(SDK_DIR)/platforms/mister/mkgame.sh --no-elf --saves-out "$(GAME_STAGE)/$(GAME)/$(GAME).saves.vhd" "$(GAME)" "$(GAME_INIS)" "$(GAME_COMMON)" "$(GAME_STAGE)/$(GAME)/boot.vhd"
+	@$(SDK_DIR)/platforms/mister/mkmgl.sh "$(GAME)" "$(GAME_INIS)" "$(GAME_STAGE)"
+	@cp "$(OBJ_DIR)/app.elf" "$(GAME_STAGE)/$(GAME)/$(GAME_ELF)"
+	@cp "$(GAME_INIS)"/*.ini "$(GAME_STAGE)/$(GAME)/"
+	@sed 's|^GAME_DEFAULT=.*|GAME_DEFAULT="$(GAME)"|' "$(SDK_DIR)/platforms/mister/setup.sh" > "$(GAME_STAGE)/$(GAME)/setup.sh"
+	@chmod +x "$(GAME_STAGE)/$(GAME)/setup.sh"
+	@if [ -f "$(GAME_CSV)" ]; then cp "$(GAME_CSV)" "$(GAME_STAGE)/$(GAME)/external_files.csv"; fi
+	@rm -rf "$(GAME_COMMON)"
+	@echo "  game-dist staged -> $(GAME_STAGE)"
