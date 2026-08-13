@@ -119,8 +119,33 @@ debug: all
 copy: all
 	@MISTER_IP="$(MISTER_IP)" $(SDK_DIR)/platforms/$(TARGET)/copy.sh "$(APP)" "$(OBJ_DIR)/app.elf"
 
+
+# ── MiSTer Downloader DB (same scheme as the Doom repo) ──────────────
+MISTER_DB_ID   ?= openfpgaOS/openfpgaos-duke3d
+MISTER_DB_VER  := $(shell python3 -c "import glob,json;print(json.load(open(sorted(glob.glob('$(DIST)/Cores/*/core.json'))[0]))['core']['metadata']['version'])" 2>/dev/null || echo 0.0.0)
+# Asset URLs pin to this release's own immutable tag; the DB itself is
+# committed and served via raw — a stable db_url immune to the per-repo
+# releases/latest pointer.
+MISTER_DB_BASE_URL ?= https://github.com/openfpgaOS/Duke3D/releases/download/duke3d-mister-v$(MISTER_DB_VER)/
+MISTER_DB_URL      ?= https://raw.githubusercontent.com/openfpgaOS/Duke3D/main/releases/mister/duke3d.json.zip
+MISTER_DB          = $(ROOT)/releases/mister/$(APP).json.zip
+MISTER_DB_INI      = $(ROOT)/releases/mister/$(APP).downloader.ini
+
+package: export ASSET_LABEL    = the commercial GRP
+package: export ASSET_EXAMPLES = duke3d.grp
+ifeq ($(TARGET),mister)
+package: game-dist
+	@$(ROOT)/scripts/package.sh $(APP)
+	@$(SDK_DIR)/platforms/mister/mkdb.py \
+	    --staging "$(GAME_STAGE)" --sd-prefix "games/OpenfpgaOS" \
+	    --menu-dir "_Computer/_OpenfpgaOS/_$(GAME)" \
+	    --base-url "$(MISTER_DB_BASE_URL)" --url-mode flat --db-id "$(MISTER_DB_ID)" \
+	    --db-url "$(MISTER_DB_URL)" \
+	    --output "$(MISTER_DB)" --ini-out "$(MISTER_DB_INI)"
+else
 package: all
 	@$(ROOT)/scripts/package.sh $(APP)
+endif
 
 clean: sdk-clean
 	rm -rf $(OUT)
