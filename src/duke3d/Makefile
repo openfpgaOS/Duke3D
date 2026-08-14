@@ -161,12 +161,17 @@ GAME_STAGE  = $(ROOT)/build/mister/$(APP)
 GAME_COMMON = $(ROOT)/build/mister/.$(APP)-common
 GAME_ELF    = duke3d.elf
 GAME_CSV    = $(DIST)/mister/external_files.csv
+# Explicit shell size: duke3d.grp alone is 44 MB — the 48 MB FAT32 floor was
+# already borderline, and add-on GRPs (Caribbean/DC/Vacation) need real room.
+# Ships gzipped, so the size is nearly free.
+GAME_BOOT_MB = 256
 
 game-dist: $(OBJ_DIR)/app.elf
 	@rm -rf "$(GAME_STAGE)" "$(GAME_COMMON)"
 	@mkdir -p "$(GAME_STAGE)/$(GAME)/wads" "$(GAME_COMMON)"
 	@cp "$(RUNTIME)/bank.ofsf" "$(GAME_COMMON)/bank.ofsf"
-	@$(SDK_DIR)/platforms/mister/mkgame.sh --no-elf --saves-out "$(GAME_STAGE)/$(GAME)/$(GAME).saves.vhd" "$(GAME)" "$(GAME_INIS)" "$(GAME_COMMON)" "$(GAME_STAGE)/$(GAME)/boot.vhd"
+	@$(SDK_DIR)/platforms/mister/mkgame.sh --no-elf --saves-out "$(GAME_STAGE)/$(GAME)/$(GAME).saves.vhd" "$(GAME)" "$(GAME_INIS)" "$(GAME_COMMON)" "$(GAME_STAGE)/$(GAME)/boot.vhd" $(GAME_BOOT_MB)
+	@gzip -9nf "$(GAME_STAGE)/$(GAME)"/boot*.vhd
 	@$(SDK_DIR)/platforms/mister/mkmgl.sh "$(GAME)" "$(GAME_INIS)" "$(GAME_STAGE)"
 	@cp "$(OBJ_DIR)/app.elf" "$(GAME_STAGE)/$(GAME)/$(GAME_ELF)"
 	@cp "$(GAME_INIS)"/*.ini "$(GAME_STAGE)/$(GAME)/"
