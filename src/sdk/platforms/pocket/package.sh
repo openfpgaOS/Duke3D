@@ -20,8 +20,12 @@
 set -e
 INPUT="$1"; LABEL="$2"; REL="$3"
 GREEN='\033[92m'; RESET='\033[0m'
+EXCLUDES=("*.DS_Store" "Thumbs.db")
 
 [ -d "$INPUT/Cores" ] || exit 0          # not an APF tree — nothing to do
+INPUT=$(cd "$INPUT" && pwd)
+mkdir -p "$REL"
+REL=$(cd "$REL" && pwd)
 [ "$LABEL" = "sdk" ] && LABEL="openfpgaOS-SDK"
 
 CORE_NAME=$(ls "$INPUT/Cores/" 2>/dev/null | head -1)
@@ -52,8 +56,22 @@ Installation:
 Save files are created automatically on first use.
 EOF
 
-(cd "$INPUT" && rm -f "$OUTPUT" 2>/dev/null; \
- zip -r "$OUTPUT" Cores/ Assets/ Platforms/ INSTALL.txt -x "*.DS_Store" "Thumbs.db" >/dev/null)
+case "$LABEL" in
+    doom|heretic|hexen)
+        EXCLUDES+=("*.[wW][aA][dD]")
+        cat >> "$INPUT/INSTALL.txt" << EOF
+
+Game WADs are not included. Copy your WAD files to Assets/$LABEL/common/.
+EOF
+        ;;
+esac
+
+PACKAGE_TMP=$(mktemp -d "$REL/.package.XXXXXX")
+trap 'rm -rf "$PACKAGE_TMP"' EXIT
+(cd "$INPUT" && \
+ zip -r "$PACKAGE_TMP/bundle.zip" Cores/ Assets/ Platforms/ INSTALL.txt \
+     -x "${EXCLUDES[@]}" >/dev/null)
+mv "$PACKAGE_TMP/bundle.zip" "$OUTPUT"
 
 echo -e "${GREEN}Package created: $OUTPUT${RESET}"
 echo "  Size: $(du -h "$OUTPUT" | cut -f1)"

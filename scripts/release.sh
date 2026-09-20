@@ -145,19 +145,18 @@ if [ "$PUBLISH" = "1" ]; then
     MODE_DESC="LIVE"
 fi
 
-# Downloader assets.  The DB is generated --url-mode flat against
-# releases/latest/download/, so EVERY file it references must be attached here
-# as a flat asset (basenames are unique per bundle).  Hosting on releases
-# rather than a dist branch is what allows the multi-hundred-MB .vhd images:
-# raw.githubusercontent refuses anything over 100 MB.
+# Image bundles also publish loose files for the MiSTer Downloader.
+# APF releases contain only the ZIP with the Pocket SD-card directory tree.
 ASSETS=()
-if [ -d "$BUNDLE" ]; then
-    while IFS= read -r f; do ASSETS+=("$f"); done < <(find "$BUNDLE" -type f | sort)
+if [ "$PLATFORM_BUNDLE_KIND" = "image" ]; then
+    if [ -d "$BUNDLE" ]; then
+        while IFS= read -r f; do ASSETS+=("$f"); done < <(find "$BUNDLE" -type f | sort)
+    fi
+    for extra in "$SDK_DIR/releases/$TARGET/$CORE.json.zip" \
+                 "$SDK_DIR/releases/$TARGET/$CORE.downloader.ini"; do
+        [ -f "$extra" ] && ASSETS+=("$extra")
+    done
 fi
-for extra in "$SDK_DIR/releases/$TARGET/$CORE.json.zip" \
-             "$SDK_DIR/releases/$TARGET/$CORE.downloader.ini"; do
-    [ -f "$extra" ] && ASSETS+=("$extra")
-done
 
 # Preflight: the DB's flat URLs resolve to releases/latest/download/<basename>,
 # so a DB entry whose basename is not attached here 404s for every user who
@@ -167,7 +166,7 @@ done
 # by basename, so the second upload clobbers the first).  Check both BEFORE
 # creating the release.
 DB_ZIP="$SDK_DIR/releases/$TARGET/$CORE.json.zip"
-if [ -f "$DB_ZIP" ]; then
+if [ "$PLATFORM_BUNDLE_KIND" = "image" ] && [ -f "$DB_ZIP" ]; then
     _assets_list="$(mktemp)"
     printf '%s\n' "${ASSETS[@]}" > "$_assets_list"
     _db_check="$(mktemp)"
@@ -223,14 +222,16 @@ echo -e "  core    : $CORE"
 echo -e "  tag     : $TAG"
 echo -e "  title   : $TITLE"
 echo -e "  asset   : ${ZIP#$SDK_DIR/}"
-echo -e "  extra   : ${#ASSETS[@]} flat asset(s) for the Downloader DB"
+if [ "$PLATFORM_BUNDLE_KIND" = "image" ]; then
+    echo -e "  extra   : ${#ASSETS[@]} flat asset(s) for the Downloader DB"
+fi
 echo -e "  notes   : $RANGE_DESC"
 echo -e "  mode    : $MODE_DESC"
 echo -e "${CYAN}────────────────────────────────────────────────────${RESET}"
 sed 's/^/    /' "$NOTES_FILE"
 echo -e "${CYAN}────────────────────────────────────────────────────${RESET}"
 
-gh release create "$TAG" "$ZIP" "${ASSETS[@]}" \
+gh release create "$TAG" "$ZIP" ${ASSETS[@]+"${ASSETS[@]}"} \
     --target "$(git rev-parse HEAD)" \
     --title "$TITLE" \
     --notes-file "$NOTES_FILE" \
