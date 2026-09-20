@@ -5,6 +5,39 @@
 #include "platform.h"
 #include "fixedPoint_math.h"
 
+/* Doom's fixed-point division strategy, specialized for BUILD's wall setup.
+ * The common small numerator fits in one native divide.  Otherwise split
+ * into whole/remainder and generate the twelve fractional bits.  Unsigned
+ * magnitudes handle INT_MIN and retain the original low 32 quotient bits,
+ * including overflow, with truncation toward zero for either sign.
+ * denominator must be nonzero (the divscale wrapper checks it).
+ * Kept out of line so prepwall's four call sites do not grow APP_BRAM. */
+int32_t build_divscale12(int32_t numerator, int32_t denominator)
+{
+    uint32_t n = numerator < 0 ? 0u - (uint32_t)numerator : (uint32_t)numerator;
+    uint32_t d = denominator < 0 ? 0u - (uint32_t)denominator : (uint32_t)denominator;
+    uint32_t result;
+
+    if (n <= (UINT32_MAX >> 12)) {
+        result = (n << 12) / d;
+    } else {
+        uint32_t whole = n / d;
+        uint32_t rem = n - whole * d;
+        result = whole << 12;
+        /* d <= 2^31 and rem < d, so doubling rem cannot overflow. */
+        for (uint32_t bit = 1u << 11; bit; bit >>= 1) {
+            rem <<= 1;
+            if (rem >= d) {
+                rem -= d;
+                result |= bit;
+            }
+        }
+    }
+    if ((numerator < 0) != (denominator < 0))
+        result = 0u - result;
+    return (int32_t)result;
+}
+
 void clearbuf(void *d, int32_t c, int32_t a)
 {
 	union

@@ -135,7 +135,8 @@ static const uint8_t *pending_transluc_table;
 static uint32_t pending_transluc_size;
 
 #define D3D_GPU_REQUIRED_FEATURES \
-    (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE | OF_HW_GPU_PARAM_SPAN_LIST)
+    (OF_HW_GPU_SPAN | OF_HW_GPU_FRAGPIPE | OF_HW_GPU_PARAM_SPAN_LIST | \
+     OF_HW_GPU_SPAN_GROUP)
 #define D3D_GPU_TRANSLUC_WAIT_TIMEOUT_US 50000u
 
 /* Cached framebuffer base for the GPU-disabled CPU-fallback path.
@@ -1033,12 +1034,21 @@ void d3d_gpu_init(void)
         d3d_gpu_upload_transluc(pending_transluc_table, pending_transluc_size);
 }
 
-/* Native affine span submission via the SDK helper.
- *
- * Duke/BUILD already computes exact spans on the CPU.  The GPU side should
- * only consume compact affine span groups with explicit per-lane colormap
- * slots; the SDK lowers these groups to GPU_CMD_DRAW_PARAM_SPAN_LIST. */
-static of_gpu_affine_span_group_t affine_batch;
+/* Stage lanes in wire order, as in Quake's affine builder.  Appending writes
+ * adjacent words; flushing copies them without gathering parallel arrays or
+ * repacking metadata.  Only initialized lanes are read, so starting a batch
+ * does not need to clear its payload.  Keep the SDK's four-lane commands and
+ * eight-lane batches: changing publication boundaries can expose GPU races. */
+typedef struct {
+    uint8_t flags;
+    uint8_t live_chunks;
+    uint16_t tex_width, tex_w_mask, tex_h_mask;
+    int32_t fb_step;
+} d3d_gpu_batch_key_t;
+
+static d3d_gpu_batch_key_t affine_batch;
+static uint32_t affine_lanes[OF_GPU_AFFINE_SPAN_GROUP_MAX_LANES *
+                             OF_GPU_AFFINE_SPAN_GROUP_LANE_WORDS];
 static int affine_batch_count;
 
 /* CMD_DRAW_COLUMN_LIST (0x4C) batch: 5-word lane records for vertical
@@ -1052,8 +1062,63 @@ static int affine_batch_count;
  * INVARIANT (same as the Doom port's r_gpu.c): at most one of
  * affine_batch / column_batch is non-empty at any time, so painter's
  * order between spans and columns is preserved. */
-static of_gpu_column_list_group_t column_batch;
+static d3d_gpu_batch_key_t column_batch;
+static uint32_t column_lanes[OF_GPU_COLUMN_LIST_MAX_LANES *
+                             OF_GPU_COLUMN_LIST_LANE_WORDS];
 static int column_batch_count;
+
+_Static_assert(OF_GPU_AFFINE_SPAN_GROUP_MAX_NATIVE_LANES == 4u &&
+               OF_GPU_COLUMN_LIST_MAX_NATIVE_LANES == 4u &&
+               OF_GPU_AFFINE_SPAN_GROUP_MAX_LANES == 8u &&
+               OF_GPU_COLUMN_LIST_MAX_LANES == 8u,
+               "Duke batch chunking must match the SDK");
+_Static_assert(OF_GPU_PARAM_DIRECT_AFFINE_WORDS(1) == 11u &&
+               OF_GPU_COLUMN_LIST_WORDS(1) == 9u,
+               "Duke packed lanes must match the SDK wire format");
+
+/* Counts are clamped exactly as in the SDK.  A live bit per native chunk
+ * retains its all-zero-command suppression, including mixed zero/live lanes.
+ * Feature checks are performed once by init (and the column-list probe). */
+static inline uint32_t d3d_gpu_lane_metadata(uint16_t count, uint8_t light,
+                                            uint8_t colormap_id)
+{
+    return ((uint32_t)(colormap_id & 0x0Fu) << 28) |
+           ((uint32_t)(light & 0x3Fu) << 16) |
+           (count > 0xFFFu ? 0xFFFu : (uint32_t)count);
+}
+
+static inline void d3d_gpu_emit_packed_batch(const d3d_gpu_batch_key_t *key,
+                                             const uint32_t *lanes,
+                                             uint32_t count,
+                                             uint32_t lane_words,
+                                             uint32_t opcode)
+{
+#ifndef OF_PC
+    for (uint32_t first = 0; first < count; first += 4u) {
+        uint32_t chunk = count - first;
+        if (chunk > 4u)
+            chunk = 4u;
+        if (!(key->live_chunks & (1u << (first / 4u))))
+            continue;
+
+        uint32_t words = 4u + chunk * lane_words;
+        _gpu_span_hdr_valid = 0;
+        _gpu_cmd_header(opcode, words);
+        uint32_t *w = _gpu_ring_claim();
+        *w++ = (chunk << 28) |
+               ((uint32_t)(key->flags & ~OF_GPU_SPAN_PERSP) << 20);
+        *w++ = key->tex_width;
+        *w++ = ((uint32_t)key->tex_h_mask << 16) | key->tex_w_mask;
+        *w++ = (uint32_t)key->fb_step;
+        const uint32_t *src = lanes + first * lane_words;
+        for (uint32_t i = 0; i < chunk * lane_words; i++)
+            *w++ = *src++;
+        _gpu_ring_commit(words);
+    }
+#else
+    (void)key; (void)lanes; (void)count; (void)lane_words; (void)opcode;
+#endif
+}
 
 static inline int d3d_gpu_affine_batch_compatible(uint8_t flags,
                                                   int32_t fb_step,
@@ -1076,7 +1141,6 @@ static void d3d_gpu_flush_affine_batch(void)
         return;
 
     SPIN_TAG(5);
-    affine_batch.lane_count = (uint8_t)affine_batch_count;
 
     /* Probe before committing — see the gpu_emit_stalled notes above. */
     if (gpu_emit_stalled ||
@@ -1099,7 +1163,10 @@ static void d3d_gpu_flush_affine_batch(void)
     }
 
     uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
-    of_gpu_draw_affine_span_group(&affine_batch);
+    d3d_gpu_emit_packed_batch(&affine_batch, affine_lanes,
+                              (uint32_t)affine_batch_count,
+                              OF_GPU_AFFINE_SPAN_GROUP_LANE_WORDS,
+                              GPU_CMD_DRAW_PARAM_SPAN_LIST);
     if (d3d_gpu_perf_enable) {
         uint32_t dt = perf_dt_us(t0);
         perf_add_time(&gpu_perf.batch_submit_us,
@@ -1120,7 +1187,6 @@ static void d3d_gpu_flush_column_batch(void)
         return;
 
     SPIN_TAG(5);
-    column_batch.lane_count = (uint8_t)column_batch_count;
 
     if (gpu_emit_stalled ||
         !d3d_gpu_reserve_or_drop(
@@ -1142,7 +1208,10 @@ static void d3d_gpu_flush_column_batch(void)
     }
 
     uint32_t t0 = d3d_gpu_perf_enable ? of_time_us() : 0;
-    of_gpu_draw_column_list(&column_batch);
+    d3d_gpu_emit_packed_batch(&column_batch, column_lanes,
+                              (uint32_t)column_batch_count,
+                              OF_GPU_COLUMN_LIST_LANE_WORDS,
+                              GPU_CMD_DRAW_COLUMN_LIST);
     if (d3d_gpu_perf_enable) {
         uint32_t dt = perf_dt_us(t0);
         perf_add_time(&gpu_perf.batch_submit_us,
@@ -1392,7 +1461,7 @@ static inline void d3d_gpu_queue_column(uint32_t fb_addr, uint32_t tex_addr,
     if (!d3d_gpu_column_batch_compatible(flags, fb_step, tex_width,
                                          tex_w_mask, tex_h_mask)) {
         d3d_gpu_flush_column_batch();
-        memset(&column_batch, 0, sizeof(column_batch));
+        column_batch.live_chunks = 0;
         column_batch.flags = flags;
         column_batch.tex_width = tex_width;
         column_batch.tex_w_mask = tex_w_mask;
@@ -1401,13 +1470,14 @@ static inline void d3d_gpu_queue_column(uint32_t fb_addr, uint32_t tex_addr,
     }
 
     int lane = column_batch_count++;
-    column_batch.fb_addr[lane] = fb_addr;
-    column_batch.tex_addr[lane] = tex_addr;
-    column_batch.count[lane] = count;
-    column_batch.t[lane] = t;
-    column_batch.tstep[lane] = tstep;
-    column_batch.light[lane] = (uint8_t)(light & 0x3F);
-    column_batch.colormap_id[lane] = (uint8_t)(colormap_id & 0x0F);
+    uint32_t *w = column_lanes + lane * OF_GPU_COLUMN_LIST_LANE_WORDS;
+    w[0] = fb_addr;
+    w[1] = tex_addr;
+    w[2] = d3d_gpu_lane_metadata(count, light, colormap_id);
+    w[3] = (uint32_t)t;
+    w[4] = (uint32_t)tstep;
+    if (count)
+        column_batch.live_chunks |= (uint8_t)(1u << ((unsigned)lane / 4u));
 
     if (column_batch_count == (int)OF_GPU_COLUMN_LIST_MAX_LANES)
         d3d_gpu_flush_column_batch();
@@ -1444,7 +1514,7 @@ static inline void d3d_gpu_queue_affine_span(uint32_t fb_addr,
                                          tex_width, tex_w_mask,
                                          tex_h_mask)) {
         d3d_gpu_flush_batch();
-        memset(&affine_batch, 0, sizeof(affine_batch));
+        affine_batch.live_chunks = 0;
         affine_batch.flags = flags;
         affine_batch.tex_width = tex_width;
         affine_batch.tex_w_mask = tex_w_mask;
@@ -1453,15 +1523,16 @@ static inline void d3d_gpu_queue_affine_span(uint32_t fb_addr,
     }
 
     int lane = affine_batch_count++;
-    affine_batch.fb_addr[lane] = fb_addr;
-    affine_batch.tex_addr[lane] = tex_addr;
-    affine_batch.count[lane] = count;
-    affine_batch.s[lane] = s;
-    affine_batch.t[lane] = t;
-    affine_batch.sstep[lane] = sstep;
-    affine_batch.tstep[lane] = tstep;
-    affine_batch.light[lane] = (uint8_t)(light & 0x3F);
-    affine_batch.colormap_id[lane] = (uint8_t)(colormap_id & 0x0F);
+    uint32_t *w = affine_lanes + lane * OF_GPU_AFFINE_SPAN_GROUP_LANE_WORDS;
+    w[0] = fb_addr;
+    w[1] = tex_addr;
+    w[2] = d3d_gpu_lane_metadata(count, light, colormap_id);
+    w[3] = (uint32_t)s;
+    w[4] = (uint32_t)t;
+    w[5] = (uint32_t)sstep;
+    w[6] = (uint32_t)tstep;
+    if (count)
+        affine_batch.live_chunks |= (uint8_t)(1u << ((unsigned)lane / 4u));
 
     if (affine_batch_count == (int)OF_GPU_AFFINE_SPAN_GROUP_MAX_LANES)
         d3d_gpu_flush_batch();

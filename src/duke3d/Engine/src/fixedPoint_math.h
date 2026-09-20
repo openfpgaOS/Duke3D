@@ -86,8 +86,15 @@ static inline int tmulscale(int32_t i1, int32_t i2, int32_t i3, int32_t i4, int3
 {
 	return (int)((mul32_64(i1,i2) + mul32_64(i3,i4) + mul32_64(i5,i6))>>shift);
 }
+/* Exact 20.12 division using RV32's native unsigned divide. */
+int32_t build_divscale12(int32_t numerator, int32_t denominator);
+
 static inline int32_t divscale(int32_t i1, int32_t i2, int32_t i3)
 {
+#if defined(OPENFPGA) && defined(__riscv) && __riscv_xlen == 32
+	if (i3 == 12 && i2 != 0)
+		return build_divscale12(i1, i2);
+#endif
 	return (int32_t)(((int64_t)i1<<i3)/i2);
 }
 
@@ -176,4 +183,3 @@ void qinterpolatedown16 (int32_t* bufptr, int32_t num, int32_t val, int32_t add)
 void qinterpolatedown16short (int32_t* bufptr, int32_t num, int32_t val, int32_t add);
 
 #endif /* !defined _INCLUDE_PRAGMAS_H_ */
-

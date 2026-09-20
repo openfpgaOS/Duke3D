@@ -96,6 +96,10 @@ CFLAGS += -Wno-maybe-uninitialized -Wno-empty-body
 
 include $(SDK_DIR)/sdk.mk
 
+# Engine headers contain inline renderer math; changes must rebuild callers.
+$(APP_C_OBJS): $(wildcard Engine/src/*.h Game/src/*.h) $(wildcard d3d_*.h)
+$(OBJ_DIR)/app.elf: Makefile
+
 all: $(OBJ_DIR)/app.elf release
 	@$(SIZE) $<
 

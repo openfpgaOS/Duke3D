@@ -44,9 +44,9 @@ extern int d3d_gpu_force_cpu_spans;
 extern int d3d_gpu_force_affine_columns;
 
 /* Fixed command policy for the current openfpgaOS GPU:
- * BUILD computes spans on the CPU and Duke submits SDK affine span groups
- * with explicit per-lane colormap ids.  The SDK lowers those groups to the
- * unified GPU_CMD_DRAW_PARAM_SPAN_LIST command.  Rotatesprite stays on CPU
+ * BUILD computes spans on the CPU and Duke packs affine/column groups in
+ * SDK wire format, with explicit per-lane colormap ids.  GPU initialization
+ * requires compact affine support.  Rotatesprite stays on CPU
  * for byte-sensitive 2D/menu/save paths. */
 #define D3D_GPU_FORCE_ROTATESPRITE_CPU      1
 #define D3D_GPU_USE_CACHED_FRAMEPLACE       0
