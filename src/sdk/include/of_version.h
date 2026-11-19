@@ -19,7 +19,7 @@ extern "C" {
 
 #define OF_API_VERSION_MAJOR  0
 #define OF_API_VERSION_MINOR  9
-#define OF_API_VERSION_PATCH  0
+#define OF_API_VERSION_PATCH  1
 
 /* Packed version: major(8).minor(8).patch(8) in bits [23:0] */
 #define OF_VERSION(maj, min, pat) \

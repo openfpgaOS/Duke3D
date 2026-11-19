@@ -31,14 +31,16 @@ REL=$(cd "$REL" && pwd)
 CORE_NAME=$(ls "$INPUT/Cores/" 2>/dev/null | head -1)
 [ -z "$CORE_NAME" ] && exit 0
 
-GAME_NAME=$(python3 -c "
-import json
-print(json.load(open('$INPUT/Cores/$CORE_NAME/core.json'))['core']['metadata']['description'])
-" 2>/dev/null || echo "$LABEL")
-GAME_VERSION=$(python3 -c "
-import json
-print(json.load(open('$INPUT/Cores/$CORE_NAME/core.json'))['core']['metadata']['version'])
-" 2>/dev/null || echo "1.0.0")
+GAME_NAME=$(python3 -c '
+import json, sys
+with open(sys.argv[1]) as source:
+    print(json.load(source)["core"]["metadata"]["description"])
+' "$INPUT/Cores/$CORE_NAME/core.json" 2>/dev/null || echo "$LABEL")
+GAME_VERSION=$(python3 -c '
+import json, sys
+with open(sys.argv[1]) as source:
+    print(json.load(source)["core"]["metadata"]["version"])
+' "$INPUT/Cores/$CORE_NAME/core.json" 2>/dev/null || echo "1.0.0")
 
 OUTPUT="$REL/${LABEL}-v${GAME_VERSION}.zip"
 
@@ -65,6 +67,18 @@ Game WADs are not included. Copy your WAD files to Assets/$LABEL/common/.
 EOF
         ;;
 esac
+
+# Keep the SDK and bundled libc notices with the distributable ELF without
+# adding non-APF directories at the SD-card root. Resolve these from the SDK,
+# not the app's top-level license (a game fork may use a different license).
+SDK_FILES="$(cd "$(dirname "$0")/../.." && pwd)"
+for relative in LICENSE musl/COPYRIGHT; do
+    notice="$SDK_FILES/$relative"
+    if [ -f "$notice" ]; then
+        printf '\n\nBundled component notice: %s\n\n' "$relative" >> "$INPUT/INSTALL.txt"
+        cat "$notice" >> "$INPUT/INSTALL.txt"
+    fi
+done
 
 PACKAGE_TMP=$(mktemp -d "$REL/.package.XXXXXX")
 trap 'rm -rf "$PACKAGE_TMP"' EXIT

@@ -9,7 +9,8 @@ files and Downloader databases belong to image/MiSTer releases, even if a
 stale Downloader database exists in the Pocket release directory.
 
 Archives are built in a temporary directory before replacing the output ZIP,
-so removed files cannot linger in a repackaged archive. Relative output paths
+so removed files cannot linger in a repackaged archive. `INSTALL.txt` includes
+the SDK and bundled musl notices when they are present in the SDK tree. Relative output paths
 are resolved before changing into the bundle directory.
 
 DOOM, Heretic and Hexen packages exclude WAD files from the local build tree.
@@ -17,5 +18,7 @@ Users supply those files in `Assets/<game>/common/`. Other applications retain
 their existing asset policy.
 
 Run `python3 tools/check_release_packaging.py` from the repository root to
-check ZIP layout, upload selection and MiSTer Downloader preflight without
-network access.
+check ZIP layout (including quoted checkout paths), upload selection, all
+selectable runtime variants and MiSTer Downloader preflight without network
+access. Image assembly rejects a missing or manifest-mismatched secondary
+bitstream instead of producing an incomplete bundle.

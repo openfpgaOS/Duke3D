@@ -9,8 +9,8 @@
             "description": "Duke Nukem 3D on openfpgaOS",
             "author": "ThinkElastic",
             "url": "",
-            "version": "1.0.5",
-            "date_release": "2026-09-19"
+            "version": "1.0.6",
+            "date_release": "2026-11-18"
         },
         "framework": {
             "target_product": "Analogue Pocket",

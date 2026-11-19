@@ -258,38 +258,45 @@ fi
 # shell doing so.  2026-08-13: this used to be an extension WHITELIST (ELF +
 # *.ofsf); Diablo staged devilutionx.mpq here and the whitelist silently
 # dropped it, so the main menu died on a missing asset with no visible error.
-for a in "$COMMON_DIR"/*; do
-    [[ -f "$a" ]] || continue
+# Recursive: subdirectory layouts inside common/ are preserved in the image
+# (Quake mission packs live at HIPNOTIC/PAK0.PAK etc. and the engine opens
+# them by that sub-path; the firmware resolves it against the common tree).
+add_common_rel() {   # $1 host-src  $2 in-image path relative to common/
+    COMMON_SPECS+=("$1=/$GAME/common/$2")
+    COMMON_BYTES=$(( COMMON_BYTES + $(stat -c %s "$1") ))
+}
+while IFS= read -r -d '' a; do
+    rel="${a#"$COMMON_DIR"/}"
     b="$(basename "$a")"; [[ "$b" == ._* ]] && continue
     case "${b,,}" in
-        *.elf|*.ofsf) continue ;;               # handled above
+        *.elf|*.ofsf) continue ;;               # handled above (top-level)
         *.wad|*.deh|*.pk3) continue ;;          # --with-wads block below
         *.ini) continue ;;                      # instance inis ship loose
     esac
     name_warn "$b"
-    add_common "$a" "$b"
-    ok "engine asset baked: $b"
-done
+    add_common_rel "$a" "$rel"
+    ok "engine asset baked: $rel"
+done < <(find "$COMMON_DIR" -type f -print0 | sort -z)
 
 # Wads/dehs/pk3s: only baked into a --with-wads dev/test image; the shipped
 # shell leaves /<Game>/common empty of wads for setup.sh to fill on-device.
 WAD_COUNT=0
 declare -A WAD_SEEN=()
 if [[ "$WITH_WADS" == 1 ]]; then
-    for f in "$COMMON_DIR"/*; do
-        [[ -f "$f" ]] || continue
+    while IFS= read -r -d '' f; do
+        rel="${f#"$COMMON_DIR"/}"
         b="$(basename "$f")"; [[ "$b" == ._* ]] && continue
         case "${b,,}" in
             *.wad|*.deh|*.pk3) : ;;
             *) continue ;;
         esac
-        lc="${b,,}"
-        [[ -n "${WAD_SEEN[$lc]:-}" ]] && fail "case-insensitive wad collision: $b vs ${WAD_SEEN[$lc]}"
-        WAD_SEEN["$lc"]="$b"
+        lc="${rel,,}"
+        [[ -n "${WAD_SEEN[$lc]:-}" ]] && fail "case-insensitive wad collision: $rel vs ${WAD_SEEN[$lc]}"
+        WAD_SEEN["$lc"]="$rel"
         name_warn "$b"
-        add_common "$f" "$b"
+        add_common_rel "$f" "$rel"
         WAD_COUNT=$(( WAD_COUNT + 1 ))
-    done
+    done < <(find "$COMMON_DIR" -type f -print0 | sort -z)
     (( WAD_COUNT > 0 )) || warn "--with-wads but no *.wad/*.deh/*.pk3 in $COMMON_DIR"
 fi
 

@@ -94,7 +94,7 @@ SDK_INCLUDES = -nostdinc \
 SDK_CFLAGS  = $(ARCH_FLAGS) -O2 -Wall -Wextra -fdiagnostics-color=always
 SDK_CFLAGS += -ffunction-sections -fdata-sections
 # Cache-line align hot code so the I$ refill is one transaction.
-SDK_CFLAGS += -falign-functions=64 -falign-loops=64
+SDK_CFLAGS += -falign-functions=64 -falign-loops=8
 # Don't let GCC auto-rewrite plain loops as memset/memcpy calls -- musl
 # provides those as real symbols, but the rewrite confuses LTO and the
 # loader's relocation pass.
@@ -108,7 +108,7 @@ ALL_CFLAGS = $(SDK_CFLAGS) $(CFLAGS)
 SDK_CXXFLAGS  = $(ARCH_FLAGS) -O2 -Wall -Wextra -fdiagnostics-color=always
 SDK_CXXFLAGS += -ffunction-sections -fdata-sections
 SDK_CXXFLAGS += -fno-exceptions -fno-rtti
-SDK_CXXFLAGS += -falign-functions=64 -falign-loops=64
+SDK_CXXFLAGS += -falign-functions=64 -falign-loops=8
 SDK_CXXFLAGS += -fno-tree-loop-distribute-patterns
 SDK_CXXFLAGS += $(SDK_INCLUDES)
 

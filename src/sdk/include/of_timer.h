@@ -40,11 +40,15 @@ static inline void of_timer_stop(void) {
 
 /* Free-running monotonic time queries (in microseconds / milliseconds).
  * Wrap around at ~71 minutes / ~49 days respectively. */
+/* Direct services-table call, not the ecall: a trap saves and restores the
+ * whole register file for what is a counter read and a divide, and SDL's
+ * tick functions, audio pumps and frame pacing call these many times a
+ * frame.  The table entries have existed as long as the ecall has. */
 static inline unsigned int of_time_us(void) {
-    return (unsigned int)of_ecall0(OF_EID_TIMER, OF_TIMER_FID_GET_US).value;
+    return (unsigned int)OF_SVC->timer_get_us();
 }
 static inline unsigned int of_time_ms(void) {
-    return (unsigned int)of_ecall0(OF_EID_TIMER, OF_TIMER_FID_GET_MS).value;
+    return (unsigned int)OF_SVC->timer_get_ms();
 }
 
 #else /* OF_PC */

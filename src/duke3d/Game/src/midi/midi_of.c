@@ -11,6 +11,7 @@
 #include <string.h>
 #include "of_midi.h"
 #include "of_smp_voice.h"
+#include "of_version.h"
 #include "../audiolib/music.h"
 
 /* GRP file system functions (BUILD engine) */
@@ -90,17 +91,25 @@ void MUSIC_SetMaxFMMidiChannel(int channel)
     (void)channel;
 }
 
+/* Duke3D volume is 0-255.  Cores before openfpgaOS 0.9.1 mix down by /16
+ * and take it unchanged.  From 0.9.1 the mix-down is /4 (+12 dB), where a
+ * dense passage would saturate the mixer at full MIDI master, so the top of
+ * the slider maps to 128; music is still about 6 dB louder than before. */
+static void midi_apply_volume(void)
+{
+    static int halve = -1;
+    if (halve < 0)
+        halve = of_get_version() >= OF_VERSION(0, 9, 1);
+    of_midi_set_volume(halve ? (midi_volume + 1) / 2 : midi_volume);
+}
+
 void MUSIC_SetVolume(int volume)
 {
-    /* Duke3D volume is 0-255 — passed through unchanged.  With AWE
-     * off and reverb at 0, the dry mix has enough headroom that the
-     * engine's default ÷2 in master_volume shouldn't clip the mixer
-     * accumulator on Duke3D's soundtrack. */
     if (volume < 0) volume = 0;
     if (volume > 255) volume = 255;
     midi_volume = volume;
     if (midi_initialized)
-        of_midi_set_volume(volume);
+        midi_apply_volume();
 }
 
 void MUSIC_SetMidiChannelVolume(int channel, int volume)
@@ -155,7 +164,7 @@ int MUSIC_PlaySong(char *songData, int loopflag)
         return MUSIC_Error;
 
     of_midi_stop();
-    of_midi_set_volume(midi_volume);
+    midi_apply_volume();
 
     int rc = of_midi_play((const uint8_t *)songData, midi_buffer_len, loopflag);
     if (rc != OF_MIDI_OK)
@@ -277,6 +286,6 @@ void PlayMusic(char *fileName)
         return;
     }
 
-    of_midi_set_volume(midi_volume);
+    midi_apply_volume();
     of_midi_play(midi_buffer, midi_buffer_len, midi_looping);
 }
